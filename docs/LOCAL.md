@@ -45,3 +45,22 @@ plain text. Language highlighting does not extend indexing coverage.
 Validation runs in CI under host thermal restrictions. Browser emulation and
 unreviewed screenshot candidates are distinct from image review and physical
 Safari/iPhone acceptance. No baseline is recorded or approved by CI.
+
+## Headless agent workflow
+
+Use `tolmap status --repo /path/to/checkout` to inspect the latest committed map,
+then explicitly `tolmap refresh --repo /path/to/checkout --all-sources` when a new
+map is needed. There is no automatic indexing on commits. Both commands default
+to a private per-checkout store under `$XDG_DATA_HOME/tolmap/local` (or
+`~/.local/share/tolmap/local`). Pass `--data /private/tolmap-store` to share the
+viewer command's existing store. Stop the local server before CLI refresh of
+that store; status can read during indexing.
+
+Refresh runs the same production worker, extraction reuse, previous-map warm
+start, validation and atomic publication without a browser, running server or
+prepared selection ID. It prints progress to stderr and status JSON to stdout.
+`--pkg`/`--lang` and `--all-sources` select committed source as with build. Dirty
+and untracked changes are disclosed separately and excluded from the snapshot.
+The status `map_path` can be passed directly to compact queries. See
+[QUERY.md](QUERY.md#local-status-and-explicit-refresh-303) for fields, freshness,
+exit codes and examples.

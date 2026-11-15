@@ -654,7 +654,40 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         features: features.clone(),
     });
     let detect_stage = progress.stage(StageId::Detect, Some(1));
-    let sources = if spec.all_sources {
+    let sources = if let Ok(value) = std::env::var("TOLMAP_WORKER_LOCAL_SOURCES") {
+        let pairs: Vec<(String, String)> = serde_json::from_str(&value)
+            .map_err(|error| fail("detection_failed", error.to_string()))?;
+        pairs
+            .into_iter()
+            .map(|(pkg, lang)| {
+                let language = extract::LanguageKind::parse(&lang)
+                    .map_err(|error| fail("detection_failed", error.to_string()))?;
+                let root = materialized
+                    .path
+                    .join(&pkg)
+                    .canonicalize()
+                    .map_err(|error| fail("detection_failed", error.to_string()))?;
+                if !root.starts_with(
+                    materialized
+                        .path
+                        .canonicalize()
+                        .map_err(|error| fail("detection_failed", error.to_string()))?,
+                ) {
+                    return Err(fail(
+                        "detection_failed",
+                        "source root escapes repository".into(),
+                    ));
+                }
+                Ok(detect::SourceCandidate {
+                    language,
+                    pkg,
+                    confidence: detect::Confidence::High,
+                    file_count: 0,
+                    evidence: "explicit local CLI source".into(),
+                })
+            })
+            .collect::<std::result::Result<Vec<_>, WorkerError>>()?
+    } else if spec.all_sources {
         detect::all_sources(&materialized.path)
             .map_err(|error| fail("detection_failed", error.to_string()))?
     } else {
@@ -825,7 +858,8 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
     )
     .map_err(|error| fail("index_failed", format!("{error:#}")))?;
     let metadata = serde_json::json!({"version":1, "indexed_commit":materialized.commit,
-        "extraction":progress.observations(), "prior_snapshot":previous.as_ref().map(|doc| crate::incremental::digest(&serde_json::to_vec(doc).unwrap())),
+        "sources":source_pairs.iter().map(|(pkg, lang)| (pkg, lang.as_str())).collect::<Vec<_>>(),
+        "all_sources":spec.all_sources, "extraction":progress.observations(), "prior_snapshot":previous.as_ref().map(|doc| crate::incremental::digest(&serde_json::to_vec(doc).unwrap())),
         "downstream":"recompute_all", "seed":crate::SEED});
     crate::incremental::atomic_write(
         &PathBuf::from(&spec.output_dir).join("index.json"),

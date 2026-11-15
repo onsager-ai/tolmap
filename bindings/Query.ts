@@ -2,4 +2,4 @@
 import type { Direction } from "./Direction";
 import type { RouteKind } from "./RouteKind";
 
-export type Query = { "kind": "where", target: string, ambiguous: boolean, } | { "kind": "deps", path: string, direction: Direction, } | { "kind": "overview", files: number, imports: number, districts: number, language: string, } | { "kind": "route", from: string, to: string, edge_kind: RouteKind | null, };
+export type Query = { "kind": "status", } | { "kind": "where", target: string, ambiguous: boolean, } | { "kind": "deps", path: string, direction: Direction, } | { "kind": "overview", files: number, imports: number, districts: number, language: string, } | { "kind": "route", from: string, to: string, edge_kind: RouteKind | null, };

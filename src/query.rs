@@ -107,6 +107,24 @@ impl Snapshot {
                 .filter(|s| matches!(s.len(), 40 | 64) && s.bytes().all(|c| c.is_ascii_hexdigit()))
                 .map(str::to_owned)
         });
+        // Local stores published before headless queries keep provenance in
+        // snapshot.json rather than in compact geometry. Bind only map.json
+        // to that sibling; arbitrary build files never inherit checkout HEAD.
+        let commit = if commit.is_none() && path.file_name().is_some_and(|name| name == "map.json")
+        {
+            let metadata = path.with_file_name("snapshot.json");
+            match std::fs::read(metadata) {
+                Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
+                    .context("invalid local snapshot metadata")?
+                    .get("commit")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            commit
+        };
         let identity = MapIdentity {
             repo: map.repo.clone(),
             commit,
@@ -189,7 +207,13 @@ impl Snapshot {
                 None,
             ));
         }
-        let symbols_path = self.path.with_extension("symbols.json");
+        let symbols_path = if self.path.file_name().is_some_and(|name| name == "map.json")
+            && self.path.with_file_name("snapshot.json").is_file()
+        {
+            self.path.with_file_name("symbols.json")
+        } else {
+            self.path.with_extension("symbols.json")
+        };
         let symbols: Option<SymbolsDocument> = match std::fs::read(&symbols_path) {
             Ok(bytes) => Some(serde_json::from_slice(&bytes).context("invalid symbols JSON")?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -460,6 +484,7 @@ pub fn text(report: &QueryResponse) -> String {
         out.push_str("ambiguous symbol: candidates follow\n");
     }
     match &report.query {
+        Query::Status {} => {}
         Query::Overview {
             files,
             imports,

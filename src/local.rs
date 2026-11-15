@@ -27,6 +27,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "local_cli.rs"]
+pub mod cli;
+
 #[derive(Serialize, Deserialize)]
 struct Identity {
     checkout: PathBuf,
@@ -121,6 +124,7 @@ impl EventSink for Sink {
 }
 impl Sink {
     fn stage(&self, text: &str) {
+        eprintln!("{text}");
         if let Some(j) = self.0.job.lock().unwrap().as_mut() {
             j.stage = text.into();
         }
@@ -270,6 +274,7 @@ fn run(
     commit: String,
     all: bool,
     confirmed_scope: Option<String>,
+    local_sources: Option<Vec<(String, String)>>,
     id: Uuid,
     cancel: Arc<Probe>,
 ) -> Result<()> {
@@ -317,7 +322,17 @@ fn run(
         worker_gid: 10001,
         allow_openrouter_key: false,
     };
-    let result = if let Some(scope) = confirmed_scope {
+    let result = if let Some(sources) = local_sources {
+        executor::execute_local_sources(
+            &env,
+            id,
+            &spec,
+            &inputs,
+            &mut Sink(s.clone()),
+            cancel.as_ref(),
+            &sources,
+        )
+    } else if let Some(scope) = confirmed_scope {
         executor::execute_confirmed_local(
             &env,
             id,
@@ -337,7 +352,7 @@ fn run(
             cancel.as_ref(),
         )
     }
-    .map_err(|e| anyhow::anyhow!("local executor stopped: {}", e.error))?;
+    .map_err(|e| anyhow::anyhow!("local executor stopped: {}: {}", e.error, e.message))?;
     let work = result.job_dir.clone();
     let publish = (|| -> Result<()> {
         ensure!(
@@ -515,6 +530,7 @@ fn dispatch(s: &Arc<Local>, method: &Method, uri: &axum::http::Uri) -> Result<Re
                         commit,
                         all,
                         confirmed_scope,
+                        None,
                         id,
                         cancel,
                     );
@@ -832,6 +848,7 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
         "private storage must be outside the checkout"
     );
     private(&data.join("snapshots"))?;
+    let _writer_lock = cli::lock_store(&data)?;
     let identity = data.join("identity.json");
     let repo = if identity.exists() {
         let i: Identity = serde_json::from_slice(&std::fs::read(identity)?)?;
@@ -863,6 +880,10 @@ pub async fn serve(checkout: PathBuf, data: PathBuf, assets: PathBuf, port: u16)
                 Some("Indexing was interrupted; retry from the retained committed source.".into());
             value.failure_code = Some("interrupted".into());
             value.retryable = true;
+            crate::incremental::atomic_write(
+                &data.join("attempt.json"),
+                &serde_json::to_vec(value)?,
+            )?;
         }
     }
     let s = Arc::new(Local {
@@ -1033,7 +1054,7 @@ mod tests {
         assert_previous_complete(&s, &previous);
     }
 
-    fn test_git(repo: &Path, args: &[&str]) -> String {
+    pub(super) fn test_git(repo: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .args([
                 "-c",
