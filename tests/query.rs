@@ -93,6 +93,112 @@ fn directory_layout_and_invalid_indices() {
 }
 
 #[test]
+fn overview_and_routes_on_pinned_maps() {
+    for name in ["tolmap", "flask"] {
+        let s = fixture(name);
+        let overview = s.overview(1000);
+        assert_eq!(overview.total, s.map.districts.len());
+        let files: usize = overview
+            .results
+            .iter()
+            .map(|r| match r {
+                QueryResult::District { files, .. } => *files,
+                _ => panic!("expected district"),
+            })
+            .sum();
+        assert_eq!(files, s.map.files.len());
+        let [a, b] = s.map.edges[0];
+        let route = s.route(&s.map.files[a], &s.map.files[b], 8);
+        assert_eq!(route.total, 2);
+        assert!(matches!(
+            route.query,
+            Query::Route {
+                edge_kind: Some(tolmap::lens::RouteKind::Imports),
+                ..
+            }
+        ));
+        assert!(
+            matches!(&route.results[0], QueryResult::Step { path, .. } if path == &s.map.files[a])
+        );
+        let short = s.route(&s.map.files[a], &s.map.files[b], 1);
+        assert_eq!(short.total, 2);
+        assert!(short.truncated);
+        let same = s.route(&s.map.files[a], &s.map.files[a], 8);
+        assert_eq!(same.total, 1);
+        assert!(matches!(
+            same.query,
+            Query::Route {
+                edge_kind: Some(tolmap::lens::RouteKind::SameFile),
+                ..
+            }
+        ));
+        assert_eq!(s.route("missing", &s.map.files[a], 8).total, 0);
+        assert!(serde_json::to_vec(&s.overview(8)).unwrap().len() < 2000);
+    }
+}
+
+#[test]
+fn route_direction_and_no_route_use_lens_semantics() {
+    let mut s = fixture("tolmap");
+    s.map.edges = vec![[0, 1], [2, 1]];
+    let route = s.route(&s.map.files[1], &s.map.files[0], 8);
+    assert!(matches!(
+        route.query,
+        Query::Route {
+            edge_kind: Some(tolmap::lens::RouteKind::ImportedBy),
+            ..
+        }
+    ));
+    let route = s.route(&s.map.files[0], &s.map.files[2], 8);
+    assert!(matches!(
+        route.query,
+        Query::Route {
+            edge_kind: Some(tolmap::lens::RouteKind::Undirected),
+            ..
+        }
+    ));
+    assert_eq!(route.total, 3);
+    assert_eq!(s.route(&s.map.files[0], &s.map.files[3], 8).total, 0);
+}
+
+#[test]
+fn cli_exit_codes_and_text() {
+    let binary = env!("CARGO_BIN_EXE_tolmap");
+    let map = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/tolmap.json");
+    for args in [
+        vec!["overview"],
+        vec!["where", "missing"],
+        vec!["deps", "src/main.rs"],
+        vec!["route", "src/main.rs", "src/lib.rs"],
+    ] {
+        let output = std::process::Command::new(binary)
+            .args(args)
+            .arg("--map")
+            .arg(&map)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["schema"], QUERY_SCHEMA);
+    }
+    let text = std::process::Command::new(binary)
+        .args(["where", "main", "--format", "text", "--map"])
+        .arg(&map)
+        .output()
+        .unwrap();
+    assert_eq!(text.status.code(), Some(0));
+    assert!(String::from_utf8(text.stdout)
+        .unwrap()
+        .contains("ambiguous"));
+    let bad = std::process::Command::new(binary)
+        .args(["overview", "--map", "/nonexistent/tolmap-query-input"])
+        .output()
+        .unwrap();
+    assert_eq!(bad.status.code(), Some(2));
+    assert!(bad.stdout.is_empty());
+}
+
+#[test]
 fn hierarchical_symbols_and_unknown_coverage() {
     let temp = tempfile::tempdir().unwrap();
     let map = temp.path().join("flask.json");

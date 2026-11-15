@@ -327,6 +327,41 @@ impl Snapshot {
         )
     }
 
+    pub fn route(&self, from: &str, to: &str, limit: usize) -> QueryResponse {
+        let endpoints = self
+            .map
+            .files
+            .iter()
+            .position(|p| p == from)
+            .zip(self.map.files.iter().position(|p| p == to));
+        let route = endpoints.and_then(|(a, b)| {
+            if a == b {
+                Some((vec![a], crate::lens::RouteKind::SameFile))
+            } else {
+                crate::lens::Routes::new(&self.map).find(a, b)
+            }
+        });
+        let edge_kind = route.as_ref().map(|(_, kind)| *kind);
+        let results = route
+            .into_iter()
+            .flat_map(|(files, _)| files)
+            .map(|file| QueryResult::Step {
+                path: self.map.files[file].clone(),
+                district: self.district(file),
+            })
+            .collect();
+        self.response(
+            Query::Route {
+                from: from.into(),
+                to: to.into(),
+                edge_kind,
+            },
+            limit,
+            results,
+            None,
+        )
+    }
+
     pub fn deps(&self, path: &str, direction: Direction, limit: usize) -> QueryResponse {
         let mut hits = BTreeSet::new();
         if let Some(file) = self.map.files.iter().position(|p| p == path) {
@@ -406,6 +441,20 @@ pub fn text(report: &QueryResponse) -> String {
         }
     ) {
         out.push_str("ambiguous symbol: candidates follow\n");
+    }
+    match &report.query {
+        Query::Overview {
+            files,
+            imports,
+            districts,
+            language,
+        } => out.push_str(&format!(
+            "{files} files, {imports} imports, {districts} districts, language {language}\n"
+        )),
+        Query::Route { edge_kind, .. } => out.push_str(&format!(
+            "file import path ({edge_kind:?}); not a runtime call chain\n"
+        )),
+        _ => {}
     }
     for result in &report.results {
         match result {
