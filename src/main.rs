@@ -15,6 +15,12 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+enum DebtCommand {
+    /// Compare two versioned debt reports.
+    Diff { before: PathBuf, after: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Summarize districts in a stored map (docs/QUERY.md).
     Overview(tolmap::query::QueryOptions),
@@ -227,7 +233,7 @@ enum Command {
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
     },
-    /// Structural debt findings (issues #250, #251, docs/API.md): district
+    /// Structural debt findings (issues #250, #251, #303; docs/API.md): district
     /// cycles, misplaced files, god files, hotspots, files with no inbound
     /// edge found and hidden coupling, computed from a stored map alone.
     /// Prints a `DebtReport` as
@@ -235,12 +241,27 @@ enum Command {
     /// `tolmap lens check` accepts. Counts are lower bounds; the map is
     /// never changed. Exits 0, or 2 when the map cannot be read.
     Debt {
+        #[command(subcommand)]
+        command: Option<DebtCommand>,
         /// A map JSON: a service store file or an exported map.
         #[arg(long)]
-        map: PathBuf,
+        map: Option<PathBuf>,
         #[arg(long, default_value = "text", value_parser = ["text", "json", "lens"])]
         format: String,
+        /// Keep only these finding kinds (repeatable).
+        #[arg(long, value_parser = ["cycle", "misplaced", "god", "hotspot", "unreached", "undeclared-rust", "hidden-coupling"])]
+        kind: Vec<String>,
+        /// Keep findings whose paths match this prefix or glob.
+        #[arg(long)]
+        path: Option<String>,
+        /// Keep findings in this district.
+        #[arg(long)]
+        district: Option<String>,
+        /// Limit ranked finding kinds after filtering (god files and hotspots).
+        #[arg(long)]
+        top: Option<usize>,
     },
+
     /// Lenses (issue #241, docs/API.md): named overlays of areas, paths and
     /// notes kept in `.tolmap/lenses/<name>.toml`.
     Lens {
@@ -860,7 +881,36 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Debt { map, format } => std::process::exit(tolmap::debt::run(&map, &format)),
+        Command::Debt {
+            command,
+            map,
+            format,
+            kind,
+            path,
+            district,
+            top,
+        } => {
+            let code = match command {
+                Some(DebtCommand::Diff { before, after }) => {
+                    tolmap::debt::run_diff(&before, &after)
+                }
+                None => match map {
+                    Some(map) => tolmap::debt::run_filtered(
+                        &map,
+                        &format,
+                        &kind,
+                        path.as_deref(),
+                        district.as_deref(),
+                        top,
+                    ),
+                    None => {
+                        eprintln!("tolmap debt: provide --map or `debt diff`");
+                        2
+                    }
+                },
+            };
+            std::process::exit(code)
+        }
         Command::Lens {
             command: LensCommand::Check { lens, map, format },
         } => std::process::exit(tolmap::lens::run_check(&lens, &map, &format)),

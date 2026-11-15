@@ -544,7 +544,28 @@ Viewers must reject mismatched repository/commit/lens identities and hide old
 results during revalidation. Deep links retain `lens`, `lens_compare`, `base`,
 `head` and optional `other_lens` alongside the existing comparison parameters.
 
-### `tolmap debt --map <map.json> [--format text|json|lens]`
+### `tolmap debt --map <map.json> [--format text|json|lens] [--kind <kind>...] [--path <prefix-or-glob>] [--district <name>] [--top <n>]`
+
+`--kind` is repeatable and accepts `cycle`, `misplaced`, `god`, `hotspot`,
+`unreached`, `undeclared-rust` or `hidden-coupling` (the CLI spellings of the
+finding kinds shown in the report).
+`--path` matches a path prefix unless it contains `*` or `?`, when it is a glob.
+`--district` matches the district name. `--top` limits ranked findings after
+other filters (god files and hotspots). Filters apply to text, JSON and lens TOML;
+all outputs identify the selections (lens TOML uses a leading comment, which is
+valid TOML and ignored by `tolmap lens check`). Filtered JSON keeps the normal
+DebtReport version and lower-bound evidence, with additive `unfiltered_counts`,
+`filtered_counts` and `filters` fields. These fields do not change the meaning of
+the DebtReport schema, so its version remains v6.
+
+`tolmap debt diff <before-report.json> <after-report.json>` compares two full,
+versioned DebtReports. It emits version 1 JSON with each finding marked `added`,
+`removed` or `shared`; shared findings include numeric metric deltas. Finding
+identity is its kind and path (or stable cycle/pair identity), so changing churn
+or complexity on an unchanged finding remains shared. Reports must have the
+current DebtReport version. This subcommand is used instead of a map comparison
+because the requested input is a raw, reproducible comparison of two already
+computed reports.
 
 Structural debt findings (issue #250; `src/debt.rs`), computed offline from a
 stored map alone; the map is not changed and the same map gives byte-identical
