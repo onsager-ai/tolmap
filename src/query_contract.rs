@@ -17,7 +17,7 @@ pub struct QueryEnvelope<T, M = MapIdentity> {
     pub total: usize,
     pub truncated: bool,
     pub omitted: usize,
-    pub next_limit: Option<String>,
+    pub next_limit: Option<usize>,
     pub results: Vec<T>,
 }
 

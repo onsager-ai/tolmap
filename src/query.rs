@@ -188,7 +188,7 @@ impl Snapshot {
             total,
             truncated: total > limit,
             omitted: total.saturating_sub(limit),
-            next_limit: (total > limit).then(|| format!("--limit {total}")),
+            next_limit: (total > limit).then_some(total),
             results,
         }
     }
@@ -464,9 +464,9 @@ pub fn text(report: &QueryResponse) -> String {
         report.total,
         if report.truncated { " (truncated)" } else { "" }
     );
-    if let Some(flag) = &report.next_limit {
+    if let Some(n) = report.next_limit {
         out.push_str(&format!(
-            "{} rows omitted; repeat with {flag} to return all rows\n",
+            "{} rows omitted; repeat with --limit {n} to return all rows\n",
             report.omitted
         ));
     }

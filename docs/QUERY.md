@@ -76,7 +76,7 @@ one trailing newline. Paths and district names replace all internal indices.
 | `total` | All matching rows before limiting; route counts file steps including endpoints. |
 | `truncated` | Exactly `total > limit`. A truncated route is a prefix, not a complete connection to the destination. |
 | `omitted` | `total - results.length`: number of rows omitted. |
-| `next_limit` | `"--limit N"` with N equal to `total` when truncated, otherwise `null`. Repeating the same query with this flag returns all matching rows. Text prints the omitted count and this flag on a separate line. |
+| `next_limit` | `total` when truncated, otherwise `null`. Repeating the same query with `--limit <next_limit>` returns all matching rows. Text prints the omitted count and this flag on a separate line. |
 | `results` | Ordered rows, length `min(limit,total)`. |
 
 ## Query and result shapes

@@ -63,12 +63,12 @@ fn pinned_deps_match_all_edges_and_keep_total() {
             assert_eq!(report.omitted, expected.len().saturating_sub(1));
             assert_eq!(
                 report.next_limit,
-                (expected.len() > 1).then(|| format!("--limit {}", expected.len()))
+                (expected.len() > 1).then_some(expected.len())
             );
             if report.truncated {
                 let text = tolmap::query::text(&report);
                 assert!(text.contains(&format!("{} rows omitted", report.omitted)));
-                assert!(text.contains(report.next_limit.as_ref().unwrap()));
+                assert!(text.contains(&format!("--limit {}", report.next_limit.unwrap())));
             }
             assert_eq!(report.results.len(), expected.len().min(1));
             assert_eq!(
@@ -136,7 +136,7 @@ fn overview_and_routes_on_pinned_maps() {
         assert_eq!(short.total, 2);
         assert!(short.truncated);
         assert_eq!(short.omitted, 1);
-        assert_eq!(short.next_limit.as_deref(), Some("--limit 2"));
+        assert_eq!(short.next_limit, Some(2));
         let same = s.route(&s.map.files[a], &s.map.files[a], 8);
         assert_eq!(same.total, 1);
         assert!(matches!(

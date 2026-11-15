@@ -69,7 +69,7 @@ that no runtime relationship exists.
 Every compact response includes map identity, `coverage`, `limit`, `total` and
 `truncated`, `omitted` and `next_limit`. `overview` returns all districts;
 `where`, `deps` and `route` default to 25 rows. If truncated, use the returned
-`next_limit` flag to get all rows
+`next_limit` as `--limit` to get all rows
 or narrow the question; a truncated route is only a prefix. `where` can return
 several symbol candidates: inspect qualified names and line ranges.
 
