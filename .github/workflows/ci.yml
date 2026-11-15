@@ -78,6 +78,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      regenerate_entries:
+        description: "Record entry landmark fixture changes with exact partition parity"
+        type: boolean
+        default: false
       scip_churn:
         description: "Also run the SCIP churn diagnosis (finding 47, about 30 minutes)"
         type: boolean
@@ -1471,7 +1475,18 @@ jobs:
       - name: cargo build
         run: cargo build --release --bin tolmap
 
+      - name: Regenerate entry landmarks at manifest pins
+        if: github.event_name == 'workflow_dispatch' && inputs.regenerate_entries
+        run: python3 eval/regenerate_fixtures.py --out fixture-record
+
+      - uses: actions/upload-artifact@v4
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.regenerate_entries
+        with:
+          name: entry-landmark-fixtures
+          path: fixture-record/
+
       - name: Full nine-fixture parity
+        if: ${{ !inputs.regenerate_entries }}
         run: |
           set -uo pipefail
           # name pkg lang url commit -- commits pinned at the SHA each

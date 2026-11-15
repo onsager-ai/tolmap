@@ -112,6 +112,8 @@ pub(crate) fn detect(repo: &Path, nodes: &[SourceNode]) -> BTreeMap<String, Stri
                                     "{package_path}: {field} {target} → unique dist/src source"
                                 ),
                             );
+                        } else {
+                            eprintln!("entry skipped: {package_path} {field} {target:?}: no mapped target or unique dist/src source (bundled/renamed output needs an explicit source mapping)");
                         }
                     }
                 }

@@ -36,6 +36,7 @@ Only UI text and docs change in this round; code and schema field names stay as 
 | 街道 | Street | road between neighborhoods, or neighborhood ↔ district | 瓣道路 |
 | 交通枢纽 | Hub | role of a file imported by ≥ 30 files (the product's `hub` landmark) | 枢纽 |
 | 地标 | Landmark | existing product term: entry, bridge, hub, capital, hazard | — |
+| 入口地标 | Entry landmark | a mapped file selected from Python filename hints, Cargo binary declarations/conventions, package.json runtime targets, a static default Vite HTML module script, or a Go `package main` file declaring `func main`; `detail` records manifest/convention evidence, without implying every entry was found | — |
 | 区间环 | District cycle | debt finding: districts that reach each other through file edges (`E`); reported with contextual closing edges, mutual lighter bundles and a deterministic greedy small cut (not a minimum) | — |
 | 错位文件 | Misplaced file | debt finding: a non-generated file with at least `MISPLACED_MIN_EDGES` edges, more than half of them to one other district | — |
 | 上帝文件 | God file | debt finding: a file in the top `GOD_TOP_FRACTION` of both fan-in and complexity | — |

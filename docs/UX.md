@@ -141,6 +141,7 @@ The map eases to the district in the safe rectangle; other districts dim; folder
 - The file keeps its place on the map above the sheet, with its import links drawn (#61's selection links).
 - **The two counts are the legend.** "Imports 11" carries a solid ring in the link-out colour, "Imported by 687" a dashed ring in the link-in colour: the same stroke styles the map draws. This answers the owner's "what's the coloured circles?" (2026-09-24) without a separate legend. Tapping a count lists those files.
 - Facts on one wrapping line: landmark badge (e.g. Bridge), lines, symbols, commits.
+- An **Entry** badge identifies a mapped entry file. Its landmark detail states the Cargo/package manifest, static Vite HTML script, or Go main declaration that selected it. Python keeps its existing filename/LOC hints. Unresolved build output is skipped, so absence of an Entry badge does not prove a file cannot be an entry. Entry-route lens suggestions follow measured import edges; an entry with no mapped imports cannot produce a route.
 - Key symbols (3 at Half, all at Full), then Path from here / Path to here.
 
 ### 4.6 Layers and appearance (artboard "Layers and appearance")

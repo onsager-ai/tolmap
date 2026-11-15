@@ -42,6 +42,10 @@ E = Σ w(i,j)·‖pᵢ−pⱼ‖²  +  λ·Σ aᵢ·‖pᵢ−p̂ᵢ‖²
 `p̂ᵢ` from the committed layout; `aᵢ` is 1 for known nodes, ∞ for pinned, 0 for new. New nodes initialise at the weighted centroid of resolved neighbours.
 
 ## 6 · landmarks
+Entry selection retains Python filename hints (>40 LOC, top two by fan-in). Additional mapped entries come from Cargo `[[bin]].path`, automatic `src/main.rs` and `src/bin/*.rs`/`src/bin/*/main.rs` (respecting `autobins = false`, excluding `build.rs`); package.json `bin`, `main`, `module`, and runtime `exports` strings; default Vite `index.html` module scripts without custom Vite config; and parsed Go `package main` files with `func main`. Manifest entries have no size threshold or cap. Their path order is stable and their evidence is stored in landmark `detail`. Entry evidence survives graph dumps but never enters graph weights or partitioning.
+
+Package output targets under `dist/` resolve only when exactly one mapped `src/` file matches the output stem (including extension/index probes). Wildcards, declaration targets, missing or ambiguous source mappings are skipped; unresolved runtime targets emit a diagnostic explaining why. Bundled/renamed outputs such as Vue’s `dist/reactivity.esm-bundler.js` cannot be mapped to `src/index.ts` by this rule. Dynamic framework configuration is not executed. Only files already in the map can become landmarks.
+
 Five computable selectors, each answering a different orientation question: entry, bridge (betweenness), hub (fan-in), capital (district centre), hazard (churn × complexity). Package `__init__` files and global exception modules are excluded from the structural selectors — everything touches them, so they win by default and carry no information.
 
 ## 7 · geometry
