@@ -766,8 +766,9 @@ jobs:
           retention-days: 14
 
   # Five independent standard runners; no corpus clone shares a runner. Source
-  # pins live only in eval/agent_sweep.py, never fixtures/parity. Ignore ref,
-  # repos and extra_args; leave compare_ref empty. Build this dispatch's binary.
+  # pins live only in eval/agent_sweep.py, never fixtures/parity. repos=pilots
+  # selects semon/duhem; otherwise retain the five size-sweep pins. Ignore ref
+  # and extra_args; leave compare_ref empty. Build this dispatch's binary.
   agent-sweep:
     name: agent size sweep ${{ matrix.repo }}
     needs: setup
@@ -778,7 +779,7 @@ jobs:
       fail-fast: false
       max-parallel: 3
       matrix:
-        repo: [hono, fastapi, uv, transformers, vscode]
+        repo: ${{ fromJSON(inputs.repos == 'pilots' && '["semon","duhem"]' || '["hono","fastapi","uv","transformers","vscode"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

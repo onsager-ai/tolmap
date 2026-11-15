@@ -19,6 +19,113 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import time
+import tomllib
+
+
+# Keep the five size-sweep pins and their legacy audit unchanged.
+PINS.update({
+    'semon': {'repo': 'onsager-ai/semon', 'sha': '48497243b26030822218dfed877f25a12c99dd94', 'diff': '48497243b26030822218dfed877f25a12c99dd94', 'band': 'pilot', 'target': 'crates/semon-sessions/src/received_registry.rs', 'entry': 'crates/semon-cli/src/main.rs'},
+    'duhem': {'repo': 'onsager-ai/duhem', 'sha': '9b566423b2aebddade07184dd4bba938b0a55d68', 'diff': '9b566423b2aebddade07184dd4bba938b0a55d68', 'band': 'pilot', 'target': 'crates/duhem-schema/src/manifest_path.rs', 'entry': 'crates/duhem-cli/src/main.rs'},
+})
+
+
+class RustAudit:
+    """Resolve explicit Rust paths against conventional workspace module files.
+
+    Cargo package names identify workspace crates; src/lib.rs and src/main.rs
+    root their module trees. Resolve crate/super/self and workspace-name paths,
+    grouped use trees and qualified expression paths. External mod declarations
+    locate files but are excluded from explicit-name-use recall, as in finding 75.
+    Inline modules are approximated by their containing file. Do not expand
+    macros, chase glob re-exports or named re-exports, evaluate cfg, resolve
+    dependency renames, or interpret #[path]. Comments are stripped; strings
+    may still yield candidates. This is file-import evidence, not typed calls.
+    """
+
+    def __init__(self, checkout, files):
+        self.files = files
+        self.crates = {}
+        self.roots = {}
+        for manifest in sorted(checkout.glob('**/Cargo.toml')):
+            doc = tomllib.loads(manifest.read_text())
+            name = doc.get('package', {}).get('name')
+            if not name:
+                continue
+            base = manifest.parent.relative_to(checkout).as_posix()
+            for entry in ('lib', 'main'):
+                root = f'{base}/src/{entry}.rs'.removeprefix('./')
+                if root in files:
+                    self.roots[root] = f'{base}/src'.removeprefix('./')
+                    if entry == 'lib':
+                        self.crates[name.replace('-', '_')] = root
+
+    def imports(self, path, text):
+        roots = [r for r, base in self.roots.items() if path.startswith(base + '/')]
+        if not roots:
+            return set()
+        # Library and binary share src; main.rs itself is the binary root.
+        root = path if path in roots else next((r for r in roots if r.endswith('/lib.rs')), roots[0])
+        base = self.roots[root]
+        rel = path[len(base) + 1:].removesuffix('.rs').split('/')
+        module = [] if path == root else rel[:-1] if rel[-1] == 'mod' else rel
+        clean = re.sub(r'/\*.*?\*/|//[^\n]*', '', text, flags=re.S)
+
+        def uses(tree, prefix=''):
+            # Split commas only at this brace depth, then recursively expand.
+            depth, start = 0, 0
+            parts = []
+            for i, char in enumerate(tree):
+                depth += (char == '{') - (char == '}')
+                if char == ',' and depth == 0:
+                    parts.append(tree[start:i])
+                    start = i + 1
+            parts.append(tree[start:])
+            for part in parts:
+                part = part.strip()
+                if '{' in part:
+                    stem, rest = part.split('{', 1)
+                    yield from uses(rest.rsplit('}', 1)[0], prefix + stem)
+                elif part:
+                    yield prefix + re.split(r'\s+as\s+', part)[0]
+
+        # Avoid recording an incomplete prefix before a grouped use brace.
+        clean_uses = re.findall(r'\buse\s+([^;]+);', clean)
+        expression_text = re.sub(r'\buse\s+[^;]+;', '', clean)
+        paths = re.findall(r'\b(?:crate|super|self|' + '|'.join(map(re.escape, self.crates)) + r')\s*::\s*(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*', expression_text)
+        paths += [p for tree in clean_uses for p in uses(tree)]
+        found = set()
+        for spec in paths:
+            parts = re.sub(r'\s+', '', spec).split('::')
+            first = parts.pop(0)
+            selected, components = root, []
+            if first in self.crates:
+                selected = self.crates[first]
+            elif first == 'crate':
+                pass
+            elif first in ('self', 'super'):
+                components = module.copy()
+                if first == 'super':
+                    components = components[:-1]
+                while parts and parts[0] == 'super':
+                    components = components[:-1]
+                    parts.pop(0)
+            else:
+                # Bare use paths can name a sibling of the crate root.
+                parts.insert(0, first)
+            components += [p for p in parts if p not in ('self', '*')]
+            destination = selected if first in self.crates or first in ('crate', 'self', 'super') else None
+            for count in range(1, len(components) + 1):
+                stem = self.roots[selected] + '/' + '/'.join(components[:count])
+                candidates = (stem + '.rs', stem + '/mod.rs')
+                match = next((p for p in candidates if p in self.files), None)
+                if match:
+                    destination = match
+            if destination:
+                found.add(destination)
+        # Module declarations establish namespace containment, not name use;
+        # keep these separate from the explicit-reference recall denominator.
+        found.discard(path)
+        return found
 
 
 def encoded(value):
@@ -95,7 +202,8 @@ def main():
     # Explicitly include src (src/vs plus the top-level application entries).
     source_flags = ['--pkg', 'src', '--lang', 'ts'] if args.repo == 'vscode' else ['--all-sources']
     main_prefix = {'hono': 'src/', 'fastapi': 'fastapi/', 'uv': 'crates/',
-                   'transformers': 'src/transformers/', 'vscode': 'src/vs/'}[args.repo]
+                   'transformers': 'src/transformers/', 'vscode': 'src/vs/',
+                   'semon': 'crates/', 'duhem': 'crates/'}[args.repo]
     summary = {'repo': args.repo, 'pin': pin, 'state': 'running', 'tasks': [],
                'source_flags': source_flags, 'main_source_prefix': main_prefix,
                'scope_note': 'VS Code core src explicitly selected; extensions excluded' if args.repo == 'vscode'
@@ -130,7 +238,7 @@ def main():
 
     def truncation(payload):
         doc = json.loads(payload)
-        return {key: doc[key] for key in ('total', 'limit', 'truncated', 'omitted', 'next_limit')}
+        return {key: doc[key] for key in ('total', 'limit', 'truncated', 'omitted', 'next_limit') if key in doc} | ({'directions': doc['directions']} if 'directions' in doc else {})
 
     def cost(byte_count, calls, **extra):
         return {'bytes': byte_count, 'calls': calls, **extra}
@@ -170,24 +278,28 @@ def main():
                     'fastapi': r'fastapi\.params|from\s+(fastapi|\.)\s+import|from\s+\.params',
                     'uv': r'uv_small_str\s*::',
                     'transformers': r'modeling_outputs',
-                    'vscode': r'(common|\.)/lifecycle'}
+                    'vscode': r'(common|\.)/lifecycle',
+                    'semon': r'received_registry|read_machines|ReceivedMachine|MachineAudit',
+                    'duhem': r'manifest_path|canonical_or_self|is_under|validate_entry_path|validate_glob_pattern'}
         rg = run('ground-truth-rg', ['rg', '-n', '-U', patterns[args.repo], '.',
                  '--glob', '*.py', '--glob', '*.ts', '--glob', '*.tsx', '--glob', '*.rs'],
                  checkout, allow_empty=True)
         target_bytes = (checkout / target).read_bytes()
         (out / 'ground-truth-target.stdout').write_bytes(target_bytes)
-        imports = source_imports(target, target_bytes.decode(), file_set)
+        rust_audit = RustAudit(checkout, file_set) if args.repo in ('semon', 'duhem') else None
+        audit = lambda path, text: rust_audit.imports(path, text) if rust_audit and path.endswith('.rs') else source_imports(path, text, file_set)
+        imports = audit(target, target_bytes.decode())
         importers = set()
         for path in files:
             if Path(path).suffix != Path(target).suffix and not (path.endswith('.tsx') and target.endswith('.ts')):
                 continue
             text = (checkout / path).read_text(encoding='utf-8')
-            if target in source_imports(path, text, file_set):
+            if target in audit(path, text):
                 importers.add(path)
         truth = {'in': sorted(importers), 'out': sorted(imports)}
         save('ground-truth', {'target': target, 'expected': truth,
                              'scope': 'explicit static file imports within map F, including tests and type-only imports; no re-export chasing or computed imports',
-                             'audit_parser': source_imports.__doc__})
+                             'audit_parser': RustAudit.__doc__ if rust_audit else source_imports.__doc__})
         if not importers:
             raise ValueError('chosen target has no independently audited fan-in')
 
