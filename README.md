@@ -40,6 +40,9 @@ See [docs/NPM.md](docs/NPM.md) for platform limits, `tolmap local` options, lice
 
 ---
 
+Coding agents: start with the versioned [tolmap-use skill](skills/tolmap-use/SKILL.md)
+for compact queries, freshness, advisory diff checks and structural debt triage.
+
 ## What it does
 
 Nine open-source repositories across Python, Go and TypeScript were indexed and measured while this was built. The numbers in `docs/FINDINGS.md` come from those runs, not from a whiteboard.

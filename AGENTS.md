@@ -56,6 +56,15 @@ that command is not a substitute for the development test gates.
 For native capability mapping, use harness-operations; Codex-specific reference
 routing is in .agents/adapters/codex.md. These adapters grant no extra scope.
 
+## Using tolmap
+
+Read [skills/tolmap-use/SKILL.md](skills/tolmap-use/SKILL.md) for agent queries.
+Use `overview`/`where` to orient and `deps` for direct import boundaries.
+Check `status` before trusting a local map; request `refresh` explicitly.
+Committed snapshots exclude dirty files; read coverage and truncation flags.
+Use advisory `check --report-only` for diff impact, and debt filters for triage.
+Use LSP or grep for exact references and renames; routes are import paths.
+
 <!-- agent-config:begin -->
 ## Shared agent conventions (generated)
 
