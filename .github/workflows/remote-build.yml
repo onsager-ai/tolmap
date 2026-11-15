@@ -129,7 +129,7 @@ jobs:
       - name: Checkout tolmap ref (primary)
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ inputs.command == 'agent-pilot' && github.sha || inputs.ref }}
           path: repo-primary
 
       - name: Checkout tolmap ref (compare)

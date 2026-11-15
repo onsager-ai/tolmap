@@ -14,8 +14,8 @@ from pathlib import Path
 import subprocess
 
 
-MAIN = "58be4cb"
-DIFF = "79089b3"
+MAIN = "58be4cb0147c9eadaca568ac0b9c67fdb6a208b2"
+DIFF = "79089b356ee69933f20195a237e92c9af20d9782"
 # Source audit: rg -n 'crate::check|tolmap::check|mod check|check::' src
 # then read grouped use statements and exclude comments. Include test references
 # and the lib.rs declaration separately; E models name use, not mod declarations.
@@ -70,6 +70,7 @@ def main():
     run("ground-truth-rg", ["rg", "-n", "crate::check|tolmap::check|mod check|check::",
                             "src", "--glob", "*.rs"], cwd=target)
     run("ground-truth-out", ["rg", "-n", "crate::", "src/check.rs"], cwd=target)
+    entry = run("entry-manifest", ["rg", "-n", "-A", "2", r"^\[\[bin\]\]", "Cargo.toml"], cwd=target)
     overview = query("overview", "overview", "--map", map_path)
     where = query("where", "where", "src/main.rs", "--map", map_path)
     deps = query("deps", "deps", "src/check.rs", "--direction", "both", "--map", map_path)
@@ -119,10 +120,10 @@ def main():
     map_bytes = map_path.stat().st_size
     symbols_bytes = symbols_path.stat().st_size
     tasks = [
-        {"task": "orient", "query_bytes": len(overview) + len(where), "query_calls": 2,
-         "before_bytes": map_bytes + symbols_bytes + orient_projection, "before_calls": 3,
-         "filtered_only_bytes": orient_projection, "filtered_only_calls": 1,
-         "note": "CLI path known from Cargo/src/main.rs convention; overview does not list entry landmarks"},
+        {"task": "orient", "query_bytes": len(entry) + len(overview) + len(where), "query_calls": 3,
+         "before_bytes": map_bytes + symbols_bytes + len(entry) + orient_projection, "before_calls": 4,
+         "filtered_only_bytes": len(entry) + orient_projection, "filtered_only_calls": 2,
+         "note": "Both inspect Cargo bin declarations; overview does not list entry landmarks"},
         {"task": "before-edit", "query_bytes": len(deps), "query_calls": 1,
          "before_bytes": map_bytes + dep_projection, "before_calls": 2,
          "filtered_only_bytes": dep_projection, "filtered_only_calls": 1,
