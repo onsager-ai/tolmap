@@ -16,6 +16,14 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Summarize districts in a stored map (docs/QUERY.md).
+    Overview(tolmap::query::QueryOptions),
+    /// Locate a file or symbol in a stored map (docs/QUERY.md).
+    Where(tolmap::query::WhereArgs),
+    /// Direct incoming/outgoing map imports (docs/QUERY.md).
+    Deps(tolmap::query::DepsArgs),
+    /// Find a file import path, never a runtime call chain (docs/QUERY.md).
+    Route(tolmap::query::RouteArgs),
     /// Analyze a committed private checkout with a loopback-only viewer.
     Local {
         repo: PathBuf,
@@ -605,6 +613,20 @@ fn wants_multi_source(pkg: &[String], lang: &[String], all_sources: bool) -> boo
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Route(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
+            Ok(snapshot.route(&args.from, &args.to, args.options.limit))
+        })),
+        Command::Overview(options) => {
+            std::process::exit(tolmap::query::run(&options, |snapshot| {
+                Ok(snapshot.overview(options.limit))
+            }))
+        }
+        Command::Where(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
+            snapshot.where_is(&args.target, args.options.limit)
+        })),
+        Command::Deps(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
+            Ok(snapshot.deps(&args.path, args.direction, args.options.limit))
+        })),
         Command::Local {
             repo,
             data,
