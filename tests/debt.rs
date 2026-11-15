@@ -350,7 +350,7 @@ fn debt_cli_formats_and_exit_codes() {
     assert_eq!(code, 0);
     let filtered: serde_json::Value = serde_json::from_str(&filtered).unwrap();
     assert_eq!(filtered["version"], debt::DEBT_REPORT_VERSION);
-    assert_eq!(filtered["unfiltered_counts"]["hotspot"], 1);
+    assert_eq!(filtered["unfiltered_counts"]["hotspot"], 2);
     assert_eq!(filtered["filtered_counts"]["hotspot"], 1);
     assert_eq!(filtered["filters"]["path"], "src/c/*");
     assert_eq!(filtered["hotspots"][0]["path"], "src/c/hot.py");
