@@ -1027,6 +1027,15 @@ fn landmarks(membership: &[usize], data: &GraphData, graph: &WeightedGraph) -> V
         );
     }
 
+    // Manifest/convention entries have no LOC threshold or two-file cap:
+    // a small executable or a workspace package can still be a real entry.
+    // Path order, independent of map node order, makes ties deterministic.
+    for (path, reason) in &data.entry_points {
+        if let Some(index) = data.nodes.iter().position(|node| &node.file == path) {
+            add_landmark(&mut picks, index, "entry", reason.clone());
+        }
+    }
+
     let mut bridges = (0..data.nodes.len())
         .filter(|index| structural(*index))
         .collect::<Vec<_>>();
@@ -1377,6 +1386,7 @@ mod tests {
             semantic: 0.0,
         };
         GraphData {
+            entry_points: BTreeMap::new(),
             repo: "outlier".to_owned(),
             pkg: ".".to_owned(),
             lang: "py".to_owned(),
@@ -1449,6 +1459,7 @@ mod tests {
     #[test]
     fn mass_normalization_assigns_each_signal_its_share() {
         let mut data = GraphData {
+            entry_points: BTreeMap::new(),
             repo: String::new(),
             pkg: String::new(),
             lang: "py".to_owned(),

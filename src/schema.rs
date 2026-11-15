@@ -658,6 +658,8 @@ pub struct GraphData {
     pub repo: String,
     pub pkg: String,
     pub lang: String,
+    /// Entry evidence keyed by mapped file path; never used for partitioning.
+    pub entry_points: BTreeMap<String, String>,
     // Polyglot union extraction: every `(pkg, lang)` source that was
     // unioned to build this graph, sorted by `(lang, pkg)` -- the same
     // order `build_multi_source` merges in. `pkg`/`lang` above stay the
@@ -721,6 +723,8 @@ pub struct GraphData {
 
 #[derive(Deserialize)]
 struct GraphDataWire {
+    #[serde(default)]
+    entry_points: BTreeMap<String, String>,
     repo: String,
     pkg: String,
     lang: String,
@@ -784,7 +788,8 @@ impl Serialize for GraphData {
         let fields = 10
             + if self.references.is_some() { 1 } else { 0 }
             + if self.build_output_mirror != 0 { 1 } else { 0 }
-            + usize::from(self.python_cross_project != 0);
+            + usize::from(self.python_cross_project != 0)
+            + usize::from(!self.entry_points.is_empty());
         let mut state = serializer.serialize_struct("GraphData", fields)?;
         state.serialize_field("repo", &self.repo)?;
         state.serialize_field("pkg", &self.pkg)?;
@@ -804,6 +809,9 @@ impl Serialize for GraphData {
         }
         if self.python_cross_project != 0 {
             state.serialize_field("python_cross_project", &self.python_cross_project)?;
+        }
+        if !self.entry_points.is_empty() {
+            state.serialize_field("entry_points", &self.entry_points)?;
         }
         state.end()
     }
@@ -854,6 +862,7 @@ impl<'de> Deserialize<'de> for GraphData {
             .collect::<Result<Vec<_>, D::Error>>()?;
         drop(file_ids);
         Ok(Self {
+            entry_points: wire.entry_points,
             repo: wire.repo,
             pkg: wire.pkg,
             lang: wire.lang,
@@ -918,6 +927,7 @@ mod tests {
     #[test]
     fn graph_data_keeps_path_based_json_with_indexed_edges() {
         let data = GraphData {
+            entry_points: BTreeMap::new(),
             repo: "fixture".to_owned(),
             pkg: ".".to_owned(),
             lang: "go".to_owned(),
@@ -976,6 +986,7 @@ mod tests {
     #[test]
     fn graph_data_keeps_a_nonzero_build_output_mirror_count() {
         let data = GraphData {
+            entry_points: BTreeMap::new(),
             repo: "fixture".to_owned(),
             pkg: ".".to_owned(),
             lang: "ts".to_owned(),
@@ -1010,6 +1021,7 @@ mod tests {
     #[test]
     fn a_nonzero_python_cross_project_count_is_written_and_round_trips() {
         let data = GraphData {
+            entry_points: BTreeMap::new(),
             repo: "fixture".to_owned(),
             pkg: ".".to_owned(),
             lang: "py".to_owned(),
