@@ -30,6 +30,8 @@ ranges if that still names several definitions). No candidate is selected for
 the caller.
 
 Only a symbol lookup reads the map's `<stem>.symbols.json` sibling, when present.
+A published local `map.json` beside `snapshot.json` uses the local store's
+`symbols.json` instead, including stores created before these commands.
 A missing sibling uses the older compact map `S` table, which has no parent
 hierarchy; only simple names and `path::name` work there. Compact names are
 stored truncated to 44 characters, so full long-name searches require a symbols
@@ -62,7 +64,7 @@ one trailing newline. Paths and district names replace all internal indices.
 | `schema` | `tolmap.query/v1`. Breaking field or semantic changes require a new version. Consumers must tolerate additive fields and query/result kinds. |
 | `query` | Tagged by `kind`: `where`, `deps`, `overview`, or `route`; includes inputs and the command-specific facts below. |
 | `map.repo` | Repository label recorded by the map, not a recovered remote URL. |
-| `map.commit` | Stored top-level `commit`, otherwise a full 40/64 hex object ID from the map filename; otherwise `null`. Ordinary `build` and legacy fixtures do not record it. Never inferred from the caller's checkout. Renaming a file is not provenance verification. |
+| `map.commit` | Stored top-level `commit`, otherwise a full 40/64 hex object ID from the map filename, otherwise a local `map.json`'s `snapshot.json` commit; otherwise `null`. Ordinary `build` and legacy fixtures do not record it. Never inferred from the caller's checkout. Renaming a file is not provenance verification. |
 | `map.sha256` | SHA-256 of the exact map file bytes, including whitespace. Symbols bytes are not included. |
 | `coverage.refs` | `hand` when reference coverage is absent or all recorded languages use hand; `scip` if all recorded languages use SCIP; `mixed` when both occur. |
 | `coverage.zero_edge_files` | Map's recorded kept-edge coverage count; `null` when absent. |

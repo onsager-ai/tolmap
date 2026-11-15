@@ -207,7 +207,13 @@ impl Snapshot {
                 None,
             ));
         }
-        let symbols_path = self.path.with_extension("symbols.json");
+        let symbols_path = if self.path.file_name().is_some_and(|name| name == "map.json")
+            && self.path.with_file_name("snapshot.json").is_file()
+        {
+            self.path.with_file_name("symbols.json")
+        } else {
+            self.path.with_extension("symbols.json")
+        };
         let symbols: Option<SymbolsDocument> = match std::fs::read(&symbols_path) {
             Ok(bytes) => Some(serde_json::from_slice(&bytes).context("invalid symbols JSON")?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,

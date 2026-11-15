@@ -3,4 +3,4 @@ import type { MapIdentity } from "./MapIdentity";
 import type { Query } from "./Query";
 import type { QueryCoverage } from "./QueryCoverage";
 
-export type QueryEnvelope<T> = { schema: string, query: Query, map: MapIdentity, coverage: QueryCoverage, limit: number, total: number, truncated: boolean, results: Array<T>, };
+export type QueryEnvelope<T, M = MapIdentity> = { schema: string, query: Query, map: M, coverage: QueryCoverage, limit: number, total: number, truncated: boolean, results: Array<T>, };

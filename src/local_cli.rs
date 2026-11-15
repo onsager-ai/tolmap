@@ -407,30 +407,16 @@ fn selected_sources(repo: &Path, args: &RefreshArgs) -> Result<Option<Vec<(Strin
 
 fn refresh_snapshot(s: Arc<Local>, args: &RefreshArgs) -> Result<()> {
     eprintln!("Preparing committed HEAD; dirty files are excluded; no upload");
-    prepare(&s)?;
-    let p = s.prepared.lock().unwrap();
-    let p = p.as_ref().context("source preparation failed")?;
-    let (prepared, commit) = (p.id, p.commit.clone());
-    let bare = s
-        .data
-        .join("prepared")
-        .join(prepared.to_string())
-        .join("source.git");
-    let preview = comparison_preview(&bare, &s.data.join("previews"), &commit)?;
-    let sources = selected_sources(&preview.path.canonicalize()?, args)
-        .map_err(|error| InputError(format!("{error:#}")))?;
-    // Default detection retains the service's low-confidence admission rule.
-    // An explicit source selection is owner intent and needs no HTML token.
-    drop(preview);
+    let commit = String::from_utf8(checked(command(
+        &s.checkout,
+        &["rev-parse", "HEAD^{commit}"],
+    ))?)?
+    .trim()
+    .to_owned();
     let id = Uuid::new_v4();
     let cancel = Arc::new(Probe {
         stopped: AtomicBool::new(false),
         pid: AtomicU32::new(0),
-    });
-    *s.job.lock().unwrap() = Some(Job {
-        id,
-        stage: "Queued".into(),
-        cancel: cancel.clone(),
     });
     let mut attempt = crate::schema::SnapshotFreshness {
         indexed_commit: snapshots(&s)?.last().map(|p| p.commit.clone()),
@@ -443,16 +429,44 @@ fn refresh_snapshot(s: Arc<Local>, args: &RefreshArgs) -> Result<()> {
     };
     crate::incremental::atomic_write(&s.data.join("attempt.json"), &serde_json::to_vec(&attempt)?)?;
     *s.attempt.lock().unwrap() = Some(attempt.clone());
-    let result = run(
-        s.clone(),
-        prepared,
-        commit,
-        args.all_sources,
-        None,
-        sources,
-        id,
-        cancel,
-    );
+    let result = (|| -> Result<()> {
+        prepare(&s)?;
+        let (prepared, prepared_commit) = {
+            let p = s.prepared.lock().unwrap();
+            let p = p.as_ref().context("source preparation failed")?;
+            (p.id, p.commit.clone())
+        };
+        ensure!(
+            prepared_commit == commit,
+            "checkout HEAD moved while preparing; retry refresh"
+        );
+        let bare = s
+            .data
+            .join("prepared")
+            .join(prepared.to_string())
+            .join("source.git");
+        let preview = comparison_preview(&bare, &s.data.join("previews"), &commit)?;
+        let sources = selected_sources(&preview.path.canonicalize()?, args)
+            .map_err(|error| InputError(format!("{error:#}")))?;
+        drop(preview);
+        *s.job.lock().unwrap() = Some(Job {
+            id,
+            stage: "Indexing".into(),
+            cancel: cancel.clone(),
+        });
+        // Default selection retains the worker's confidence admission rule;
+        // explicit CLI sources are owner intent, without an HTML token.
+        run(
+            s.clone(),
+            prepared,
+            commit,
+            args.all_sources,
+            None,
+            sources,
+            id,
+            cancel,
+        )
+    })();
     match &result {
         Ok(()) => {
             attempt.state = crate::schema::FreshnessState::Complete;

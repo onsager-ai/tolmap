@@ -99,6 +99,15 @@ fn explicit_refresh_publishes_committed_head_and_reuses_second_cache() {
     assert!(query.status.success());
     let query: Value = serde_json::from_slice(&query.stdout).unwrap();
     assert_eq!(query["map"], first["map"]);
+    let symbol = Command::new(env!("CARGO_BIN_EXE_tolmap"))
+        .args(["where", "pkg/f0.py::value", "--map"])
+        .arg(path)
+        .output()
+        .unwrap();
+    let symbol = response(symbol, 0);
+    assert_eq!(symbol["total"], 1);
+    assert!(symbol["coverage"]["calls_total"].is_number());
+    assert_eq!(symbol["map"], first["map"]);
     let second = response(
         cli(&repo, &data, "refresh", &["--pkg", "pkg", "--lang", "py"]),
         0,
@@ -125,4 +134,92 @@ fn explicit_refresh_publishes_committed_head_and_reuses_second_cache() {
     let stale = response(cli(&repo, &data, "status", &[]), 0);
     assert_eq!(stale["results"][0]["freshness"], "stale");
     assert_eq!(stale["results"][0]["commits_behind"], 1);
+    let failed = response(
+        cli(
+            &repo,
+            &data,
+            "refresh",
+            &["--pkg", "missing", "--lang", "py"],
+        ),
+        2,
+    );
+    assert_eq!(failed["results"][0]["freshness"], "failed");
+    assert_eq!(failed["results"][0]["map_path"], row["map_path"]);
+    assert_eq!(failed["results"][0]["indexed_commit"], head);
+    assert_eq!(
+        failed["results"][0]["requested_commit"],
+        git(&repo, &["rev-parse", "HEAD"])
+    );
+}
+
+#[test]
+fn input_errors_and_failed_attempts_have_explicit_exit_codes() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repo");
+    let data = root.path().join("data");
+    fs::create_dir(&repo).unwrap();
+    assert_eq!(cli(&repo, &data, "status", &[]).status.code(), Some(2));
+    git(&repo, &["init", "-q"]);
+    assert_eq!(cli(&repo, &data, "status", &[]).status.code(), Some(2));
+    for i in 0..8 {
+        fs::write(
+            repo.join(format!("module_{i}.py")),
+            "def value():\n    return 1\n",
+        )
+        .unwrap();
+    }
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "unmarked source"]);
+    assert_eq!(
+        cli(&repo, &data, "refresh", &["--all-sources", "--pkg", "."])
+            .status
+            .code(),
+        Some(2)
+    );
+    let failed = response(cli(&repo, &data, "refresh", &[]), 3);
+    assert_eq!(failed["results"][0]["freshness"], "failed");
+    assert!(failed["results"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("confidence"));
+    assert!(failed["map"].is_null());
+    let status = response(cli(&repo, &data, "status", &[]), 0);
+    assert_eq!(status["results"][0]["freshness"], "failed");
+    // A malformed store must not be treated as a missing snapshot.
+    fs::write(data.join("attempt.json"), "partial-json").unwrap();
+    assert_eq!(cli(&repo, &data, "status", &[]).status.code(), Some(3));
+}
+
+#[test]
+fn indexing_and_interruption_are_read_without_mutating_the_store() {
+    use std::os::fd::AsRawFd;
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repo");
+    let data = root.path().join("data");
+    fs::create_dir(&repo).unwrap();
+    fs::create_dir(&data).unwrap();
+    git(&repo, &["init", "-q"]);
+    fs::write(repo.join("module.py"), "x = 1\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "first"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    let attempt = serde_json::json!({"indexed_commit":null,"requested_commit":head,"state":"indexing","failure_reason":null,"failure_code":null,"retryable":false,"job_id":"fixture"});
+    let bytes = serde_json::to_vec(&attempt).unwrap();
+    fs::write(data.join("attempt.json"), &bytes).unwrap();
+    let lock = fs::File::create(data.join("writer.lock")).unwrap();
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let status = response(cli(&repo, &data, "status", &[]), 0);
+    assert_eq!(status["results"][0]["freshness"], "indexing");
+    assert_eq!(cli(&repo, &data, "refresh", &[]).status.code(), Some(3));
+    drop(lock);
+    let interrupted = response(cli(&repo, &data, "status", &[]), 0);
+    assert_eq!(interrupted["results"][0]["freshness"], "failed");
+    assert!(interrupted["results"][0]["error"]
+        .as_str()
+        .unwrap()
+        .contains("interrupted"));
+    assert_eq!(fs::read(data.join("attempt.json")).unwrap(), bytes);
 }
