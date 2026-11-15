@@ -4,7 +4,7 @@
 PINS = {
     "hono": {"repo": "honojs/hono", "sha": "f6fbaf0299c48eea9e656e03e2ffe7ac755e8823", "diff": "0809e48947c43ae20542bc14c0f750b6c6585b4d", "band": "small", "target": "src/utils/cookie.ts", "entry": "src/index.ts"},
     "fastapi": {"repo": "fastapi/fastapi", "sha": "a3260d49e97b0072c4c0c161d9f63cc3826584b5", "diff": "a3260d49e97b0072c4c0c161d9f63cc3826584b5", "band": "small-mid", "target": "fastapi/params.py", "entry": "fastapi/applications.py"},
-    "uv": {"repo": "astral-sh/uv", "sha": "d5c3f174417418c24ec3c276e01b0f62b961b13c", "diff": "d5c3f174417418c24ec3c276e01b0f62b961b13c", "band": "mid", "target": "crates/uv-small-str/src/lib.rs", "entry": "crates/uv/src/main.rs"},
+    "uv": {"repo": "astral-sh/uv", "sha": "d5c3f174417418c24ec3c276e01b0f62b961b13c", "diff": "d5c3f174417418c24ec3c276e01b0f62b961b13c", "band": "mid", "target": "crates/uv-small-str/src/lib.rs", "entry": "crates/uv/src/bin/uv.rs"},
     "transformers": {"repo": "huggingface/transformers", "sha": "3a134bc37f7c22c801b618e289b0255425f22647", "diff": "3a134bc37f7c22c801b618e289b0255425f22647", "band": "large", "target": "src/transformers/modeling_outputs.py", "entry": "src/transformers/__init__.py"},
     "vscode": {"repo": "microsoft/vscode", "sha": "3ea3ca1d231cae6826355b86b03635ebf0d93068", "diff": "3ea3ca1d231cae6826355b86b03635ebf0d93068", "band": "large", "target": "src/vs/base/common/lifecycle.ts", "entry": "src/main.ts"},
 }
@@ -91,7 +91,15 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     checkout = out / 'checkout'
     commands = []
-    summary = {'repo': args.repo, 'pin': pin, 'state': 'running', 'tasks': []}
+    # Auto-detection selects VS Code's extensions workspace instead of core.
+    # Explicitly include src (src/vs plus the top-level application entries).
+    source_flags = ['--pkg', 'src', '--lang', 'ts'] if args.repo == 'vscode' else ['--all-sources']
+    main_prefix = {'hono': 'src/', 'fastapi': 'fastapi/', 'uv': 'crates/',
+                   'transformers': 'src/transformers/', 'vscode': 'src/vs/'}[args.repo]
+    summary = {'repo': args.repo, 'pin': pin, 'state': 'running', 'tasks': [],
+               'source_flags': source_flags, 'main_source_prefix': main_prefix,
+               'scope_note': 'VS Code core src explicitly selected; extensions excluded' if args.repo == 'vscode'
+                             else 'auto-detected main source; all-sources inclusion floor applies'}
 
     def save(label, value):
         data = encoded(value)
@@ -138,12 +146,15 @@ def main():
         run('diff-first-parent', ['git', 'rev-parse', pin['diff'] + '^1'], checkout)
         query('detect', 'detect', checkout)
         map_dir = out / 'map'
-        query('build', 'build', checkout, '--all-sources', '--name', args.repo, '--out', map_dir)
+        query('build', 'build', checkout, *source_flags, '--name', args.repo, '--out', map_dir)
         map_path = map_dir / f'{args.repo}.json'
         graph = json.loads(map_path.read_bytes())
         files, nodes, edges, names = graph['F'], graph['N'], graph['E'], graph['names']
         file_set = set(files)
-        summary.update(file_count=len(files), build_wall_seconds=commands[-1]['wall_seconds'],
+        summary.update(file_count=len(files),
+                       main_source_file_count=sum(path.startswith(main_prefix) for path in files),
+                       includes_main_source=any(path.startswith(main_prefix) for path in files),
+                       build_wall_seconds=commands[-1]['wall_seconds'],
                        map_sha256=hashlib.sha256(map_path.read_bytes()).hexdigest(),
                        raw_bytes={'map': map_path.stat().st_size,
                                   'symbols': (map_dir / f'{args.repo}.symbols.json').stat().st_size})
@@ -197,7 +208,7 @@ def main():
         deps = query('deps', 'deps', target, '--direction', 'both', '--map', map_path)
         complete = query('deps-complete', 'deps', target, '--direction', 'both', '--limit', str(len(files) * 2), '--map', map_path)
         check = query('check', 'check', checkout, '--base', pin['diff'] + '^1', '--head', pin['diff'],
-                      '--all-sources', '--report-only', '--format', 'json')
+                      *source_flags, '--report-only', '--format', 'json')
         debt = query('debt-full', 'debt', '--map', map_path, '--format', 'json')
         summary['raw_bytes']['debt'] = len(debt)
         hot = query('hotspots', 'debt', '--map', map_path, '--kind', 'hotspot', '--top', '5', '--format', 'json')
@@ -217,7 +228,7 @@ def main():
         patch = run('grep-review-patch', ['git', 'show', '--format=fuller', '--no-ext-diff', pin['diff']], checkout)
         base_tree, base_dir = out / 'base-checkout', out / 'base-map'
         run('base-worktree', ['git', 'worktree', 'add', '--detach', base_tree, pin['diff'] + '^1'], checkout)
-        query('base-build', 'build', base_tree, '--all-sources', '--name', 'base', '--out', base_dir)
+        query('base-build', 'build', base_tree, *source_flags, '--name', 'base', '--out', base_dir)
         base_path = base_dir / 'base.json'
         base = json.loads(base_path.read_bytes())
         base_files = {path: i for i, path in enumerate(base['F'])}
@@ -249,9 +260,9 @@ def main():
              'filtered_only': cost(len(diff) + impact_bytes, 2),
              'grep_read': cost(len(diff) + len(patch), 2, limit='changed paths and patch only; no districts, changed edges or modularity')},
             {'task': 'debt-pick', 'query': cost(len(hot) + len(cycles), 2,
-                 truncation={kind: {'total': json.loads(payload)['unfiltered_counts'][{'hotspots': 'hotspot', 'cycles': 'cycle'}[kind]],
+                 truncation={kind: {'total': json.loads(payload)['unfiltered_counts'][{'hotspots': 'hotspot', 'cycles': 'district cycle'}[kind]],
                                     'returned': len(json.loads(payload)[kind]),
-                                    'omitted': json.loads(payload)['unfiltered_counts'][{'hotspots': 'hotspot', 'cycles': 'cycle'}[kind]] - len(json.loads(payload)[kind])}
+                                    'omitted': json.loads(payload)['unfiltered_counts'][{'hotspots': 'hotspot', 'cycles': 'district cycle'}[kind]] - len(json.loads(payload)[kind])}
                              for kind, payload in [('hotspots', hot), ('cycles', cycles)]}),
              'full_json': cost(len(debt) + debt_bytes, 2), 'filtered_only': cost(debt_bytes, 1),
              'grep_read': cost(len(grep_debt) + len(debt_read), 2, limit='import grep + five largest files, not equivalent hotspots or cycles')},
