@@ -743,6 +743,8 @@ jobs:
         with:
           name: tolmap-leiden-lib
           path: leiden-lib
+      - name: Install source-audit tool
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
       - name: Measure four agent tasks
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
