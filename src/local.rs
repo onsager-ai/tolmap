@@ -380,6 +380,14 @@ fn run(
         )
         .map_err(|e| anyhow::anyhow!("invalid worker artifacts: {e}"))?;
         crate::naming::save_cache(&dir.join("names.json"), &adopted.names)?;
+        // Compact geometry omits provenance. Local query exports retain the
+        // immutable committed source identity without changing geometry.
+        let map_path = dir.join("map.json");
+        let mut map: serde_json::Value = serde_json::from_slice(&std::fs::read(&map_path)?)?;
+        map["commit"] = json!(commit);
+        crate::incremental::atomic_write(&map_path, &serde_json::to_vec(&map)?)?;
+        std::fs::copy(dir.join("symbols.json"), dir.join("map.symbols.json"))?;
+
         publish_snapshot(&s, id, prepared, &commit, sequence, cancel.as_ref())
     })();
     let _ = std::fs::remove_dir_all(work);

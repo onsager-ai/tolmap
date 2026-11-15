@@ -43,6 +43,7 @@ pub struct Status {
     pub changed_files: usize,
     pub sources: Vec<(String, String)>,
     pub all_sources: Option<bool>,
+    #[ts(type = "unknown | null")]
     pub extraction_cache: Option<serde_json::Value>,
     pub previous_map_reused: Option<bool>,
     pub map_path: Option<PathBuf>,
@@ -50,9 +51,19 @@ pub struct Status {
 
 pub type StatusResponse = QueryEnvelope<Status, Option<MapIdentity>>;
 
+#[derive(Debug)]
+struct InputError(String);
+impl std::fmt::Display for InputError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for InputError {}
+
 fn paths(repo: &Path, data: Option<&Path>) -> Result<(PathBuf, PathBuf)> {
     let output = checked(command(repo, &["rev-parse", "--show-toplevel"]))?;
     let checkout = PathBuf::from(String::from_utf8(output)?.trim()).canonicalize()?;
+    checked(command(&checkout, &["rev-parse", "HEAD^{commit}"]))?;
     let data = match data {
         Some(path) => path.to_owned(),
         None => {
@@ -65,6 +76,13 @@ fn paths(repo: &Path, data: Option<&Path>) -> Result<(PathBuf, PathBuf)> {
                 Sha256::digest(checkout.as_os_str().as_encoded_bytes())
             ))
         }
+    };
+    let data = if data.exists() {
+        data.canonicalize()?
+    } else if data.is_relative() {
+        std::env::current_dir()?.join(data)
+    } else {
+        data
     };
     Ok((checkout, data))
 }
@@ -90,7 +108,7 @@ fn state(checkout: PathBuf, data: PathBuf, create: bool) -> Result<Local> {
     let repository = if let Some(identity) = identity {
         ensure!(
             identity.checkout == checkout,
-            "storage belongs to another repository"
+            InputError("storage belongs to another repository".into())
         );
         identity.repository
     } else {
@@ -145,7 +163,18 @@ pub(super) fn report(s: &Local) -> Result<StatusResponse> {
     } else {
         None
     };
-    let attempt = read_optional::<crate::schema::SnapshotFreshness>(&s.data.join("attempt.json"))?;
+    let mut attempt =
+        read_optional::<crate::schema::SnapshotFreshness>(&s.data.join("attempt.json"))?;
+    if let Some(attempt) = attempt.as_mut() {
+        if matches!(
+            attempt.state,
+            crate::schema::FreshnessState::Queued | crate::schema::FreshnessState::Indexing
+        ) && writer_stopped(&s.data)?
+        {
+            attempt.state = crate::schema::FreshnessState::Failed;
+            attempt.failure_reason = Some("Indexing was interrupted; retry refresh.".into());
+        }
+    }
     let indexed_commit = latest.as_ref().map(|p| p.commit.clone());
     let requested_commit = attempt
         .as_ref()
@@ -283,7 +312,11 @@ pub fn status(args: StatusArgs) -> i32 {
         }
         Err(error) => {
             eprintln!("{error:#}");
-            3
+            if error.downcast_ref::<InputError>().is_some() {
+                2
+            } else {
+                3
+            }
         }
     }
 }
@@ -304,6 +337,24 @@ pub(super) fn lock_store(data: &Path) -> Result<std::fs::File> {
         "local store is busy; stop the local server or wait for refresh"
     );
     Ok(file)
+}
+
+fn writer_stopped(data: &Path) -> Result<bool> {
+    use std::os::fd::AsRawFd;
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.join("writer.lock"))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let stopped = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    if stopped {
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+    }
+    Ok(stopped)
 }
 
 fn selected_sources(repo: &Path, args: &RefreshArgs) -> Result<Option<Vec<(String, String)>>> {
@@ -359,18 +410,18 @@ fn refresh_snapshot(s: Arc<Local>, args: &RefreshArgs) -> Result<()> {
     prepare(&s)?;
     let p = s.prepared.lock().unwrap();
     let p = p.as_ref().context("source preparation failed")?;
-    let (prepared, commit, chosen) = (p.id, p.commit.clone(), p.chosen.clone());
+    let (prepared, commit) = (p.id, p.commit.clone());
     let bare = s
         .data
         .join("prepared")
         .join(prepared.to_string())
         .join("source.git");
     let preview = comparison_preview(&bare, &s.data.join("previews"), &commit)?;
-    let sources = selected_sources(&preview.path.canonicalize()?, args)?;
+    let sources = selected_sources(&preview.path.canonicalize()?, args)
+        .map_err(|error| InputError(format!("{error:#}")))?;
     // Default detection retains the service's low-confidence admission rule.
     // An explicit source selection is owner intent and needs no HTML token.
     drop(preview);
-    let _ = chosen;
     let id = Uuid::new_v4();
     let cancel = Arc::new(Probe {
         stopped: AtomicBool::new(false),
@@ -440,7 +491,11 @@ pub fn refresh(args: RefreshArgs) -> i32 {
         println!("{}", serde_json::to_string(&report(&s)?)?);
         if let Err(error) = result {
             eprintln!("{error:#}");
-            return Ok(3);
+            return Ok(if error.downcast_ref::<InputError>().is_some() {
+                2
+            } else {
+                3
+            });
         }
         Ok(0)
     })();
@@ -448,7 +503,11 @@ pub fn refresh(args: RefreshArgs) -> i32 {
         Ok(code) => code,
         Err(error) => {
             eprintln!("{error:#}");
-            3
+            if error.downcast_ref::<InputError>().is_some() {
+                2
+            } else {
+                3
+            }
         }
     }
 }
