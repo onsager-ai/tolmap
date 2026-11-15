@@ -47,8 +47,9 @@ Ordinary `build` maps can have `map.commit: null`; don't infer freshness from it
 ## Ask a small question, then inspect the source
 
 ```sh
-# Main areas, then locate the CLI and its district:
+# Main areas, then discover the Rust CLI from its manifest and locate it:
 tolmap overview --map "$MAP"
+rg -n -A 2 '^\[\[bin\]\]' Cargo.toml
 tolmap where src/main.rs --map "$MAP"
 # Direct imports and importers before editing:
 tolmap deps src/check.rs --direction both --map "$MAP"
@@ -58,7 +59,8 @@ tolmap where 'src/bin/generate_types.rs::main' --map "$MAP"
 tolmap route src/main.rs src/schema.rs --map "$MAP"
 ```
 
-Paths are exact repository-relative paths, with `/`. JSON is the default;
+`overview` lists districts, not entry landmarks; use manifests/source to discover
+entry paths. Paths are exact repository-relative paths, with `/`. JSON is the default;
 `--format text` is for people. `deps` is direct adjacency, not transitive impact.
 `route` is an **import path**, potentially reversed or undirected as its
 `edge_kind` reports, not a runtime call chain. An empty result is not evidence

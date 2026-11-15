@@ -723,6 +723,8 @@ jobs:
             eta_accuracy.json
 
   # Explicit dispatch only; build HEAD's binary and measure pinned main source.
+  # command=agent-pilot ignores ref/repos/extra_args for measurement; leave
+  # compare_ref empty. Binary ref is the workflow SHA; source pins are in script.
   agent-pilot:
     name: agent payload pilot on tolmap
     needs: setup
