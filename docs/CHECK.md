@@ -4,6 +4,7 @@
 
 ```
 tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
+             [--all-sources | --pkg PATH --lang LANG ...]
              [--max-districts N] [--max-dq X | --report-only] [--format text|json]
 ```
 
@@ -15,6 +16,8 @@ tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
 | `--base <ref>` | the commit the change is measured against. Its map supplies the districts. Any git revision that names a commit |
 | `--head <ref>` | the changed commit. Omitted, head is the working tree: staged, unstaged and untracked (not ignored) files are all included |
 | `--base-map <map.json>` | a stored map of `--base`, used as the base partition instead of building one. See "The base map" below |
+| `--all-sources` | select sources using the same file-count/share floor as `build --all-sources`, on base; conflicts with `--pkg`/`--lang` |
+| `--pkg PATH`, `--lang LANG` | build-style source selection (`py`, `go`, `rs`, `ts`). Repeat both equally and pair positionally. With one flag, detect the omitted language or root on base |
 | `--max-districts N` | fail (exit 1) when the change crosses more than `N` districts |
 | `--max-dq X` | fail (exit 1) when modularity drops by more than `X`, that is when `delta_q < -X`. `X` is a number ≥ 0 |
 | `--report-only` | apply no threshold: report, and exit 0 whatever the numbers. Cannot be combined with `--max-districts` or `--max-dq` (exit 2) |
@@ -46,7 +49,7 @@ A single import moves `Q` by roughly its weight over the graph's total weight. O
 |---|---|
 | 0 | pass: no threshold crossed, or `--report-only` |
 | 1 | a threshold was crossed; the report is still printed |
-| 2 | usage or input error: a bad flag or value, a path that is not in a git repository, a ref that names no commit, a `--base-map` that is missing, unreadable, not a map, or not verifiably from `--base`, detection refused (low confidence) or failed at base, the detected source root missing at head |
+| 2 | usage or input error: a bad flag or value, a path that is not in a git repository, a ref that names no commit, a `--base-map` that is missing, unreadable, not a map, or not verifiably from `--base`, detection refused (low confidence) or failed at base, an explicitly selected source root missing at base or head |
 | 3 | internal error: the check itself failed (extraction, the base build, git failing mid-run, a panic) |
 
 On 2 and 3 nothing is printed on stdout; the reason is on stderr. Consumers depend only on these codes and on the JSON `version`.
@@ -55,7 +58,7 @@ On 2 and 3 nothing is printed on stdout; the reason is on stderr. Consumers depe
 
 The check builds two graphs, one for base and one for head. Each goes through the stages a map build runs before partitioning, with the build's defaults:
 
-1. **Detection** runs on the base checkout. At low confidence it is refused, as the service refuses it. The source it picks is extracted on both sides, so the two graphs describe the same codebase.
+1. **Scope** is resolved on the base checkout. Explicit `--all-sources` or `--pkg`/`--lang` select sources the same way as `build`. Without these flags, a stored base map supplies its recorded `F` files across all languages. Without a stored map, detection picks one source, refusing low confidence as before. Source selection is held fixed on both sides.
 2. **Extraction.**
 3. **Blend and prune:** mass-normalised blending (finding 1) and the `node-relative` prune.
 
@@ -65,7 +68,7 @@ This is the graph the partitioner sees. The base partition `P` is the base map's
 
 This is a correction (issue #176, finding 61). Until then the head graph read head's own history, which is one commit longer. Its 4000-commit window slid by one, and the diff's own commit counted as co-change. `delta_q` moved on commits that touched no mapped file, down to −0.0042 on django (finding 60). That is deeper than the drop from a new cross-district import, which is about −0.0001 to −0.0006. `version` stayed 1. No consumer had shipped against the report, and the correction makes `delta_q` measure what issue #170 specified: the coupling the diff adds or removes.
 
-- **`districts_crossed`**: the number of distinct base districts that hold a changed file. A changed file is one that `git diff --name-status -M` reports as added, modified, deleted or renamed, plus untracked files when head is the working tree. A modified or deleted file counts in its base district, and a renamed file in the base district of its old path. A new file is **placed** in the district that holds the plurality of its resolved imports' targets. Each target is weighted by the blended weight of its edge before pruning, and a tie goes to the lowest district id. A new file with no resolved import into a base district is **unplaced**. It counts toward no district and is listed in `unplaced_files`, never guessed. Changed files that the map does not index (docs, tests, other languages) are ignored.
+- **`districts_crossed`**: the number of distinct base districts that hold a changed file. A changed file is one that `git diff --name-status -M` reports as added, modified, deleted or renamed, plus untracked files when head is the working tree. A modified or deleted file counts in its base district, and a renamed file in the base district of its old path. A new file is **placed** in the district that holds the plurality of its resolved imports' targets. Each target is weighted by the blended weight of its edge before pruning, and a tie goes to the lowest district id. A new file with no resolved import into a base district is **unplaced**. It counts toward no district and is listed in `unplaced_files`, never guessed. Changed files that neither the base map nor the head graph indexes do not affect these metrics; they are listed in `outside_graph` with a reason.
 - **`delta_q`**: `Q(P, G_head) − Q(P, G_base)`. `P` is the base partition extended with the placed new files, and it is the same on both sides; only the graph changes, and nothing is re-partitioned. A negative `delta_q` means the change couples districts to each other more than it couples files within them.
   - **`Q`** is the partition stage's own objective: weighted modularity with the configuration null model, at the build's resolution γ = 1.1. That is `Q = Σ_c [ w_c / m − γ (K_c / 2m)² ]`, where `m` is the total edge weight, `w_c` the weight inside district `c`, and `K_c` the summed weighted degree of its files.
   - **Files that leave the partition.** Deleted files drop out of both sides, together with their edges. Unplaced files drop out of the head side.
@@ -85,7 +88,7 @@ This is a correction (issue #176, finding 61). Until then the head graph read he
 
 Without `--base-map`, `tolmap check` checks `--base` out into a temporary `git worktree` and builds its map there, cold, the way `tolmap build` would. It uses the same detection, resolution, prune and namer as `tolmap build`, but draws no parcels, since parcels never change membership. The worktree is used with hooks off and is removed afterwards. The user's checkout is never touched, and neither is its index. A worktree is used rather than an archive because extraction's co-change signal reads the base commit's `git log`. A second worktree holds `--head` when it is given; it reads the same base history through the object store the worktrees share.
 
-With `--base-map`, the stored map supplies the partition, and the base graph is still extracted, because a map keeps no edge weights. The map document records no commit (docs/ARCHITECTURE.md: the compact schema has no commit field). The service store records it in the file name, `<cache_dir>/maps/<owner>/<repo>/<commit>.json`, and so does the check:
+With `--base-map`, the stored map supplies the partition, and the base graph is still extracted, because a map keeps no edge weights. Unless source flags override it, extraction uses the map's recorded `F` file list, including all recorded languages, rather than detecting a single dominant language. At head it follows recorded files through renames and removes deleted files. New or renamed files can enter the graph when the normal source collector accepts them under the recovered roots and languages; existing files omitted from the snapshot remain outside. Maps do not record package-root metadata, so roots are recovered from recorded paths using the same logic as lens snapshot comparisons (language detection where it encloses all recorded files, repository root otherwise). The map document records no commit (docs/ARCHITECTURE.md: the compact schema has no commit field). The service store records it in the file name, `<cache_dir>/maps/<owner>/<repo>/<commit>.json`, and so does the check:
 
 - The file must be named `<full commit id>.json`.
 - That id must equal the commit `--base` resolves to.
@@ -99,7 +102,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 - **`version` is 1.** Any change to an existing field's meaning or type, and any removal, bumps it. Adding a field does not, so a consumer should ignore fields it does not know, and refuse a version it does not know.
 - **Stable output.** Key order is fixed, and every float is rounded to 6 decimal places. `delta_q` is computed before rounding, and the thresholds compare the rounded values that are printed. The same inputs give a byte-identical report (CLAUDE.md's determinism rule); it holds no timings and no temporary paths.
 - **`head`** is `null` for the working tree.
-- **Added in version 1.** `base_files`, `base_districts` and `thresholds.source` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
+- **Added in version 1.** `base_files`, `base_districts` and `thresholds.source` and `outside_graph` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
 
 | field | type | meaning |
 |---|---|---|
@@ -110,6 +113,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 | `districts_crossed` | number | see above |
 | `districts` | `{id, name, changed_files}[]` | the districts crossed, by id; `name` is the base map's name for it |
 | `files` | `{path, base_path, status, district, placed}[]` | the changed files on the map, by path. `status` is `added`, `modified`, `deleted` or `renamed`; `base_path` is set for a rename only; `district` is `null` for an unplaced file; `placed` is true when the district came from placement |
+| `outside_graph` | `{path, base_path, status, reason}[]` | changed files absent from the indexed changes, sorted by path then base path. Rename metadata and statuses match `files`. `unsupported_language` means no extractor supports the path extension; `not_in_scope` includes omitted source languages/roots, extraction exclusions (for example `.test.ts`) and files omitted from a stored snapshot. Reasons deliberately do not guess which exclusion applied. Does not affect thresholds |
 | `unplaced_files` | string[] | head files with no district, sorted |
 | `modularity_base`, `modularity_head`, `delta_q` | number | see above |
 | `edges_added`, `edges_removed` | `{source, target, source_district, target_district, weight, static_import}[]` | heaviest first, then by path |
@@ -121,6 +125,22 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 ## Text format
 
 The text format starts with three lines: districts crossed, Δq and the verdict. Then comes the edge list: added (`+`) and removed (`−`) cross-district edges merged, heaviest first, with at most 20 shown. Then come context lines for unplaced files and touched landmarks, and last the lower-bound note. JSON lists every edge.
+
+## Polyglot scope example
+
+For a Rust + TypeScript repository, pass `--all-sources` (subject to build's detection floor), or force both sources with `--pkg . --lang rs --pkg web --lang ts`. A stored polyglot map includes both languages without extra flags. A TS-only edit then appears in `files`. With an explicitly Rust-only selection, the same edit is visible as an omission:
+
+```json
+{
+  "version": 1,
+  "files": [],
+  "outside_graph": [
+    {"path": "web/ui.ts", "base_path": null, "status": "modified", "reason": "not_in_scope"}
+  ]
+}
+```
+
+This is a schema excerpt, not a complete report. Previously the excerpt had only `files: []`, silently hiding the UI edit. `outside_graph` is additive, so version stays 1 under the policy above. Exit codes, six-place rounding and default thresholds are unchanged. Pilot impact checks remain advisory by invoking `--report-only`; this does not change the defaults for other callers.
 
 ## Examples
 
