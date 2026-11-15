@@ -1414,6 +1414,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn manifest_entries_keep_reasons_without_python_size_or_count_cap() {
+        let mut data = dominant_outlier_graph();
+        data.edges.clear();
+        data.nodes = ["c.ts", "b.ts", "a.ts"]
+            .into_iter()
+            .map(|file| crate::schema::SourceNode {
+                file: file.into(),
+                loc: 1,
+                code_lines: None,
+                complexity: 0,
+                churn: 0,
+                fanin: 0.0,
+                module: file.into(),
+                lang: "ts".into(),
+            })
+            .collect();
+        data.entry_points = ["a.ts", "b.ts", "c.ts", "unmapped.ts"]
+            .into_iter()
+            .map(|path| (path.into(), format!("package.json: bin {path}")))
+            .collect();
+        let graph = WeightedGraph {
+            node_count: 3,
+            edges: Vec::new(),
+        };
+        let picks = landmarks(&[0, 0, 0], &data, &graph);
+        let entries = picks
+            .iter()
+            .filter(|pick| pick.why == "entry")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|pick| data.nodes[pick.node].file.as_str())
+                .collect::<Vec<_>>(),
+            ["a.ts", "b.ts", "c.ts"]
+        );
+        assert_eq!(entries[0].detail, "package.json: bin a.ts");
+    }
+
     fn edge_names(data: &GraphData) -> BTreeSet<(String, String)> {
         data.edges.iter().map(edge_key).collect()
     }

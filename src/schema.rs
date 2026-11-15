@@ -979,6 +979,17 @@ mod tests {
         assert_eq!(round_trip.uses, data.uses);
         assert_eq!(round_trip.build_output_mirror, 0);
         assert_eq!(serde_json::to_vec(&round_trip).unwrap(), bytes);
+
+        // Entry evidence survives --graph without changing legacy dumps that
+        // have none. It is keyed by paths, independently of indexed edges.
+        let mut entries = round_trip;
+        entries
+            .entry_points
+            .insert("a.go".into(), "Go package main with func main".into());
+        let bytes = serde_json::to_vec(&entries).unwrap();
+        let restored: GraphData = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.entry_points, entries.entry_points);
+        assert_eq!(restored.imports, entries.imports);
     }
 
     /// Issue #115: a nonzero `build_output_mirror` is written and round-trips,

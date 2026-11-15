@@ -216,3 +216,19 @@ fn committed_flask_suggestions_are_current() {
         assert_eq!(text, want, "{name}");
     }
 }
+
+#[test]
+fn rust_fixture_has_entry_landmark_and_entry_route() {
+    let bytes = include_str!("../data/tolmap.json");
+    let map: MapDocument = serde_json::from_str(bytes).unwrap();
+    assert!(map.landmarks.iter().any(|row| row.0 .1 == "entry"));
+    let source = lens_suggest::map_source(Path::new("data/tolmap.json"), bytes.as_bytes());
+    let suggestions = lens_suggest::suggest(&map, &source);
+    let (_, text) = suggestions
+        .lenses
+        .iter()
+        .find(|(name, _)| name == "entry-routes")
+        .expect("Rust entry fixture must suggest an entry route");
+    assert!(!Lens::parse(text).unwrap().paths.is_empty());
+    assert_sound(&suggestions, &map);
+}

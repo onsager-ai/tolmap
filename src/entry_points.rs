@@ -38,7 +38,9 @@ pub(crate) fn detect(repo: &Path, nodes: &[SourceNode]) -> BTreeMap<String, Stri
                         let prefix = join(&dir, "src/bin/");
                         for file in &files {
                             if let Some(rest) = file.strip_prefix(&prefix) {
-                                if (rest.ends_with(".rs") && !rest.contains('/'))
+                                if (rest.ends_with(".rs")
+                                    && rest != "build.rs"
+                                    && !rest.contains('/'))
                                     || rest
                                         .strip_suffix("/main.rs")
                                         .is_some_and(|name| !name.contains('/'))
@@ -216,6 +218,13 @@ fn strings(value: &serde_json::Value, out: &mut BTreeSet<String>) {
 
 fn dist_source(dir: &str, target: &str, files: &BTreeSet<&str>) -> Option<String> {
     let rest = target.trim_start_matches("./").strip_prefix("dist/")?;
+    // A path escaping dist is not evidence of a dist/src mirror.
+    if Path::new(rest)
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return None;
+    }
     let stem = [".js", ".mjs", ".cjs"]
         .into_iter()
         .find_map(|ext| rest.strip_suffix(ext))?;
@@ -363,6 +372,22 @@ mod tests {
         assert!(found["tools/run.rs"].contains("[[bin]].path"));
     }
     #[test]
+    fn cargo_autobins_false_keeps_only_explicit_bins() {
+        let found = entries(&[
+            (
+                "Cargo.toml",
+                "[package]\nname='app'\nautobins=false\n[[bin]]\nname='tool'\npath='tools/run.rs'",
+            ),
+            ("src/main.rs", ""),
+            ("src/bin/a.rs", ""),
+            ("tools/run.rs", ""),
+        ]);
+        assert_eq!(
+            found.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["tools/run.rs"]
+        );
+    }
+    #[test]
     fn package_bin_main_module_exports_and_unique_source() {
         let found = entries(&[
             (
@@ -412,6 +437,19 @@ mod tests {
             found.keys().map(String::as_str).collect::<Vec<_>>(),
             ["src/main.ts"]
         );
+    }
+    #[test]
+    fn vite_custom_root_is_not_assumed() {
+        let found = entries(&[
+            ("package.json", r#"{"devDependencies":{"vite":"1"}}"#),
+            ("vite.config.ts", "export default { root: 'other' }"),
+            (
+                "index.html",
+                r#"<script type="module" src="/src/main.ts"></script>"#,
+            ),
+            ("src/main.ts", ""),
+        ]);
+        assert!(found.is_empty());
     }
     #[test]
     fn go_requires_real_main_declarations() {
