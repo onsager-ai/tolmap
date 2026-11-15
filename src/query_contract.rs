@@ -5,7 +5,21 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const QUERY_SCHEMA: &str = "tolmap.query/v2";
+pub const QUERY_SCHEMA: &str = "tolmap.query/v3";
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct DepsDirections {
+    #[serde(rename = "in")]
+    pub inbound: Option<DirectionCounts>,
+    pub out: Option<DirectionCounts>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+pub struct DirectionCounts {
+    pub total: usize,
+    pub returned: usize,
+    pub omitted: usize,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct QueryEnvelope<T, M = MapIdentity> {
@@ -68,6 +82,7 @@ pub enum Query {
     Deps {
         path: String,
         direction: Direction,
+        directions: DepsDirections,
     },
     Overview {
         files: usize,
