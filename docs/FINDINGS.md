@@ -3680,3 +3680,186 @@ Raw map/symbols/debt sizes are 438,648 / 948,060 / 91,796 bytes.
   transitive impact or precision across other languages or repositories.
 - No semon/duhem pilot, hub access, automatic refresh, viewer baseline change
   or production deployment is part of this measurement.
+
+## 76. Size sweep partly supports cheaper dependency boundaries on large repositories, but default limits hide most hub dependencies
+
+Issue [#303](https://github.com/onsager-ai/tolmap/issues/303). The successful
+[size sweep](https://github.com/onsager-ai/tolmap/actions/runs/43706406473)
+measures binary revision `a44495babe6d8dedcbaef0629b2f15bc82250df6` on five
+new source pins. `eval/agent_sweep.py` records pins, recipes, commands, exit
+codes, source-import audit rules and payload measurements. The retained
+`agent-sweep-<repo>` artifacts contain raw maps/symbols, projections,
+stdout/stderr and `measurements.json`. Reproduce with
+`gh workflow run remote-build.yml --ref <branch> -f command=agent-sweep`;
+the workflow builds its dispatch revision. Pins stay outside parity fixtures.
+
+### Method
+
+As in finding 75, each independent task starts with built artifacts. Bytes are
+UTF-8 stdout/file bytes delivered to an agent, including newlines, not tokens
+or internal I/O. Calls count separate reads/commands/projections in the recipe;
+batching could change them. Build, status, provenance and source-audit setup
+are excluded from task costs. Cold builds use default deterministic names,
+seed 7 and resolution 1.1, without model calls. Each repository runs once on
+its own standard Ubuntu runner, with a roughly 14 GiB address-space cap and a
+30-minute timeout per tolmap command. Git history is pinned with a depth-4000
+horizon; clone time is excluded from build wall time.
+
+The four tasks are orientation (areas plus a pinned application/library entry),
+before-edit direct dependencies for one file, historical review impact, and
+five hotspots plus up to five compact cycles. Four approaches are compared:
+default queries; full JSON followed by a projection; the projection alone for
+an agent that knows the schema; and deterministic grep/read. Orientation reads
+the same root README/manifests on both query and grep sides. Grep additionally
+lists the top level and reads the first 120 entry-file lines. Dependencies use
+literal `rg` candidates plus the full target file. Review uses changed paths
+plus the patch. Debt grep reads import statements plus the five largest scoped
+files: this is a weaker triage heuristic, not equivalent hotspot/cycle evidence.
+
+Review compares the pinned commit to its first parent, except Hono, whose
+release-only HEAD is replaced for this task by merged change
+`0809e48947c43ae20542bc14c0f750b6c6585b4d`. It uses
+`check --report-only --format json` with the same source flags as both current
+and historical base builds. The full-JSON baseline locates changes in the base
+map; it does not reproduce changed-edge or modularity reasoning.
+
+Recall compares map dependency rows with independently parsed explicit imports
+within map `F`, including type-only/test imports where scoped. The script
+retains `rg` evidence, complete target source and expected paths. Python uses
+AST import statements; TypeScript resolves literal relative imports and the
+VS Code `vs/` alias; uv audits explicit imports of the single-file
+`uv_small_str` crate. This audit does not chase re-exports or computed imports.
+Both large targets are deliberately high-fan-in hubs, not representative files.
+
+### Results
+
+All five corrected jobs succeeded. The first
+[attempt](https://github.com/onsager-ai/tolmap/actions/runs/43704072455) failed
+in the measurement script: an incorrect debt count key, an incorrect uv entry
+path, and VS Code auto-detection selecting extensions. Its measurements are not
+pooled with this run. The corrected run uses `crates/uv/src/bin/uv.rs` and the
+actual debt count key `district cycle`.
+
+| Repo | Pinned default-branch HEAD | Source flags | Scoped files | Main-source files | Build wall s | Map / symbols / debt bytes |
+|---|---|---|---:|---:|---:|---:|
+| fastapi | `a3260d49e97b0072c4c0c161d9f63cc3826584b5` | `--all-sources` | 52 | 52 | 0.37 | 154,392 / 120,784 / 19,306 |
+| hono | `f6fbaf0299c48eea9e656e03e2ffe7ac755e8823` | `--all-sources` | 262 | 189 | 1.45 | 386,672 / 390,076 / 27,175 |
+| uv | `d5c3f174417418c24ec3c276e01b0f62b961b13c` | `--all-sources` | 650 | 650 | 5.54 | 1,012,200 / 2,584,545 / 65,501 |
+| transformers | `3a134bc37f7c22c801b618e289b0255425f22647` | `--all-sources` | 3,201 | 3,201 | 35.44 | 4,528,388 / 12,046,469 / 562,234 |
+| vscode | `3ea3ca1d231cae6826355b86b03635ebf0d93068` | `--pkg src --lang ts` | 7,185 | 7,173 | 64.59 | 10,333,692 / 35,527,237 / 511,331 |
+
+Main-source prefixes are `fastapi/`, `src/` for Hono, `crates/` for uv,
+`src/transformers/`, and `src/vs/` for VS Code. All five include their main
+source. Hono's repository-root scope includes additional source outside `src/`;
+uv's tiny benchmark Python package falls below the all-sources floor. VS Code's
+explicit `src` includes core and top-level entries, excluding extensions. Its
+initial automatic scope was only 2,402 extension files. These counts describe
+tolmap's selected source, not every tracked file. FastAPI is at the small end
+of its intended small-to-mid band, while VS Code core remains the largest case;
+no repository was swapped. Map plus symbols spans 0.28–45.86 decimal MB.
+
+Every cost cell below is **bytes / calls**; no cross-task artifact memory is
+assumed. Default dependency costs must be read with the recall table.
+
+| Repo | Task | Full JSON + projection | Default queries | Filtered-only projection | Grep/read |
+|---|---|---:|---:|---:|---:|
+| fastapi | Orient | 310,940 / 4 | 36,838 / 3 | 35,764 / 2 | 39,394 / 2 |
+| hono | Orient | 807,511 / 4 | 29,591 / 3 | 30,763 / 2 | 29,073 / 2 |
+| uv | Orient | 3,639,712 / 4 | 44,295 / 3 | 42,967 / 2 | 42,725 / 2 |
+| transformers | Orient | 16,599,887 / 4 | 26,989 / 3 | 25,030 / 2 | 28,973 / 2 |
+| vscode | Orient | 45,882,863 / 4 | 24,107 / 3 | 21,934 / 2 | 21,933 / 2 |
+| fastapi | Before edit | 155,280 / 2 | 1,528 / 1 | 888 / 1 | 90,580 / 2 |
+| hono | Before edit | 387,051 / 2 | 896 / 1 | 379 / 1 | 12,698 / 2 |
+| uv | Before edit | 1,014,134 / 2 | 2,742 / 1 | 1,934 / 1 | 6,095 / 2 |
+| transformers | Before edit | 4,614,834 / 2 | 3,774 / 1 | 86,446 / 1 | 205,700 / 2 |
+| vscode | Before edit | 10,775,453 / 2 | 3,378 / 1 | 441,761 / 1 | 2,314,765 / 2 |
+| fastapi | Review impact | 154,560 / 3 | 961 / 1 | 171 / 2 | 1,213 / 2 |
+| hono | Review impact | 386,785 / 3 | 729 / 1 | 113 / 2 | 1,031 / 2 |
+| uv | Review impact | 1,006,895 / 3 | 2,552 / 1 | 518 / 2 | 7,348 / 2 |
+| transformers | Review impact | 4,528,558 / 3 | 863 / 1 | 178 / 2 | 1,719 / 2 |
+| vscode | Review impact | 10,335,086 / 3 | 2,069 / 1 | 1,396 / 2 | 34,248 / 2 |
+| fastapi | Debt pick | 20,178 / 2 | 7,077 / 2 | 872 / 1 | 981,508 / 2 |
+| hono | Debt pick | 28,324 / 2 | 7,535 / 2 | 1,149 / 1 | 306,150 / 2 |
+| uv | Debt pick | 69,046 / 2 | 10,982 / 2 | 3,545 / 1 | 2,048,797 / 2 |
+| transformers | Debt pick | 564,039 / 2 | 8,834 / 2 | 1,805 / 1 | 5,954,889 / 2 |
+| vscode | Debt pick | 513,377 / 2 | 9,231 / 2 | 2,046 / 1 | 34,529,374 / 2 |
+
+Recall cells are matched / expected explicit source paths. Complete queries
+request a limit of twice the scoped file count; each costs one call if requested
+initially. The complete map projection has the same underlying edge boundary.
+
+| Repo / target | Default in | Default out | Rows total / returned / omitted | Complete in | Complete out | Complete bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| fastapi `fastapi/params.py` | 6/6 | 4/5 | 11 / 11 / 0 | 6/6 | 4/5 | 1,529 |
+| hono `src/utils/cookie.ts` | 4/4 | 1/1 | 5 / 5 / 0 | 4/4 | 1/1 | 897 |
+| uv `crates/uv-small-str/src/lib.rs` | 19/19 | — (0 expected) | 19 / 19 / 0 | 19/19 | — | 2,744 |
+| transformers `src/transformers/modeling_outputs.py` | 24/751 | 1/2 | 745 / 25 / 720 | 742/751 | 1/2 | 101,792 |
+| vscode `src/vs/base/common/lifecycle.ts` | 25/3,506 | 0/7 | 3,525 / 25 / 3,500 | 3,506/3,506 | 7/7 | 512,698 |
+
+- **Dependency boundaries give partial support for the size hypothesis.**
+  Default payloads remain 0.9–3.8 decimal KB, but the large hub answers are
+  severely incomplete: Transformers default inbound recall is 3.2%, VS Code
+  0.7%. Complete answers are 102 KB and 513 KB, about 2.0× and 4.5× smaller
+  than grep/read, and already resolve paths to districts. These are useful
+  savings, not tiny responses. FastAPI's 90.6 KB grep/read cost is dominated by
+  its large target file; that is target-size noise, not repository-size evidence.
+  Small/mid grep costs also vary, from 6.1 KB for uv to 12.7 KB for Hono.
+- **A shared limit can hide an entire direction.** VS Code's first 25 sorted
+  rows are inbound, starving all seven outbound dependencies. Omitted and
+  `next_limit` fields disclose truncation, but users need per-direction limits
+  and totals so `--direction both` preserves visibility of outbound rows.
+  Retrying after default costs 105,566 bytes / 2 calls for Transformers and
+  516,076 / 2 for VS Code. This finding proposes the query change; it does not
+  change query behavior.
+- **Recall has a source-model mismatch as well as extraction gaps.** FastAPI's
+  audit resolves `from ._compat import Undefined` to `_compat/__init__.py`,
+  because `source_imports` does not chase exports. Tolmap instead returns
+  `_compat/v2.py`; the pinned initializer explicitly re-exports `Undefined`
+  from `.v2`. The literal file comparison reports 4/5 plus one extra, consistent
+  with resolution to the defining file rather than a proven missing dependency.
+  Transformers similarly misses `utils/__init__.py` and has one extra outbound
+  file, but that difference was not individually validated. Its complete
+  inbound boundary misses nine audit paths and includes one extra. VS Code's
+  complete inbound boundary matches every audited path with 12 extras; those
+  extras were not individually classified. These are lower-bound file-import
+  observations, not exact semantic precision scores.
+- **Orientation does not gain a byte advantage over grep as size grows.**
+  Overview plus where costs 1.4–3.3 KB, but shared manifest/README reads cost
+  20.8–41.8 KB and dominate both recipes. Totals are similar; queries add named
+  districts and entry placement. All overviews are complete, with 5, 12, 16,
+  22 and 25 districts in table order. The orientation projections also include
+  entry landmarks, while the query recipe uses a pinned entry and manifests;
+  these payloads are not field-for-field equivalent.
+- **Review and debt show bounded query payloads, not a demonstrated size trend.**
+  Review queries cost 0.7–2.6 KB, versus 1.0–34.2 KB for changed paths plus
+  patch, and add districts/modularity delta. Only VS Code's patch is tens of KB;
+  the selected changes differ, so this is not a controlled scaling result.
+  Debt stays at 7.1–11.0 KB with compact cycles costing 3.8–7.4 KB; filtered
+  projections are smaller at 0.9–3.5 KB and omit contract metadata. Each repo
+  has one returned cycle and no omitted cycles. Hotspots return 3/3 for FastAPI,
+  then 5/14, 5/33, 5/161 and 5/360, explicitly omitting 0, 9, 28, 156 and 355.
+  Grep debt lacks equivalent rankings/cycles, so its large output is not counted
+  as evidence of equivalent-answer savings.
+- **The verdict is partly supported, with weak generality.** Dependency payload
+  savings over grep grow for the two large selected hubs. The full-JSON
+  comparison grows mechanically with map size and is not evidence that agents
+  benefit more. The other three tasks do not establish scaling in tolmap's
+  favor. These five observations motivate better directional truncation, not a
+  blanket claim about large-repository coding performance.
+
+### Not verified
+
+- Five repositories, one target per repository and one run each; no random
+  target sampling, repeated timing, token measurement or agent success study.
+  Both large targets are extreme hubs. Findings do not predict typical files.
+- The source parser is an independent but limited audit, not an exhaustive
+  language resolver. `rg` candidates and audit paths are retained; full manual
+  classification of every match, miss and extra was not performed. Re-exports,
+  computed imports, macros and dynamic dependencies can differ from its model.
+- Grep/read recipes require interpretation and do not provide equivalent named
+  districts, historical structural deltas or debt evidence. No equal-quality
+  task-completion or time-to-answer comparison was measured.
+- Scope is the selected main package/workspace/core, not every repository file;
+  VS Code extensions and FastAPI/Transformers tests outside the package scope
+  are excluded. No fixture/baseline refresh, extraction/query behavior change,
+  semon/duhem pilot, merge or deployment is part of this sweep.
