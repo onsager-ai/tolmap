@@ -1,5 +1,6 @@
 // One inventory drives stories, evidence and route coverage. These are candidates.
 export const cases = [
+  ...['local', 'scan', 'github', 'error'].map(state => [`personal-add-${state}`, `Personal add · ${state}`, '/?add=1', `personal-add-${state}`]),
   ...['list', 'empty-connect', 'empty-add'].map(state => [`hosted-${state}`, `Hosted Home · ${state}`, '/', `hosted-${state}`]),
   ...['list', 'selected-two', 'already-mapped', 'loading', 'empty', 'search-miss', 'unavailable', 'expired', 'reconnect'].map(state => [`add-${state}`, `Add repository · ${state}`, '/?add=1', `add-${state}`]),
   ['batch-progress', 'Batch progress', '/new/batches/fixture', 'batch-progress'],

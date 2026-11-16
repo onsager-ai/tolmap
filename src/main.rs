@@ -29,6 +29,12 @@ enum Command {
     Add(tolmap::personal::AddArgs),
     /// List registrations and last observed freshness; never index or fetch.
     Repos,
+    /// Browse and manage the shared personal repository library.
+    Web {
+        /// Override the configured listener (default 127.0.0.1:8787).
+        #[arg(long)]
+        addr: Option<std::net::SocketAddr>,
+    },
     /// Remove a registration and its tolmap-owned history and source.
     Rm { name: String },
     /// Summarize districts in a stored map (docs/QUERY.md).
@@ -1201,6 +1207,8 @@ fn main() -> Result<()> {
             );
             tolmap::polyglot::run(&repo, &sources, resolution, prune_variant, &out)
         }
+        Command::Web { addr } => tokio::runtime::Runtime::new()?
+            .block_on(tolmap::service::personal_web::serve(data, addr)),
         Command::Serve => {
             let config = tolmap::service::config::ServeConfig::from_env();
             let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;

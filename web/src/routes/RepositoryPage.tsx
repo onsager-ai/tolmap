@@ -6,7 +6,7 @@ import { useJobProgress } from "@/api/useJobProgress";
 import { IndexedTime, RepositoryState } from "@/components/RepositoryMeta";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { AppShell } from "@/components/AppShell";
-import { hostProfile } from "@/host";
+import { hostProfile, personalWeb } from "@/host";
 import { ProgressPage } from "@/routes/IndexJobView";
 import type { JobSnapshot, RepositoryAction, RepositoryHistory, RepositorySnapshot } from "@/types";
 
@@ -72,6 +72,7 @@ export function RepositoryPage() {
       return response.json() as Promise<RepositoryHistory>;
     },
     retry: false,
+    refetchInterval: personalWeb ? query => query.state.data?.status?.kind === "indexing" ? 2000 : 30_000 : false,
   });
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [pending, setPending] = useState(false);
@@ -94,7 +95,7 @@ export function RepositoryPage() {
   async function perform(action: RepositoryAction, leave = false) {
     setPending(true); setError(null);
     try {
-      const response = await fetch(actionPath(action), { method: action.method, headers: { Accept: "application/json" } });
+      const response = await fetch(actionPath(action), { method: action.method, headers: { Accept: "application/json", "Content-Type": "application/json" } });
       if (!response.ok) throw new Error(`Action failed (${response.status}). Please retry.`);
       if (response.headers.get("content-type")?.includes("application/json")) {
         const result = await response.json() as Partial<IndexResponse>;
@@ -120,7 +121,7 @@ export function RepositoryPage() {
       <header data-repository-header className="flex flex-col gap-3"><h1 className="break-words text-title">{data.name}</h1><RepositoryState status={data.status} />
         <div className="flex flex-wrap items-center gap-3 py-1">
           {data.actions.reopen && <OpenAction action={data.actions.reopen}>Open latest map</OpenAction>}
-          {data.actions.reindex && <button type="button" className={`${button} disabled:opacity-50`} disabled={pending} onClick={() => void perform(data.actions.reindex!)}>Re-index</button>}
+          {data.actions.reindex && <button type="button" className={`${button} disabled:opacity-50`} disabled={pending} onClick={() => void perform(data.actions.reindex!)}>{personalWeb ? "Refresh" : "Re-index"}</button>}
           {(data.actions.disconnect || data.actions.delete_repository) && <details className="relative"><summary aria-label="Repository actions" className="repo-control repo-control-ghost repo-control-icon list-none">⋯</summary><div className="repo-menu">
             {data.actions.disconnect && <button className="repo-control repo-control-ghost" onClick={() => confirm({ label: "Disconnect", title: `Disconnect ${data.name}`, description: "Saved snapshots stay, but their maps cannot be opened until you reconnect.", action: data.actions.disconnect! })}>Disconnect</button>}
             {data.actions.delete_repository && <button className="repo-control repo-control-ghost repo-control-danger" onClick={() => confirm({ label: "Delete repository", title: `Delete ${data.name}`, description: "The repository, all snapshots, maps and stored data are removed.", action: data.actions.delete_repository!, typed: data.name, leave: true })}>Delete repository</button>}

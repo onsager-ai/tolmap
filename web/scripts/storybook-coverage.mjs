@@ -1,4 +1,5 @@
 export const REQUIRED_STORIES = [
+  'personal-add-local', 'personal-add-scan', 'personal-add-github', 'personal-add-error',
   'hosted-list', 'hosted-empty-connect', 'hosted-empty-add', 'add-list', 'add-selected-two', 'add-already-mapped', 'add-loading', 'add-empty', 'add-search-miss', 'add-unavailable', 'add-expired', 'add-reconnect', 'batch-progress',
   'home', 'home-empty', 'home-loading', 'home-unavailable',
   'home-repositories', 'repository-history', 'repository-running', 'repository-empty', 'repository-no-capabilities', 'repository-delete-snapshot',

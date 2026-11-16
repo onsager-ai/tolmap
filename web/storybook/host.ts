@@ -3,8 +3,10 @@ import type { HostProfile } from "../src/host";
 export type { HostProfile };
 
 // Build-only substitution. No preview state or fixture branch enters production.
+export let personalWeb = false;
 export let hostProfile: HostProfile | undefined;
 export function setHost(host: string) {
+  personalWeb = false;
   hostProfile = host === "hub" ? {
     version: 1, private: true, workspace: "Acme’s workspace",
     repositories: [{ value: "onsager-ai/tolmap", label: "acme/platform" }],
@@ -17,6 +19,10 @@ export function setHost(host: string) {
 }
 
 export function setOnboardingFixture(state: string) {
+  if (state.startsWith("personal-")) {
+    personalWeb = true;
+    hostProfile = { version: 1, private: true, workspace: "Personal library", repositories: [], actions: [], onboarding: { offered_repositories_path: "/api/personal/scan", batch_index_path: "/api/personal/index", batch_progress_path: "/api/personal/batches/{batch_id}", open_sheet_parameter: "add", install: null, manage_access: null } };
+  }
   // Recovery contracts can be exercised in the OSS preview without a hub profile.
   if (!hostProfile && state === "add-reconnect") hostProfile = { version: 1, private: false, workspace: "", repositories: [], actions: [], onboarding: {
     offered_repositories_path: "/fixture/offered", batch_index_path: "/fixture/batch", batch_progress_path: "/fixture/batches/{batch_id}", open_sheet_parameter: "add", install: null, manage_access: null,

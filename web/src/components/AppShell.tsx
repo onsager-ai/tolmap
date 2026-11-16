@@ -1,7 +1,8 @@
 import "./repository.css";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "@tanstack/react-router";
-import { hostProfile } from "@/host";
+import { hostProfile, personalWeb } from "@/host";
+import { PersonalRepositorySheet } from "@/components/PersonalRepositorySheet";
 import { TolmapLogo } from "@/components/TolmapLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { HostActions, HostActionLink } from "@/components/HostActions";
@@ -23,7 +24,7 @@ export function AddRepositoryProvider({ children }: { children: ReactNode }) {
       window.history.replaceState(window.history.state, "", url);
     }
   }
-  return <AddRepositoryContext.Provider value={() => setOpen(true)}>{children}{open && hostProfile?.onboarding && <AddRepositorySheet onClose={close} />}</AddRepositoryContext.Provider>;
+  return <AddRepositoryContext.Provider value={() => setOpen(true)}>{children}{open && hostProfile?.onboarding && (personalWeb ? <PersonalRepositorySheet onClose={close} /> : <AddRepositorySheet onClose={close} />)}</AddRepositoryContext.Provider>;
 }
 
 export function useAddRepository() { return useContext(AddRepositoryContext); }

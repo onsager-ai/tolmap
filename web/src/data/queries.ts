@@ -11,7 +11,7 @@ import {
   type ServiceCatalogueEntry,
 } from "@/api/client";
 import { fetchJsonTracked } from "@/api/streaming";
-import { hostProfile } from "@/host";
+import { hostProfile, personalWeb } from "@/host";
 
 // The catalogue index is small (one row per repo) -- no streaming/worker
 // parse needed. The map document and district symbols below are the two
@@ -122,7 +122,8 @@ export function useCatalogue() {
     queryKey: ["catalogue", "service"],
     queryFn: getServiceCatalogue,
     enabled: available === true,
-    staleTime: 15_000,
+    staleTime: personalWeb ? 0 : 15_000,
+    refetchInterval: personalWeb ? query => query.state.data?.some(repo => repo.status?.kind === "indexing") ? 2000 : 30_000 : false,
     retry: false,
   });
 

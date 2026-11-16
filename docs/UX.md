@@ -271,6 +271,20 @@ shows *Added* members, and a finding whose measured values changed stays
 
 ### 4.9 Home (artboard "Home")
 
+`tolmap web` uses this repository-list composition for the personal library.
+There is one row per registration, including failed first indexes, and a direct
+Map affordance alongside the repository/history link. The shared shell offers
+Add repository and theme controls. Its add dialog accepts a local path or GitHub source in one field: a checkout can be added directly, or Scan folder discovers checkouts
+with checkboxes and mapped markers. GitHub accepts public owner/name or URL;
+private credentials arrive in a later slice. A single submission opens full
+progress; several open the reloadable batch progress page. Repository pages
+show all retained snapshots, Refresh and typed-confirmation Delete repository.
+Removal preserves the original checkout. Exact snapshot links reopen their map
+and committed source even after the original checkout disappears. Home/history
+poll shared state every two seconds during indexing and every 30 seconds when
+idle, so CLI changes appear while web runs.
+Personal web does not advertise Disconnect or individual snapshot deletion.
+
 OSS Home keeps the “Map a codebase” introduction, a labelled 16 px mono GitHub
 URL field and “Map it”, followed by the repository catalogue in a 640 px column.
 Its controls use the compact sizes below.

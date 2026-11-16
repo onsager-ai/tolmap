@@ -3,6 +3,7 @@ import type { JobSnapshot } from "@/types";
 import type { ProgressValue } from "@bindings/ProgressValue";
 import type { StageId } from "@bindings/StageId";
 import { getJob, jobEventsUrl } from "./client";
+import { personalWeb } from "@/host";
 
 export type JobConnection = "connecting" | "sse" | "poll";
 
@@ -144,7 +145,8 @@ export function useJobProgress(jobId: string | undefined) {
       };
     }
 
-    catchUpThenConnect();
+    if (personalWeb) startPolling();
+    else catchUpThenConnect();
 
     return () => {
       cancelled = true;

@@ -31,7 +31,7 @@ use crate::org::{OrganizationDocument, DOCUMENT_VERSION};
 use crate::worker::WorkerBuild;
 
 pub fn router(state: Arc<AppState>) -> Router {
-    let mut router = Router::new()
+    let router = Router::new()
         .route("/api/index", post(post_index))
         .route("/api/jobs/{job_id}", get(get_job))
         .route("/api/jobs/{job_id}/cancel", post(post_cancel_job))
@@ -73,6 +73,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/maps/{owner}/{repo}/freshness", get(get_freshness))
         .route("/api/healthz", get(get_healthz));
 
+    let router = static_files(router, state.config.static_dir.as_ref());
+    // tower-http's default predicate excludes text/event-stream, so job
+    // progress frames are still flushed as they arrive.
+    router.layer(CompressionLayer::new()).with_state(state)
+}
+
+/// Shared API-safe static bundle and SPA fallback for serve and personal web.
+pub(super) fn static_files<S: Clone + Send + Sync + 'static>(
+    mut router: Router<S>,
+    static_dir: Option<&std::path::PathBuf>,
+) -> Router<S> {
     // Opt-in (TOLMAP_STATIC_DIR unset keeps this identical to before it
     // existed): serve the built web bundle for one-origin deployment
     // (Fly.io, 2026-09-20), with an SPA fallback to `index.html` so
@@ -92,7 +103,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     // ever catches what nothing above already matched), so `/api/*` always
     // gets `ApiError::not_found`, never the SPA fallback. See
     // tests/static_serving.rs.
-    if let Some(static_dir) = &state.config.static_dir {
+    if let Some(static_dir) = static_dir {
         // `.fallback(ServeFile::new(index_html))`, not tower-http's
         // `not_found_service` -- that helper (`SetStatus`) forces the
         // response status to 404 even when it successfully serves
@@ -109,9 +120,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             .fallback_service(serve_dir);
     }
 
-    // tower-http's default predicate excludes text/event-stream, so job
-    // progress frames are still flushed as they arrive.
-    router.layer(CompressionLayer::new()).with_state(state)
+    router
 }
 
 /// Catch-all for any `/api/*` path none of the explicit routes above

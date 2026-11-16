@@ -94,6 +94,10 @@ export async function installFixture(state: string) {
   } : undefined;
   const handler = async ({ request }: { request: Request }) => {
     const url = new URL(request.url), path = url.pathname;
+    if (path === "/api/personal/scan") {
+      if (state === "personal-add-error") return json({ error: "invalid_request", message: "Folder is unavailable" }, 400);
+      return json(["mapped", "app", "tools"].map((name, index) => ({ provider_id: `/home/me/projects/${name}`, full_name: `/home/me/projects/${name}`, visibility: "public", connected_repository_id: index === 0 ? "existing" : null })));
+    }
     if (path === "/fixture/offered") {
       if (state === "add-loading") await delay("infinite");
       if (state === "add-expired") return json({ error: "session_expired" }, 403);

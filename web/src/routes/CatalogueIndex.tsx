@@ -5,7 +5,7 @@ import { ChevronIcon } from "@/components/phone/icons";
 import type { CatalogueEntry } from "@/types";
 import { RepositoryRowActions } from "@/components/RepositoryRowActions";
 import { AppShell, FirstRepositoryAction } from "@/components/AppShell";
-import { hostProfile } from "@/host";
+import { hostProfile, personalWeb } from "@/host";
 import { IndexedTime, RepositoryState } from "@/components/RepositoryMeta";
 
 /** Stable host identities get repository navigation and a direct-map action.
@@ -17,7 +17,7 @@ function RepoRow({ m }: { m: CatalogueEntry }) {
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="truncate font-mono text-row">{m.label ?? m.slug}</span><RepositoryState status={m.status} /></span>
         <span className="text-meta text-[var(--dim)]"><span className="font-mono">{m.files.toLocaleString()}</span> files · <span className="font-mono">{m.districts.toLocaleString()}</span> districts · {m.lang}{m.indexed_at && <> · <IndexedTime value={m.indexed_at} /></>}</span>
       </Link>
-      {m.latest_snapshot_id && <Link to="/$owner/$repo" params={{ owner: m.owner, repo: m.repo }} search={{ geo: "r", layer: "d" }} className="repo-control repo-control-ghost mr-2" aria-label={`Open latest map for ${m.label ?? m.slug}`}>Map <ChevronIcon /></Link>}
+      {m.latest_snapshot_id && <Link to="/$owner/$repo" params={{ owner: personalWeb ? "snapshot" : m.owner, repo: personalWeb ? m.latest_snapshot_id : m.repo }} search={{ geo: "r", layer: "d" }} className="repo-control repo-control-ghost mr-2" aria-label={`Open latest map for ${m.label ?? m.slug}`}>Map <ChevronIcon /></Link>}
       {hostProfile && <RepositoryRowActions repositoryId={m.repository_id} name={m.label ?? m.slug} />}
     </div>
   );

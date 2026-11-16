@@ -37,7 +37,28 @@ export function page(id: string): StoryObj<Args> {
         return element!;
       };
       const click = async (selector: string) => userEvent.click(await waitElement(selector));
-      if (id.startsWith('hosted-')) {
+      if (id.startsWith('personal-add-')) {
+        const sheet = within(await waitElement('dialog[data-personal-add][open]'));
+        expect(sheet.getByRole('button', { name: 'Add and map' })).toBeDisabled();
+        if (id === 'personal-add-github') {
+          await userEvent.type(sheet.getByRole('textbox'), 'acme/public');
+          expect(sheet.getByText(/Public repositories are acquired anonymously/)).toBeVisible();
+          expect(sheet.getByRole('button', { name: 'Add and map' })).toBeEnabled();
+        } else {
+          await userEvent.type(sheet.getByRole('textbox'), '/home/me/projects');
+          if (id === 'personal-add-scan' || id === 'personal-add-error') {
+            await userEvent.click(sheet.getByRole('button', { name: 'Scan folder' }));
+            if (id === 'personal-add-error') await waitFor(() => expect(sheet.getByRole('alert')).toHaveTextContent('Folder is unavailable'));
+            else {
+              await waitFor(() => expect(sheet.getAllByRole('checkbox')).toHaveLength(3));
+              expect(sheet.getAllByRole('checkbox')[0]).toBeDisabled();
+              expect(sheet.getByRole('button', { name: 'Map 2 repositories' })).toBeEnabled();
+              await userEvent.click(sheet.getAllByRole('checkbox')[1]);
+              expect(sheet.getByRole('button', { name: 'Map 1 repository' })).toBeEnabled();
+            }
+          }
+        }
+      } else if (id.startsWith('hosted-')) {
         await waitElement('[data-app-shell]');
         if (id !== 'hosted-list') await waitElement('[data-catalogue-empty]');
         else { await waitElement('[data-catalogue-row] time'); await waitElement('[data-repository-status="indexing"]'); await waitElement('a[aria-label^="Open latest map"]'); }

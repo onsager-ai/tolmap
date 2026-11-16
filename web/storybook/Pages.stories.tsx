@@ -1,5 +1,9 @@
 import { meta, page } from './pages';
 export default { ...meta, title: 'Tolmap/Pages' };
+export const PersonalAddLocal = { ...page('personal-add-local') };
+export const PersonalAddScan = { ...page('personal-add-scan') };
+export const PersonalAddGithub = { ...page('personal-add-github') };
+export const PersonalAddError = { ...page('personal-add-error') };
 export const Home = { ...page('home') };
 export const HomeEmpty = { ...page('home-empty') };
 export const HomeLoading = { ...page('home-loading') };
