@@ -128,16 +128,10 @@ jobs:
           docker run -d --name tolmap-healthz -p 127.0.0.1:8789:8787 -e TOLMAP_BIND_ADDR=0.0.0.0 tolmap:after
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8789/api/healthz -o /tmp/healthz.json && break; sleep 1; done
           cat /tmp/healthz.json
-          python3 - "$COMMIT" <<'PY'
-          import json, sys
-          expected = sys.argv[1]
-          build = json.load(open("/tmp/healthz.json"))["build"]
-          assert build["commit"] == expected, (build, "expected", expected)
-          assert build["commit"] != "unknown", build
-          for name in ("scip-typescript", "scip-python", "scip-go"):
-              assert build["indexers"].get(name), (name, build)
-          print("build identity on GET /api/healthz:", build)
-          PY
+          # tolmap web's healthz is liveness only; build identity on healthz
+          # served the retired distributed-worker match. Indexer pins are
+          # asserted from indexers.json above.
+          python3 -c 'import json; assert json.load(open("/tmp/healthz.json")) == {"ok": True}'
           docker rm -f tolmap-healthz
 
       - name: Build main's image for comparison (before)
