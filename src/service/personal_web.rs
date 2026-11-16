@@ -131,10 +131,11 @@ async fn browser_requests(
             .headers()
             .get(header::HOST)
             .and_then(|v| v.to_str().ok())
-            .and_then(|host| host.parse::<axum::http::uri::Authority>().ok())
-            .is_some_and(|authority| {
-                authority.port_u16().is_some()
-                    && matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]")
+            // `http::uri::Authority::host()` stops at `]`, so `[::1].evil:8787`
+            // would pass as `[::1]`; compare the exact host text instead.
+            .and_then(|host| host.rsplit_once(':'))
+            .is_some_and(|(host, port)| {
+                port.parse::<u16>().is_ok() && matches!(host, "localhost" | "127.0.0.1" | "[::1]")
             });
         if !allowed {
             return ApiError::new(
