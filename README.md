@@ -110,6 +110,19 @@ Build the `Dockerfile` and run `tolmap web`. Configure it with the shared applic
 
 The image binds `0.0.0.0:8787` so a published container port is reachable. There is no authentication: anyone reaching the listener can read source and manage repositories. Publish the port on loopback when access should stay on the host.
 
+To map host checkouts, run the container as the user that owns them. tolmap's git calls ignore global and system git config on purpose, so `safe.directory` cannot help: a bind-mounted checkout owned by another uid (the image defaults to root) fails with git's dubious-ownership error.
+
+```sh
+docker run --rm -p 127.0.0.1:8787:8787 \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/data -e TOLMAP_DATA_DIR=/data \
+  -v "$HOME/.local/share/tolmap-docker:/data" \
+  -v "$HOME/code:/repos:ro" \
+  tolmap
+```
+
+Create the data directory first, as yourself, so the uid can write it. `HOME=/data` gives a non-root uid a writable home (its default is `/`) for config and temporary files. Add repositories as `/repos/<name>` from the browser. As a non-root user the SCIP dependency-install sandbox is unavailable, because nsjail without user namespaces needs root; installs fall back to indexing without them.
+
 The maintainers' own production/staging hosting config (Fly, Railway, pricing and machine sizing) is not in this repo.
 
 ## State
