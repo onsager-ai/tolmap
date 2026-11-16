@@ -1167,15 +1167,6 @@ mod tests {
             vec!["tolmap", "build", "--repo", "engine"],
             vec!["tolmap", "detect", "--repo", "engine"],
             vec!["tolmap", "lens", "suggest", "--repo", "engine"],
-            vec![
-                "tolmap",
-                "local",
-                "/repo",
-                "--data",
-                "/legacy",
-                "--static-dir",
-                "/static",
-            ],
         ] {
             Cli::try_parse_from(args).expect("valid personal selectors");
         }
@@ -1186,6 +1177,9 @@ mod tests {
             ],
             vec!["tolmap", "check", "--map", "map.json", "--commit", "abcdef"],
             vec!["tolmap", "add", "/repo", "--scan", "/projects"],
+            // Retired in #314 PR 4.
+            vec!["tolmap", "local", "/repo"],
+            vec!["tolmap", "serve"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
