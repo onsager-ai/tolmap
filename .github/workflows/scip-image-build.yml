@@ -281,17 +281,21 @@ jobs:
         run: |
           set -euo pipefail
           cp -r tests/fixtures/scip/ts-workspace sandbox/service-fixture
-          git -C sandbox/service-fixture init --quiet
-          git -C sandbox/service-fixture add -A
-          git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
           docker run -d --name tolmap-service --privileged -p 127.0.0.1:8787:8787 \
             -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 \
             -e TOLMAP_DATA_DIR=/srv/data \
-            -v "$PWD/sandbox/service-fixture:/srv/fixture:ro" \
             --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap web'
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8787/api/healthz && break; sleep 1; done
           # Register via CLI; run both actual indexes through web so progress
           # and the root-to-worker uid drop are observed for the same jobs.
+          # tolmap's git ignores global config (no safe.directory), so the
+          # checkout must be owned by the container user: copy it in and
+          # commit there rather than bind-mounting a runner-owned tree.
+          docker cp sandbox/service-fixture tolmap-service:/srv/fixture
+          fixture_git() { docker exec tolmap-service git -C /srv/fixture -c user.name=ci -c user.email=ci@example.invalid "$@"; }
+          fixture_git init --quiet
+          fixture_git add -A
+          fixture_git commit --quiet -m fixture
           if docker exec tolmap-service /app/tolmap add /srv/fixture --name fixture --pkg missing --lang ts; then exit 1; fi
           repository=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["repository_id"])')
           run_job() {
@@ -314,10 +318,10 @@ jobs:
           first_snapshot=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["latest_snapshot_id"])')
           curl -fsS "http://127.0.0.1:8787/api/maps/snapshot/$first_snapshot" -o sandbox/service-map.json
           python3 eval/check_scip_references.py sandbox/service-map.json --expect-install ts=installed
-          first_commit=$(git -C sandbox/service-fixture rev-parse HEAD)
-          echo 'export const third = 3;' > sandbox/service-fixture/packages/core/src/extra.ts
-          git -C sandbox/service-fixture add -A
-          git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m second
+          first_commit=$(fixture_git rev-parse HEAD)
+          docker exec tolmap-service sh -c "echo 'export const third = 3;' > /srv/fixture/packages/core/src/extra.ts"
+          fixture_git add -A
+          fixture_git commit --quiet -m second
           run_job
           second_snapshot=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["latest_snapshot_id"])')
           [ "$first_snapshot" != "$second_snapshot" ]
