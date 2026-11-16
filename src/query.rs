@@ -113,24 +113,6 @@ impl Snapshot {
                 .filter(|s| matches!(s.len(), 40 | 64) && s.bytes().all(|c| c.is_ascii_hexdigit()))
                 .map(str::to_owned)
         });
-        // Local stores published before headless queries keep provenance in
-        // snapshot.json rather than in compact geometry. Bind only map.json
-        // to that sibling; arbitrary build files never inherit checkout HEAD.
-        let commit = if commit.is_none() && path.file_name().is_some_and(|name| name == "map.json")
-        {
-            let metadata = path.with_file_name("snapshot.json");
-            match std::fs::read(metadata) {
-                Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)
-                    .context("invalid local snapshot metadata")?
-                    .get("commit")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error.into()),
-            }
-        } else {
-            commit
-        };
         let identity = MapIdentity {
             repo: map.repo.clone(),
             commit,
@@ -215,9 +197,7 @@ impl Snapshot {
                 None,
             ));
         }
-        let symbols_path = if self.path.file_name().is_some_and(|name| name == "map.json")
-            && self.path.with_file_name("snapshot.json").is_file()
-        {
+        let symbols_path = if self.path.file_name().is_some_and(|name| name == "map.json") {
             self.path.with_file_name("symbols.json")
         } else {
             self.path.with_extension("symbols.json")
@@ -474,16 +454,27 @@ pub fn run_with_data(
     data: Option<&Path>,
     query: impl FnOnce(&Snapshot) -> Result<QueryResponse>,
 ) -> i32 {
-    let report = match crate::personal::resolve_map(
-        options.map.as_deref(),
-        options.repo.as_deref(),
-        options.commit.as_deref(),
-        options.snapshot.as_deref(),
-        data,
-    )
-    .and_then(|p| Snapshot::load(&p))
-    .and_then(|snapshot| query(&snapshot))
-    {
+    let snapshot = (|| -> Result<Snapshot> {
+        if let Some(path) = options.map.as_deref() {
+            return Snapshot::load(path);
+        }
+        let library = crate::personal::Library::open(data)?;
+        let repository = library.resolve(options.repo.as_deref())?;
+        let selected = library.snapshot(
+            &repository,
+            options.commit.as_deref(),
+            options.snapshot.as_deref(),
+        )?;
+        let status = library.status(&repository)?;
+        eprintln!(
+            "{}: snapshot {} at {}; freshness={} dirty={}",
+            repository.name, selected.id, selected.commit, status["freshness"], status["dirty"]
+        );
+        let mut loaded = Snapshot::load(&selected.map_path)?;
+        loaded.identity.commit = Some(selected.commit);
+        Ok(loaded)
+    })();
+    let report = match snapshot.and_then(|snapshot| query(&snapshot)) {
         Ok(report) => report,
         Err(e) => {
             eprintln!("{e:#}");

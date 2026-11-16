@@ -1,6 +1,6 @@
 // docs/UX.md §6 and §12 (phase 4): the indexing, queue and failure pages, and
 // the early handover to the map, driven against scripts/mock-api-server.mjs
-// (viewer-check.yml starts it before Vite; there is no Rust `tolmap serve` in
+// (viewer-check.yml starts it before Vite; there is no Rust `tolmap web` in
 // that job). Called from check-view-stability.mjs's main() with its own
 // `report`, so the counts land in one total.
 //

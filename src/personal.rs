@@ -337,7 +337,7 @@ impl Library {
         repo: &Repository,
         commit: Option<&str>,
         sources: &SourceArgs,
-        control: Option<&crate::local::PersonalControl>,
+        control: Option<&crate::personal_index::PersonalControl>,
     ) -> Result<PersonalSnapshot> {
         let _guard = self.repo_lock(repo)?;
         let current = self
@@ -398,14 +398,12 @@ impl Library {
                     }
                 }
             }
-            let args = crate::local::cli::RefreshArgs {
-                repo: checkout.clone(),
-                data: None,
+            let args = crate::personal_index::RefreshArgs {
                 all_sources: sources.all_sources,
                 pkg: sources.pkg.clone(),
                 lang: sources.lang.clone(),
             };
-            let snapshot = crate::local::cli::personal_refresh(
+            let snapshot = crate::personal_index::personal_refresh(
                 checkout,
                 self.repo_dir(repo),
                 &repo.id,

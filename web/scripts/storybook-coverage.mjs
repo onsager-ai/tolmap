@@ -3,7 +3,6 @@ export const REQUIRED_STORIES = [
   'hosted-list', 'hosted-empty-connect', 'hosted-empty-add', 'add-list', 'add-selected-two', 'add-already-mapped', 'add-loading', 'add-empty', 'add-search-miss', 'add-unavailable', 'add-expired', 'add-reconnect', 'batch-progress',
   'home', 'home-empty', 'home-loading', 'home-unavailable',
   'home-repositories', 'repository-history', 'repository-running', 'repository-empty', 'repository-no-capabilities', 'repository-delete-snapshot',
-  'local-start', 'local-confirm', 'local-running', 'local-cancelling', 'local-detection-failed', 'local-index-failed', 'local-saved',
   'job-missing', 'job-queued', 'job-fetch', 'job-read', 'job-map', 'job-detail',
   'failed-detection-uncertain', 'failed-detection-failed', 'failed-cancelled', 'failed-clone-failed', 'failed-worker-crashed', 'failed-busy', 'failed-server-stopping', 'failed-rate-limited', 'failed-index-failed', 'failed-internal-error', 'failed-unknown',
   'map-overview', 'organization-overview', 'organization-card', 'organization-loading', 'organization-error', 'map-loading', 'map-unavailable', 'map-district', 'map-file', 'map-symbol', 'map-folder', 'map-layer-c', 'map-layer-x', 'map-layer-p', 'map-detail-pending',

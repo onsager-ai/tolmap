@@ -92,7 +92,7 @@ const MIGRATIONS: &[&str] = &[
     // (CLAUDE.md "migrate forward" -- never edit `job_timings`' first
     // migration above).
     "ALTER TABLE job_timings ADD COLUMN peak_rss_bytes INTEGER;",
-    // #97 phase 2 (docs/WORKER_TIER.md §2.2, §6): durable jobs and leases,
+    // #97 phase 2 (the executor contract, §6): durable jobs and leases,
     // written only in worker modes (`TOLMAP_WORKERS=loopback:N`); local
     // mode never reads or writes this table. One row per job:
     // - `status` is the master's internal state, not the public
@@ -133,7 +133,7 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX jobs_status_order ON jobs(status, queue_order);
 "#,
-    // #97 phase 2, step 4 (docs/WORKER_TIER.md §2.1 step 1): the slug a
+    // #97 phase 2, step 4 (the executor contract step 1): the slug a
     // timing row belongs to, so the memory model can predict a job from its
     // own repository's last measurement. Nullable: rows from before this
     // migration have none and only feed the population curve.
@@ -668,7 +668,7 @@ impl Store {
 
     /// Puts a live job at `epoch` back to `queued` on another class (#97
     /// phase 2, step 4: a reroute after `features`, an out-of-memory
-    /// escalation, or a lost worker that died of memory; docs/WORKER_TIER.md
+    /// escalation, or a lost worker that died of memory; the executor contract
     /// §2.1, §6). Its lost workers on the new class start at 0 (§10.6: the
     /// bound is per class). `counted` raises `attempt` for a lost worker; a
     /// reroute or an escalation is not one. Never refuses: moving to a

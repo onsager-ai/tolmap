@@ -5,10 +5,7 @@ use crate::{access, check, schema::*, source};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::Path};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct CompareQuery {
@@ -251,9 +248,4 @@ fn load(path: &Path) -> Result<Comparison, ApiError> {
         ));
     }
     Ok(result)
-}
-
-pub fn public_paths(cache: &Path, owner: &str, repo: &str) -> Result<(String, PathBuf), ApiError> {
-    let r = crate::service::clone::resolve(Some(&format!("{owner}/{repo}")), None)?;
-    Ok((r.slug, cache.join("repos").join(r.owner).join(r.repo)))
 }

@@ -33,10 +33,11 @@ The prepared first npm distribution is for Linux x64 with glibc 2.35 or newer. I
 ```sh
 npm install -g tolmap
 tolmap --help
-npx tolmap local /path/to/private-repository --data "$HOME/.local/share/tolmap/private"
+npx tolmap add /path/to/private-repository
+npx tolmap web
 ```
 
-See [docs/NPM.md](docs/NPM.md) for platform limits, `tolmap local` options, licenses and the gated release process. CI builds and verifies a SHA-tied tarball; it never publishes automatically.
+See [docs/NPM.md](docs/NPM.md) for platform limits, personal library commands, licenses and the gated release process. CI builds and verifies a SHA-tied tarball; it never publishes automatically.
 
 ---
 
@@ -101,18 +102,17 @@ and manage repositories. Home offers local paths, folder scan/multi-select and
 public GitHub; repository pages offer history, Refresh and removal. CLI refreshes
 appear without restarting web. Removal leaves the original checkout alone.
 See [the personal API and configuration](docs/API.md#personal-browser-api-tolmap-web).
-`local` and `serve` remain available for the later retirement slice; their old
-stores are never imported into the personal library.
+Existing data is never discovered or imported. Re-add repositories to start new history; existing files elsewhere are left alone.
 
 ## Self-hosting
 
-Build the `Dockerfile` and run `tolmap serve`. Configure it with the `TOLMAP_*` environment variables in `docs/API.md`'s configuration table, and persist `TOLMAP_CACHE_DIR` and `TOLMAP_DB_PATH` on a volume so the store and clone cache survive a restart.
+Build the `Dockerfile` and run `tolmap web`. Configure it with the shared application settings in `docs/API.md`, and persist `TOLMAP_CACHE_DIR` and `TOLMAP_DB_PATH` on a volume so the store and clone cache survive a restart.
 
 The maintainers' own production/staging hosting config (Fly, Railway, pricing and machine sizing) is not in this repo.
 
 ## State
 
-Working prototype, measured. Not yet a product: see `HANDOFF.md` for what is missing and in what order it should be built.
+Rust CLI and React viewer over one personal library. See `HANDOFF.md` for current boundaries and verification.
 
 Private checkout → map → same-commit source: see [local reading](docs/LOCAL.md).
 

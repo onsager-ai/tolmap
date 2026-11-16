@@ -1,71 +1,41 @@
-//! Acceptance test for the Fly.io deployment change (2026-09-20): one
-//! origin serves both the API and the built web bundle when
-//! `TOLMAP_STATIC_DIR` is set (`src/service/http.rs::router`).
-//!
-//! Drives the real router with `tower::ServiceExt::oneshot`, the same
-//! pattern `tests/service_hardening.rs` uses to exercise handlers without
-//! binding a real socket.
-//!
-//! Three things are load-bearing here, all named directly in the brief
-//! that asked for this change:
-//!   - `TOLMAP_STATIC_DIR` unset: the router is byte-for-byte what it was
-//!     before static serving existed. No fallback registered at all --
-//!     `GET /` gets axum's default "nothing matched" response, not a
-//!     static-file 404 and not `index.html`.
-//!   - `TOLMAP_STATIC_DIR` set: `GET /` and `GET /django/django` (a path
-//!     with no file on disk -- TanStack Router owns it client-side) both
-//!     return `index.html`'s content.
-//!   - `TOLMAP_STATIC_DIR` set: `GET /api/nonexistent` still gets the
-//!     API's own JSON 404 (`ApiError::not_found`), never `index.html`. A
-//!     missing API route returning an HTML page would turn a contract
-//!     error into a JSON parse error in the client.
-
+//! API-safe static bundle serving through the personal web router.
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
 
-use tolmap::service::config::{Limits, ServeConfig};
-use tolmap::service::ratelimit::RateLimiter;
+use tolmap::personal::Library;
+use tolmap::service::application_config::ApplicationConfig;
+use tolmap::service::config::ServeConfig;
+use tolmap::service::personal_web::{self, WebState};
 use tolmap::service::store::Store;
-use tolmap::service::{http, jobs, AppState};
 
-/// A real `AppState` with `static_dir` set to `static_dir` (or left `None`
-/// when `static_dir` is `None`) -- everything else at its normal default,
-/// same as `tests/service_hardening.rs`'s `state_with_limits`.
 fn state_with_static_dir(
     static_dir: Option<std::path::PathBuf>,
-) -> (tempfile::TempDir, Arc<AppState>) {
+) -> (tempfile::TempDir, Arc<WebState>) {
     let dir = tempfile::tempdir().unwrap();
-    let cache_dir = dir.path().join("cache");
-    let db_path = dir.path().join("tolmap.sqlite3");
-    let store = Store::open(&db_path).unwrap();
     let config = ServeConfig {
-        bind: "127.0.0.1:0".parse().unwrap(),
-        allow_local_paths: false,
-        db_path,
-        cache_dir,
+        db_path: dir.path().join("tolmap.sqlite3"),
+        cache_dir: dir.path().join("cache"),
         static_dir,
-        organization_dir: None,
-        prune_variant: tolmap::pipeline::PruneVariant::NodeRelative,
-        namer: tolmap::naming::NamerKind::Idf,
-        namer_model: tolmap::naming::DEFAULT_MODEL.to_owned(),
-        refs: tolmap::extract::RefsMode::Hand,
-        scip_install: false,
-        limits: Limits::default(),
-        retain_commits_per_repo: 20,
-        // Unused here -- this suite never spawns a worker.
-        worker_uid: 0,
-        worker_gid: 0,
+        ..ServeConfig::from_env()
     };
-    let state = Arc::new(AppState {
-        store,
-        config,
-        jobs: jobs::new_registry(),
-        rate_limiter: RateLimiter::new(),
+    let state = WebState::new(Library {
+        store: Store::open(&config.db_path).unwrap(),
+        config: ApplicationConfig {
+            data: dir.path().into(),
+            service: config,
+            retain_commits_per_repo: None,
+        },
     });
     (dir, state)
+}
+fn router(state: Arc<WebState>) -> axum::Router {
+    personal_web::router(
+        state.library.config.service.static_dir.as_ref(),
+        state.clone(),
+    )
 }
 
 /// A directory with an `index.html` a test can recognise by its body, the
@@ -80,10 +50,11 @@ fn bundle_dir() -> tempfile::TempDir {
     dir
 }
 
-async fn get(state: Arc<AppState>, path: &str) -> (StatusCode, String) {
-    let router = http::router(state);
+async fn get(state: Arc<WebState>, path: &str) -> (StatusCode, String) {
+    let router = router(state);
     let request = Request::builder()
         .method("GET")
+        .header("host", "localhost:8787")
         .uri(path)
         .body(Body::empty())
         .unwrap();
@@ -142,10 +113,11 @@ async fn static_map_file_uses_gzip_when_accepted() {
     let map = format!("{{\"files\":{:?}}}", vec!["district"; 100]);
     std::fs::write(bundle.path().join("maps/example.json"), &map).unwrap();
     let (_dir, state) = state_with_static_dir(Some(bundle.path().to_path_buf()));
-    let response = http::router(state)
+    let response = router(state)
         .oneshot(
             Request::builder()
                 .uri("/maps/example.json")
+                .header("host", "localhost:8787")
                 .header(header::ACCEPT_ENCODING, "gzip")
                 .body(Body::empty())
                 .unwrap(),

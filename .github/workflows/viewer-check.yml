@@ -100,7 +100,7 @@ jobs:
             tar -xzf "$f" -C "public/maps/${slug%%__*}"
           done
       # Issue #97: the job-page checks below need a running job service --
-      # there is no Rust `tolmap serve` in this job, so scripts/mock-api-
+      # there is no Rust `tolmap web` in this job, so scripts/mock-api-
       # server.mjs stands in for it (docs/API.md's contract, scripted
       # stages/progress/eta/cancel; see that file's own header comment).
       # Started before Vite so TOLMAP_API_PROXY_TARGET points the dev

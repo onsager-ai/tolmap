@@ -14,8 +14,8 @@ Freeze them at v0.1. New work goes in the Rust/TS tree.
 | layer | choice | notes |
 |---|---|---|
 | indexer | Rust | tree-sitter is a Rust/C library; this is native ground, not a compromise |
-| store | SQLite embedded, Postgres for hosted | see source-of-truth below |
-| API | axum | JSON, plus SSE for indexing progress |
+| store | SQLite embedded | see source-of-truth below |
+| API | axum | JSON with durable progress polling |
 | frontend | React + TypeScript + Vite | |
 | UI | Tailwind + shadcn | chrome, panels, cards |
 | data/routing | TanStack Query + TanStack Router | Router also closes the shareable-URL gap the prototype has |
@@ -68,8 +68,7 @@ in `$XDG_CONFIG_HOME/tolmap/config.toml` or `$HOME/.config/tolmap/config.toml`.
 The service SQLite store owns registrations (stable UUID, unique display name,
 source identity), durable attempts, and personal snapshot rows keyed by UUID.
 Publication sequence defines latest; commits are not unique snapshot keys.
-The existing public `(slug, commit)` tables keep their own behavior while
-`serve` remains available. No old stores are discovered, read or imported.
+SQLite migration history remains intact. No existing data is discovered, read or imported.
 
 Personal indexing reuses local independent Git capture and atomic artifact
 publication. Each successful refresh retains its map, names, symbols, extraction
@@ -90,39 +89,6 @@ use `/snapshot/{id}` so repeated commits retain distinct map/source identities.
 Home, history and job reads poll shared state; the CLI never depends on a web
 process. Settings need restart, committed data changes do not. There is no auth;
 loopback is default and off-loopback startup prints the explicit exposure warning.
-
-## Historical public MVP direction
-
-The first product is a website in the shape of DeepWiki — paste a repository, get a map, no install. The map of a repository lives at `/<owner>/<repo>`, with no forge prefix: `<host>/scrapy/scrapy`.
-
-Two consequences of dropping the prefix, both worth handling on day one rather than discovering later. The router must **reserve its own top-level names** (`about`, `docs`, `api`, `new`, `settings`, `assets`, and anything else the app will ever want) before any of them collides with a real GitHub owner. And the scheme leaves no room to disambiguate a second forge, so supporting GitLab later means a query parameter, a separate host, or breaking the URLs. DeepWiki accepted the same trade; it is a reasonable one, but it is a decision, not a default.
-
-DeepWiki answers *what is this code*. tolmap answers *where is it and what does it reach*. The two are complementary, and the positioning line is that one produces prose and the other produces a place.
-
-### What a public endpoint forces that a CLI does not
-
-**Auto-detection. This is the largest piece of unbuilt work in the MVP, and it is easy to underestimate.** The reference CLI requires `--pkg lib/sqlalchemy --lang py`. Nobody pasting a URL will supply that, and getting it wrong does not fail loudly — it produces a sparse graph and a plausible-looking wrong map (finding 7). Detection needs to be its own module with its own tests:
-
-- Language: count source files by extension, excluding vendored and generated trees.
-- Source root, per ecosystem: `go.mod` puts it at the repo root; `pyproject.toml` or `setup.py` points at `src/<pkg>` or a top-level package directory; `package.json` plus `tsconfig.json` points at `src` or a `packages/*` workspace.
-- Exclusions: tests, fixtures, vendor, generated code, examples. The prototype's list is a starting point, not a complete one.
-- Confidence: when detection is uncertain, the site should say what it chose and let the user override, rather than silently mapping the wrong tree.
-
-**Polyglot repositories.** Most real repositories are not one language. The prototype maps one language per run; the Rust port merges (`extract::build_multi_source`, `tolmap build --all-sources`/`--pkg`×N `--lang`×N). A candidate below either `--all-sources` floor (`ALL_SOURCES_MIN_FILES = 25` or `ALL_SOURCES_MIN_SHARE`) is dropped before merging. For example, tolmap's `pyproject.toml` correctly finds the frozen `src/tolmap` Python reference at high confidence, but its eight files fall below the 25-file floor; it is excluded by that floor, not an explicit frozen-reference policy. Merging is the better answer, because districts are about concerns and a concern crosses languages. Cross-language *import* edges genuinely do not resolve — `static` is architecturally zero across a language boundary, since resolution only ever looks a target up in its own source's known-file set — but the once-stated corollary, "co-change becomes the only signal that bridges languages," was measured (`docs/FINDINGS.md` finding 13, `tolmap polyglot-report`) and is false as stated: `proximity` (a path-prefix ratio) and `semantic` (IDF over an identifier vocabulary pooled across every source) both cross too, on both a synthetic fixture and a real repository (prometheus at its pinned commit, which turned out to carry a 78-file TypeScript UI). Their cross-language share is usually small (0.06%–14.4% of each signal's own mass, across the two corpora measured) and `cochange` is typically the largest bridge in absolute terms, but "the only signal" is wrong, not just imprecise — keep β meaningful, but do not architect around static/semantic/proximity contributing literally nothing across languages, because they don't.
-
-**Polyglot is the first port feature with no oracle behind it.** The frozen Python reference maps one language per run; all nine fixtures in `data/` are single-language, and `CLAUDE.md`'s ≥95% placement / 0.02 modularity acceptance gate is defined against that reference's output — there is no reference merged map to gate a polyglot port against, and there will not be one without extending the frozen Python, which `CLAUDE.md` rules out. Two numbers replace byte parity as the polyglot contract: the projection-drift retention (how much a language's own district assignment moves when another language is merged in — measurably nonzero, 51%–100% retention across the two corpora measured) and the synthetic fixture `eval/gen_synthetic_polyglot_fixture.py` generates and CI checks on every push (three `--all-sources` builds byte-identical to each other, plus `tolmap polyglot-report`'s NMI and below-prune-floor share under the ceilings `docs/FINDINGS.md` finding 13 records). Modularity alone cannot be the polyglot acceptance gate: it looks equally good whether a merge found genuine cross-language structure or simply redrew each language's own file extension as a district boundary (NMI against the language label near 1.0 is the tell, not q) — see finding 13's two-corpus comparison.
-
-**Indexing is a job, not a request.** Django took minutes in Python. Submit, queue, work, stream progress over SSE, cache by `(repo, commit_sha)`. A second visitor to the same commit gets the cached map.
-
-**Clone strategy.** Co-change needs commit history, so a depth-1 clone is not enough. `--filter=blob:none` gives the full commit graph without file contents, then the working tree is materialised once — that is what the prototype used and it is the right default. Budget disk and evict.
-
-**Capacity policy (owner decision, 2026-09-24; issue #97).** No file-count, clone-size, history-depth or wall-time admission caps. Large jobs may take a long time or fail if the current worker runs out of memory. Keep per-IP and per-repo request rate limits, a bounded queue, and LRU clone-cache eviction. The worker/master scaling design is tracked in issue #97 and specified in `docs/WORKER_TIER.md`.
-
-### MVP scope, explicitly
-
-In: public GitHub repos, auto-detection, the map view with districts, landmarks, search, blast radius, and a shareable URL.
-
-Out: private repos and auth, the committed-layout mode, `tolmap check`, incremental indexing, symbol-precise references via SCIP. All of these are real and all of them are after the site exists.
 
 ## Rendering: do not put nodes in the React tree
 
@@ -173,10 +139,7 @@ An organization map is composition, not a larger clustering run. A checked-in
 manifest names each public member repository and pins it to a full commit.
 `tolmap org check` validates that manifest; `tolmap org build` reads the
 committed member trees, resolves declared package dependencies, places the
-member maps as whole regions, and writes an `OrganizationDocument`. The service
-serves that prebuilt document only when every pin's immutable member map is in
-the store; the viewer composes its repository and district outlines with the
-resolved inter-repository roads.
+member maps as whole regions, and writes an `OrganizationDocument`. Organization composition stays available through the CLI; its HTTP endpoint is retired.
 
 The organization layer never mutates, re-clusters, or re-lays out a member map,
 and it computes no cross-repository modularity. Dependency, external and
@@ -188,26 +151,16 @@ specifications after the composition contract is stable.
 
 The map JSON is the contract between indexer and viewer. Define it once as Rust types and generate the TypeScript from them (`ts-rs` or `typeshare`) rather than maintaining two hand-written definitions. The current shape is in `data/*.json`; the compact index-addressed layout (`F`, `N`, `E`, `L`, `S`, `U`) exists because nine maps had to fit in one HTML page, and can be relaxed now that data is fetched. Optional `D` sidecars retain debt-only evidence without changing `E` or any blending, clustering or layout input: `D.generated` is file-indexed header detection, with an optional ts-rs generator-file index only for a unique `#[derive(... TS ...)]` Rust struct or enum match. `D.package_roots` records sorted Cargo, npm, Go and Python package directories, so debt cycles can be projected onto build units without changing the map.
 
-## Milestones
+## Current application boundaries
 
-The MVP is the site, so the order below front-loads what the site needs and defers what only teams-with-repos need.
+`personal` owns registry resolution, acquisition and operations. `personal_index`
+retains independent committed source and runs the shared executor. `personal_web`
+adapts that library to HTTP and React. `service::http` owns static bundle routing;
+`service::jobs` owns shared progress response types. The executor retains process
+isolation, cancellation and SCIP sandboxing. Distributed scheduling, network worker
+listeners, public catalogue admission and request rate limits are removed.
 
-1. **Indexer parity.** Rust `tolmap build` reproduces the nine reference maps within the acceptance thresholds. No UI, no server. The Leiden risk lives here, so it goes first and alone.
-2. **Auto-detection.** Given only a clone, choose language and source root, and report confidence. Test it against the nine reference repos, whose correct answers are already known, plus a handful of deliberately awkward ones (a monorepo, a repo with `src/` and no package metadata, a polyglot service).
-3. **Job service.** axum, SQLite, a queue, clone management, SSE progress, cache by `(repo, commit_sha)`, and the limits above.
-4. **Viewer port.** React/TS shell, imperative map surface, URL state via TanStack Router — which is also the shareable link the prototype lacks.
-5. **Ship the site.** `<host>/<owner>/<repo>`, with reserved top-level names in place from the first route.
-
-Then, in whatever order demand dictates: incremental indexing, `tolmap check` for CI, the committed-layout mode, SCIP-precise references, private repos.
-
-## Persisted comparisons
-
-`comparison` wraps the existing check library with immutable provenance and
-atomic no-clobber storage. The service's public adapter and the local snapshot
-adapter supply trusted repository/map paths; protected embeddings enforce the
-same generic resource policy used for source access. Comparison cache identities
-include both commits, effective thresholds, implementation revision and exact
-base-map bytes. React owns comparison URL state and lists; the imperative
-renderer decorates existing visible geometry. The base map remains the frame
-while commit-specific source is read. No incremental pipeline or partitioning
-algorithm changes are involved. See [CHECK.md](CHECK.md#comparison-resource-224).
+The `access` module remains an opt-in embedding contract. The standalone personal
+router does not authenticate or call it. Comparison/provenance library helpers stay
+for CLI and protected embedders; comparison HTTP endpoints are retired. SQLite
+migration history is unchanged. See [ACCESS.md](ACCESS.md).

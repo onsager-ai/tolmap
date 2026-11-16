@@ -23,23 +23,6 @@ pub struct Limits {
     /// pending requests still need a bounded queue on one worker.
     /// Env: `TOLMAP_MAX_QUEUED_JOBS`.
     pub max_queued_jobs: usize,
-    /// Requests per window, per source IP, across all endpoints under
-    /// `/api/`. A generous default -- this is a floor against accidental
-    /// hammering (a retry loop, a misconfigured client), not a product
-    /// throttle.
-    ///
-    /// Env: `TOLMAP_RATE_LIMIT_PER_IP` / `TOLMAP_RATE_LIMIT_WINDOW_SECONDS`.
-    pub rate_limit_per_ip: u32,
-    pub rate_limit_window_seconds: u64,
-    /// `POST /api/index` requests for the same slug within the window.
-    /// Tighter than the per-IP limit: re-requesting the same repo
-    /// repeatedly is the specific abuse pattern this guards (each request
-    /// that misses cache burns a full clone + index), independent of who
-    /// is asking.
-    ///
-    /// Env: `TOLMAP_RATE_LIMIT_PER_REPO` / `TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS`.
-    pub rate_limit_per_repo: u32,
-    pub rate_limit_per_repo_window_seconds: u64,
 }
 
 impl Default for Limits {
@@ -48,10 +31,6 @@ impl Default for Limits {
             clone_cache_bytes: 2 * 1024 * 1024 * 1024,
             max_concurrent_jobs: 1,
             max_queued_jobs: 16,
-            rate_limit_per_ip: 30,
-            rate_limit_window_seconds: 60,
-            rate_limit_per_repo: 3,
-            rate_limit_per_repo_window_seconds: 300,
         }
     }
 }
@@ -73,19 +52,6 @@ impl Limits {
             )
             .max(1),
             max_queued_jobs: env_var_or("TOLMAP_MAX_QUEUED_JOBS", default.max_queued_jobs),
-            rate_limit_per_ip: env_var_or("TOLMAP_RATE_LIMIT_PER_IP", default.rate_limit_per_ip),
-            rate_limit_window_seconds: env_var_or(
-                "TOLMAP_RATE_LIMIT_WINDOW_SECONDS",
-                default.rate_limit_window_seconds,
-            ),
-            rate_limit_per_repo: env_var_or(
-                "TOLMAP_RATE_LIMIT_PER_REPO",
-                default.rate_limit_per_repo,
-            ),
-            rate_limit_per_repo_window_seconds: env_var_or(
-                "TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS",
-                default.rate_limit_per_repo_window_seconds,
-            ),
         }
     }
 }
@@ -117,18 +83,6 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_BIND_ADDR`.
     pub bind: SocketAddr,
-    /// Accept `{"path": ...}` (index a directory on the server's disk) on
-    /// `POST /api/index` when `bind` is not loopback. Off by default: a
-    /// service reachable off-box must not read arbitrary server
-    /// directories named in a request body (issue #226). A loopback bind
-    /// always accepts it, so local development is unchanged. The
-    /// predicate is the bind address, not the peer: behind Docker port
-    /// publishing or a reverse proxy the peer is never loopback even for
-    /// the operator, while a loopback bind is reachable only from the
-    /// host itself.
-    ///
-    /// Env: `TOLMAP_ALLOW_LOCAL_PATHS=1`.
-    pub allow_local_paths: bool,
     pub db_path: PathBuf,
     pub cache_dir: PathBuf,
     /// Serve the built web bundle (and fall back unmatched non-`/api`
@@ -143,13 +97,6 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_STATIC_DIR`.
     pub static_dir: Option<PathBuf>,
-    /// Directory of prebuilt organization documents. The service reads
-    /// `<name>.json` from this directory only after every pinned member map
-    /// is present in its immutable store; it never accepts paths or URLs from
-    /// an HTTP request and never indexes a member for this endpoint.
-    ///
-    /// Env: `TOLMAP_ORGANIZATIONS_DIR`.
-    pub organization_dir: Option<PathBuf>,
     /// Select the blend/prune route for maps built by the job service.
     /// Node-relative is the owner-approved default; every measured route
     /// remains available for controlled comparisons.
@@ -216,8 +163,6 @@ pub struct ServeConfig {
 impl ServeConfig {
     /// Reads overridable settings from the environment
     /// (`TOLMAP_PORT`, `TOLMAP_BIND_ADDR`, `TOLMAP_DB_PATH`,
-    /// `TOLMAP_CACHE_DIR`, `TOLMAP_STATIC_DIR`, `TOLMAP_ORGANIZATIONS_DIR`,
-    /// `TOLMAP_ALLOW_LOCAL_PATHS`, `TOLMAP_PRUNE_VARIANT`,
     /// `TOLMAP_RETAIN_COMMITS_PER_REPO`, plus
     /// `Limits::from_env`'s
     /// `TOLMAP_CLONE_CACHE_BYTES`/queue/rate variables); anything left unset uses its
@@ -238,13 +183,6 @@ impl ServeConfig {
         // take the service down at startup (same handling as every
         // queue/rate variable).
         let bind_ip = env_var_or("TOLMAP_BIND_ADDR", IpAddr::V4(Ipv4Addr::LOCALHOST));
-        // Only an explicit `1` opts in; see the `allow_local_paths` field.
-        let allow_local_paths = matches!(
-            env::var("TOLMAP_ALLOW_LOCAL_PATHS")
-                .as_deref()
-                .map(str::trim),
-            Ok("1")
-        );
         let cache_dir = env::var("TOLMAP_CACHE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| env::temp_dir().join("tolmap-cache"));
@@ -254,7 +192,6 @@ impl ServeConfig {
         // Unset (the default) keeps the router exactly as it is without
         // this -- see the `static_dir` field's doc comment.
         let static_dir = env::var("TOLMAP_STATIC_DIR").ok().map(PathBuf::from);
-        let organization_dir = env::var("TOLMAP_ORGANIZATIONS_DIR").ok().map(PathBuf::from);
         let prune_variant = env_var_or("TOLMAP_PRUNE_VARIANT", PruneVariant::default());
         let namer = env_var_or("TOLMAP_NAMER", NamerKind::Idf);
         let namer_model =
@@ -278,11 +215,9 @@ impl ServeConfig {
         let worker_gid = env_var_or("TOLMAP_WORKER_GID", 10001u32);
         ServeConfig {
             bind: SocketAddr::new(bind_ip, port),
-            allow_local_paths,
             db_path,
             cache_dir,
             static_dir,
-            organization_dir,
             prune_variant,
             namer,
             namer_model,
@@ -335,10 +270,6 @@ mod tests {
             "TOLMAP_CLONE_CACHE_BYTES",
             "TOLMAP_MAX_CONCURRENT_JOBS",
             "TOLMAP_MAX_QUEUED_JOBS",
-            "TOLMAP_RATE_LIMIT_PER_IP",
-            "TOLMAP_RATE_LIMIT_WINDOW_SECONDS",
-            "TOLMAP_RATE_LIMIT_PER_REPO",
-            "TOLMAP_RATE_LIMIT_PER_REPO_WINDOW_SECONDS",
         ];
         for key in keys {
             env::remove_var(key);
@@ -350,16 +281,13 @@ mod tests {
         assert_eq!(from_env.clone_cache_bytes, defaults.clone_cache_bytes);
         assert_eq!(from_env.max_concurrent_jobs, 1);
         assert_eq!(from_env.max_queued_jobs, 16);
-        assert_eq!(from_env.rate_limit_per_repo, defaults.rate_limit_per_repo);
 
         // Set: the environment value wins, without a rebuild.
         env::set_var("TOLMAP_CLONE_CACHE_BYTES", "1024");
-        env::set_var("TOLMAP_RATE_LIMIT_PER_IP", "5");
         env::set_var("TOLMAP_MAX_CONCURRENT_JOBS", "2");
         env::set_var("TOLMAP_MAX_QUEUED_JOBS", "4");
         let overridden = Limits::from_env();
         assert_eq!(overridden.clone_cache_bytes, 1024);
-        assert_eq!(overridden.rate_limit_per_ip, 5);
         assert_eq!(overridden.max_concurrent_jobs, 2);
         assert_eq!(overridden.max_queued_jobs, 4);
 

@@ -49,7 +49,7 @@ fn discover_system_prefix() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Build identity (docs/WORKER_TIER.md §3.6): bakes `TOLMAP_BUILD_COMMIT`
+/// Build identity (the executor contract): bakes `TOLMAP_BUILD_COMMIT`
 /// into the binary as a compile-time env var (`option_env!` in
 /// `service::workers::build_commit`), so a mismatched worker build stays
 /// idle rather than racing the master to write a map (#153's departure 5,

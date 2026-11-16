@@ -60,13 +60,10 @@ success invalidates catalogue/history, so deleting the latest exposes its predec
 The server owns principal checks, CSRF protection, typed-confirmation enforcement
 if required, auditing and artifact purge. Capabilities only govern presentation.
 
-`tolmap serve` exposes retained commit history at the same endpoint, with the
-lowercase `owner/repo` slug as identity (URL-encoded into one segment). It advertises
-reopen only, and unknown core provenance stays null. Its public catalogue omits
-`repository_id` to preserve existing direct-map navigation. A repository with only
-one retained map returns a one-item history. Native local history and same-commit
-reuse are deferred: existing local metadata does not persist core revision or
-analysis scope, and changing the approved native template requires owner review.
+`tolmap web` exposes registration history at this endpoint, with stable registry
+IDs and exact snapshot IDs. Same-commit snapshots remain distinct and source is
+retained independently from the checkout. Host embeddings keep their own identity
+and authorization rules.
 
 ## Repository onboarding and batches (#297)
 
@@ -112,4 +109,4 @@ shows the state’s copy without a recovery button. Other errors retain
 provider-unavailable copy with Retry. Sessions and provider permission remain
 server authority. Single jobs use the existing `/new` flow;
 multiple jobs use the core route `/new/batches/<batch-id>`. No capability means
-no sheet, and `tolmap serve` needs no changes to implement this optional contract.
+no sheet, and `tolmap web` needs no changes to implement this optional contract.

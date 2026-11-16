@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 pub struct ApplicationConfig {
     pub data: PathBuf,
     pub service: ServeConfig,
-    /// None retains every personal snapshot (the public service keeps its policy).
+    /// None retains every personal snapshot.
     pub retain_commits_per_repo: Option<usize>,
 }
 
@@ -85,7 +85,6 @@ impl ApplicationConfig {
         let mut service = ServeConfig::from_env();
         service.bind = "127.0.0.1:8787".parse().unwrap();
         service.static_dir = None;
-        service.organization_dir = None;
         service.prune_variant = crate::pipeline::PruneVariant::default();
         service.namer = crate::naming::NamerKind::Idf;
         service.namer_model = crate::naming::DEFAULT_MODEL.into();
@@ -103,9 +102,6 @@ impl ApplicationConfig {
         }
         if let Some(v) = setting("static_dir") {
             service.static_dir = Some(v.into());
-        }
-        if let Some(v) = setting("organizations_dir") {
-            service.organization_dir = Some(v.into());
         }
         if let Some(v) = setting("prune_variant") {
             service.prune_variant = v.parse().map_err(anyhow::Error::msg)?;

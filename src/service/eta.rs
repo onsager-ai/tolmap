@@ -22,7 +22,7 @@ pub struct TimingRow {
     pub peak_rss_bytes: Option<u64>,
     /// The repository the row measured (#97 phase 2, step 4), for
     /// `MemoryModel::predict_for`'s "this slug's own last measurement"
-    /// (docs/WORKER_TIER.md §2.1 step 1). `None` for a row written before
+    /// (the executor contract step 1). `None` for a row written before
     /// it existed, which then only feeds the population curve.
     #[serde(default)]
     pub slug: Option<String>,
@@ -339,11 +339,11 @@ impl EtaModel {
 }
 
 // ---------------------------------------------------------------------
-// Memory: docs/WORKER_TIER.md #2.1 needs a predicted peak RSS next to the
+// Memory: the executor contract #2.1 needs a predicted peak RSS next to the
 // time model above, so class selection has something to compare against an
 // agent's advertised memory. Phase 0 (this file) only builds and tests the
 // model; nothing here reaches `JobSnapshot`, the API or a worker class --
-// there is exactly one class today (docs/WORKER_TIER.md #10.1), so nothing
+// there is exactly one class today (the executor contract #10.1), so nothing
 // consumes a prediction yet. It exists so evidence accrues from day one
 // (#2.1's own words: "worth building in phase 0 ... the evidence for any
 // later class decision").
@@ -594,7 +594,7 @@ impl MemoryModel {
         }
     }
 
-    /// docs/WORKER_TIER.md §2.1's prediction in its order: this slug's own
+    /// the executor contract's prediction in its order: this slug's own
     /// last measurement first (step 1), scaled by the change in file count
     /// once the job has reported one, and [`MemoryModel::predict_peak`]
     /// otherwise -- the reference-mode prior before `features` (step 2),

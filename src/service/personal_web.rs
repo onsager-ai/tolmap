@@ -6,8 +6,8 @@ use super::{
 };
 use crate::{
     catalogue::*,
-    local::PersonalControl,
     personal::{Library, SourceArgs},
+    personal_index::PersonalControl,
 };
 use axum::{
     body::Body,
@@ -116,6 +116,7 @@ pub fn router(static_dir: Option<&PathBuf>, state: Arc<WebState>) -> Router {
         .route("/api/index", any(unavailable));
     super::http::static_files(router, static_dir)
         .with_state(state)
+        .layer(tower_http::compression::CompressionLayer::new())
         .layer(middleware::map_response(mark_personal))
         .layer(middleware::from_fn(move |request, next| {
             browser_requests(loopback, request, next)

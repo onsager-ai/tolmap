@@ -17,50 +17,26 @@ poll bound and must close on denial. Already-delivered bytes cannot be recalled.
 The protected comparison wrapper authorizes both commits as `Read`, regardless
 of the operation supplied by its caller.
 
-This is an opt-in library boundary, not authentication middleware. Standalone
-`tolmap serve` remains one trust domain. Off loopback it also refuses
-`POST /api/index {"path": ...}` (a server directory named in a request body)
-unless the operator sets `TOLMAP_ALLOW_LOCAL_PATHS=1`
-(`tests/hosted_repo_requests.rs`); this is a behaviour change from 2026-11-06. Its public catalogue/cache and loopback-
-first API are not a protected multi-tenant backend. The policy does not retrofit
-protection onto the router. A consumer must authenticate and authorize its own
-routes, bind resource identity from trusted state, and apply checks before
-storage/cache access and each delivery checkpoint.
+This remains an opt-in library boundary for embedders. `tolmap web` is a personal,
+single-user application with no authentication; its router does not call
+`access::enforce`. Off-loopback binding explicitly exposes source and management.
+A protected consumer must authenticate its own routes, resolve trusted resource
+identity and check current policy before storage/cache access and each delivery.
 
 ## Core handler inventory
 
-The standalone routes are registered by `service::http::router` in
-`src/service/http.rs`. This is the current handler inventory; the route router
-does not accept a `Policy` and none of these handlers calls `access::enforce`.
+Routes are registered in `src/service/personal_web.rs`. Management calls the
+same application library as the CLI. Job polling/cancel, registration/history,
+map/symbol/provenance/source reads and publication have no tenant policy hooks.
+They belong to the listener's one trust domain. Source reads require the saved
+snapshot's commit and bounded Git-relative paths. `service::worker_result::adopt`
+keeps artifact validation. Protected embeddings supply their own policy before
+admission, reads, cancellation, adoption and delivery.
 
-| Surface | Current Core route / handler | Current behavior and v1 consumer duty |
-| --- | --- | --- |
-| Job admission / warm index hit | `POST /api/index` → `service::http::post_index` | Resolves repository/HEAD, checks the public store for an existing commit, then returns cached completion or calls `jobs::spawn_job`. No `Admit` hook is wired; an embedding adapter must check before source acquisition, cache lookup or enqueue. |
-| Job status | `GET /api/jobs/{job_id}` → `service::http::get_job` | Reads the in-memory or persisted snapshot. No per-job `Read` hook; the consumer must authorize guessed foreign job IDs before lookup/delivery. |
-| Job cancellation | `POST /api/jobs/{job_id}/cancel` → `service::http::post_cancel_job` | Resolves the job slug and calls `jobs::cancel_job`. No `Cancel` hook; the consumer must resolve and authorize job ownership before mutation. |
-| SSE | `GET /api/jobs/{job_id}/events` → `service::http::get_job_events` | Opens a snapshot stream. No `Events` hook, event checkpoint or live-policy monitor is wired; the consumer must authorize open and each event and close idle streams within its documented revoke bound. |
-| Public catalogue | `GET /api/maps` → `service::http::get_maps` | Lists latest public entries. This is not a private catalogue and has no tenant filter. |
-| Map / early map | `GET /api/maps/{owner}/{repo}` → `service::http::get_map` | Calls `Store::get`/`Store::latest`, may return the active job's early map, then reads the stored map. No `Read` hook; a protected adapter must check before every lookup and delivery. |
-| Symbols | `GET /api/maps/{owner}/{repo}/symbols` → `service::http::get_symbols` | Looks up a map and reads a district symbol file. No `Read` hook; consumer responsibility / contract-only (Hub evidence: tolmap-hub PR13). |
-| Hosted source / provenance | `service::compare::provenance`, `service::compare::read_source` in `service::http::router` | Public standalone routes read only a full-SHA commit from a retained clone, with no principal headers or credentials and no moving-ref fallback; they are not a protected private-hosting adapter and call no `Source` hook. Unmatched `/api/*` paths return JSON 404 (`tests/static_serving.rs::static_dir_set_api_404_is_never_html`). Protected embedding consumers must supply their own gate (Hub evidence: tolmap-hub PR13). |
-| Artifact / download | No standalone hosted artifact route | `local::dispatch` serves `/api/maps/snapshot/{id}/artifact` as a map-only local export. There is no hosted `Artifact` hook or storage adapter. Consumer responsibility / contract-only (Hub evidence: tolmap-hub PR13). |
-| Comparison | `service::compare::compare` in `service::http::router`; `comparison::protected` for embedding | The public route is a no-credential standalone adapter over retained clones and a stored base map. Protected embedding adapters call `comparison::protected` with trusted #222 policy context, which authorizes both commits as `Read` before any cache hit and before delivery. `Artifact` and `Publish` remain contract operations (Hub evidence: tolmap-hub PR13). |
-| Local snapshot map/source/symbols | `local::handle` → `local::dispatch` in `src/local.rs` | `/api/maps/snapshot/{id}`, `/provenance`, `/source`, `/symbols?district=…`, and `/artifact` resolve through a saved local snapshot. This is the owner-local single-user service, not a protected tenant route. Source paths are Git-relative and bounded by `source::read`; the request cannot name an arbitrary host file. |
-| Result publication | No HTTP route; library boundary is `service::worker_result::adopt` | Embedders check `Publish` before atomic adoption. The standalone service does not call the opt-in policy. |
-
-`service::http::post_index` also returns an existing store entry without
-creating a job. `get_map` consults the store and may read an early map; these are
-public-service cache/storage reads, not private caches. Any consumer-owned cache
-must include access domain, repository, immutable revision and all comparison
-inputs in its key, and must recheck current authority before a warm hit is
-delivered.
-
-The local reader route and source contract are separate from the standalone
-hosted router. `local::dispatch` serves the persisted local snapshot; its local
-pages check Host/Origin for mutations, use prepared IDs instead of arbitrary
-checkout paths, and keep checkout/storage disclosure on the owner-local page.
-This makes the local single-user flow usable without a login or provider upload;
-it does not qualify hosted session, database or object-storage isolation.
+`comparison::protected` remains a library API that authorizes both commits
+before cache hits and delivery. Comparison HTTP endpoints and public catalogue
+routes are retired. Consumer-owned caches must include access domain, repository,
+immutable revision and all comparison inputs and recheck authority on each hit.
 
 ## Library conformance and limits
 
@@ -77,8 +53,7 @@ The existing `service::executor::{execute, EventSink, CancelProbe}` and
 versioned `worker::{JobSpec, WorkerSpec, WorkerEvent}` remain the processing
 boundary. An embedding adapter checks before execute, monitors live authority
 independently while it blocks, kills a cancelled child process group through
-CancelProbe, and checks again before publication. Worker leases authenticate
-computation, not the source principal. `service::worker_result::{adopt,
+CancelProbe, and checks again before publication. `service::worker_result::{adopt,
 Reported, Adopted}` exposes the existing checked, no-symlink adoption path so
 consumers need not copy validation. No engine implementation, wire schema or
 default service behavior is changed.

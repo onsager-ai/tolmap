@@ -17,14 +17,23 @@ npx tolmap build /path/to/repository --name my-repo --out out
 The package includes its Rust executable, native Leiden/igraph libraries and
 the production web viewer. It does not need Rust, CMake or a compiler on the
 consumer machine. `git` must be available on `PATH` for repository builds and
-`tolmap local`. Node.js >=22.14.0, libstdc++6 and libgcc-s1 are required
+personal registration and refresh. Node.js >=22.14.0, libstdc++6 and libgcc-s1 are required
 system runtimes (provided by ordinary Ubuntu installations).
 
-Run `tolmap local` as an ordinary non-root user, including in containers, with
-`--data` pointing to private storage outside the checkout. Root execution of
-the local journey is unsupported because its worker runs as a different uid
-and cannot traverse root-owned private storage. The packaged viewer is used
-automatically; the server binds only to `127.0.0.1`.
+Register source and open the shared personal library:
+
+```sh
+tolmap add /path/to/repository --name engine
+tolmap repos
+tolmap refresh engine
+tolmap web
+```
+
+Run as an ordinary user. Global `--data ROOT` or `TOLMAP_DATA_DIR` selects a
+shared private root outside mapped checkouts. The packaged viewer is used
+automatically unless `TOLMAP_STATIC_DIR` is set. The listener defaults to
+`127.0.0.1:8787`; explicit off-loopback binding exposes source and management
+to anyone who can reach it. There is no authentication.
 
 Only linux-x64 with glibc >= 2.35 is supported in this release. macOS,
 Windows, Linux arm64 and musl/Alpine are unsupported. See the repository's
