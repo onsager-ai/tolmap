@@ -179,29 +179,16 @@ fn provider_response(input: &[u8]) -> Result<Vec<u8>> {
     Ok(Vec::new())
 }
 
-/// The bridge has no provider secrets in its environment. The parent invokes
-/// providers, so gh environment tokens never pass through network Git or shells.
-pub fn bridge(socket: &Path, operation: &str) -> Result<()> {
-    if operation != "get" {
-        return Ok(());
-    }
-    let mut request = Vec::new();
-    std::io::stdin().take(16 * 1024).read_to_end(&mut request)?;
-    let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(35)))?;
-    stream.write_all(&request)?;
-    stream.shutdown(std::net::Shutdown::Write)?;
-    let mut response = Vec::new();
-    stream.take(64 * 1024).read_to_end(&mut response)?;
-    std::io::stdout().write_all(&response)?;
-    Ok(())
-}
-
-fn command(root: &Path, socket: Option<&Path>) -> Result<Command> {
+fn command(root: &Path, authenticated: bool) -> Result<Command> {
     let mut command = crate::source::git(root);
     command.args(["-c", "credential.helper=", "-c", "core.askPass="]);
-    if let Some(socket) = socket {
-        // Network Git and its bridge receive no credential-provider environment.
+    if authenticated {
+        helper_environment(&mut command);
+        for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
         let executable = std::env::current_exe().context("tolmap executable unavailable")?;
         // Git interprets !helpers as shell commands; quote the executable path.
         let executable = executable
@@ -211,64 +198,13 @@ fn command(root: &Path, socket: Option<&Path>) -> Result<Command> {
         command.args([
             "-c",
             &format!(
-                "credential.helper=!'{}' personal-github-credential --socket '{}'",
-                executable,
-                socket
-                    .to_str()
-                    .context("credential socket path must be UTF-8")?
-                    .replace('\'', "'\\''")
+                "credential.helper=!'{}' personal-github-credential",
+                executable
             ),
         ]);
     }
     command.stdin(Stdio::null());
     Ok(command)
-}
-
-fn network(
-    root: &Path,
-    authenticated: bool,
-    run: impl FnOnce(Command) -> Result<Output>,
-) -> Result<Output> {
-    use std::os::unix::{fs::DirBuilderExt, net::UnixListener};
-    if !authenticated {
-        return run(command(root, None)?);
-    }
-    let dir = std::env::temp_dir().join(format!("tolmap-credential-{}", uuid::Uuid::new_v4()));
-    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
-    let socket = dir.join("helper");
-    let result = (|| {
-        let listener = UnixListener::bind(&socket)?;
-        let server = std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else {
-                    break;
-                };
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-                let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
-                let mut request = Vec::new();
-                if Read::by_ref(&mut stream)
-                    .take(16 * 1024)
-                    .read_to_end(&mut request)
-                    .is_err()
-                {
-                    continue;
-                }
-                if request.is_empty() {
-                    break;
-                }
-                if let Ok(response) = provider_response(&request) {
-                    let _ = stream.write_all(&response);
-                }
-            }
-        });
-        let output = command(root, Some(&socket)).and_then(run);
-        // Empty request stops the provider listener after network Git exits.
-        let _ = std::os::unix::net::UnixStream::connect(&socket);
-        let _ = server.join();
-        output
-    })();
-    let _ = std::fs::remove_dir_all(&dir);
-    result
 }
 
 fn refused(output: &Output) -> bool {
@@ -303,11 +239,10 @@ fn attempt(mut run: impl FnMut(bool) -> Result<Output>) -> Result<(Output, bool)
 pub fn acquire(root: &Path, path: &Path, location: &str) -> Result<()> {
     let url = format!("https://{location}.git");
     let (head, _) = attempt(|authenticated| {
-        network(root, authenticated, |mut git| {
-            Ok(git
-                .args(["ls-remote", "--symref", "--", &url, "HEAD"])
-                .output()?)
-        })
+        let mut git = command(root, authenticated)?;
+        Ok(git
+            .args(["ls-remote", "--symref", "--", &url, "HEAD"])
+            .output()?)
     })?;
     // Never include provider-controlled bytes in errors or store metadata.
     let advertised = std::str::from_utf8(&head.stdout).context("invalid GitHub HEAD response")?;
@@ -328,19 +263,18 @@ pub fn acquire(root: &Path, path: &Path, location: &str) -> Result<()> {
     );
     let refspec = format!("+{branch}:{remote}");
     attempt(|authenticated| {
-        network(root, authenticated, |mut git| {
-            if path.exists() {
-                // Use the validated URL, never a repository-controlled origin URL.
-                git.arg("-C")
-                    .arg(path)
-                    .args(["fetch", "--no-tags", "--", &url, &refspec]);
-            } else {
-                git.args(["clone", "--no-checkout", "--"])
-                    .arg(&url)
-                    .arg(path);
-            }
-            Ok(git.output()?)
-        })
+        let mut git = command(root, authenticated)?;
+        if path.exists() {
+            // Use the validated URL, never a repository-controlled origin URL.
+            git.arg("-C")
+                .arg(path)
+                .args(["fetch", "--no-tags", "--", &url, &refspec]);
+        } else {
+            git.args(["clone", "--no-checkout", "--"])
+                .arg(&url)
+                .arg(path);
+        }
+        Ok(git.output()?)
     })?;
     let status = crate::source::git(path)
         .args(["symbolic-ref", "refs/remotes/origin/HEAD", &remote])
@@ -363,6 +297,43 @@ mod tests {
             stderr: stderr.as_bytes().to_vec(),
         }
     }
+    #[test]
+    fn anonymous_environment_excludes_provider_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        for authenticated in [false, true] {
+            let git = command(dir.path(), authenticated).unwrap();
+            let environment = git.get_envs().collect::<std::collections::BTreeMap<_, _>>();
+            for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"] {
+                let value = environment
+                    .get(std::ffi::OsStr::new(name))
+                    .copied()
+                    .flatten();
+                let inherited = std::env::var_os(name);
+                assert_eq!(
+                    value,
+                    if authenticated {
+                        inherited.as_deref()
+                    } else {
+                        None
+                    }
+                );
+                if let Some(secret) = inherited.filter(|value| !value.is_empty()) {
+                    assert!(!git.get_args().any(|arg| arg
+                        .as_encoded_bytes()
+                        .windows(secret.as_encoded_bytes().len())
+                        .any(|part| part == secret.as_encoded_bytes())));
+                }
+            }
+            if !authenticated {
+                let anonymous = crate::source::git(dir.path());
+                assert_eq!(
+                    git.get_envs().collect::<Vec<_>>(),
+                    anonymous.get_envs().collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
     #[test]
     fn anonymous_first_and_only_auth_refusals_retry() {
         let mut calls = vec![];

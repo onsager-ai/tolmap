@@ -26,11 +26,7 @@ enum DebtCommand {
 #[derive(Debug, Subcommand)]
 enum Command {
     #[command(hide = true)]
-    PersonalGithubCredential {
-        #[arg(long)]
-        socket: Option<PathBuf>,
-        operation: String,
-    },
+    PersonalGithubCredential { operation: String },
     /// Register and index committed local or GitHub source.
     Add(tolmap::personal::AddArgs),
     /// List registrations and last observed freshness; never index or fetch.
@@ -707,12 +703,8 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let data = cli.data.as_deref();
     match cli.command {
-        Command::PersonalGithubCredential { socket, operation } => {
-            if let Some(socket) = socket {
-                tolmap::personal_github::bridge(&socket, &operation)
-            } else {
-                tolmap::personal_github::credential(&operation)
-            }
+        Command::PersonalGithubCredential { operation } => {
+            tolmap::personal_github::credential(&operation)
         }
         Command::Route(args) => std::process::exit(tolmap::query::run_with_data(
             &args.options,

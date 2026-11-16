@@ -253,11 +253,11 @@ has no credential. Configure a helper externally or run `gh auth login` before
 starting tolmap; no sign-in UI or interactive prompt is opened. Providers must
 work noninteractively in the session running tolmap (including any keyring
 session); each provider is limited to 15 seconds. `GH_TOKEN`, `GITHUB_TOKEN`
-and `GH_HOST` are forwarded only to the gh provider. Network Git, configured
-Git helpers and indexing workers do not receive those variables. Empty and
-relative PATH entries are removed before starting a credential provider.
-A private, short-lived Unix socket connects Git's helper bridge to the parent;
-no credential response is written to disk.
+and `GH_HOST` are forwarded to authenticated Git and its helper bridge, then
+only to the gh provider. Anonymous Git, configured Git helpers and indexing
+workers do not receive those variables. Empty and relative PATH entries are
+removed before starting authenticated Git or a credential provider. No
+credential response is written to disk.
 
 Credentials travel only through the helper protocol, never source URLs, command
 arguments, application config, logs, jobs or database rows. tolmap does not call
