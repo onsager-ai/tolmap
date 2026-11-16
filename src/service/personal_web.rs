@@ -3,7 +3,6 @@ use super::{
     error::ApiError,
     jobs::{JobSnapshot, JobStatus},
     store::{JobRow, PersonalSnapshot, Repository},
-    AppState,
 };
 use crate::{
     catalogue::*,
@@ -95,7 +94,8 @@ fn repository_status(
 
 /// Reuse the service's static handler, with personal management/read routes.
 /// Public catalogue/admission handlers are not reachable here.
-pub fn router(service: Arc<AppState>, state: Arc<WebState>) -> Router {
+pub fn router(static_dir: Option<&PathBuf>, state: Arc<WebState>) -> Router {
+    let loopback = state.library.config.service.bind.ip().is_loopback();
     let router = Router::new()
         .route(
             "/api/healthz",
@@ -114,9 +114,61 @@ pub fn router(service: Arc<AppState>, state: Arc<WebState>) -> Router {
         .route("/api/maps/{owner}/{id}", get(map))
         .route("/api/maps/{owner}/{id}/{*rest}", get(map_detail))
         .route("/api/index", any(unavailable));
-    super::http::static_files(router, service.config.static_dir.as_ref())
+    super::http::static_files(router, static_dir)
         .with_state(state)
         .layer(middleware::map_response(mark_personal))
+        .layer(middleware::from_fn(move |request, next| {
+            browser_requests(loopback, request, next)
+        }))
+}
+async fn browser_requests(
+    loopback: bool,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    if loopback {
+        let allowed = request
+            .headers()
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|host| host.parse::<axum::http::uri::Authority>().ok())
+            .is_some_and(|authority| {
+                authority.port_u16().is_some()
+                    && matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]")
+            });
+        if !allowed {
+            return ApiError::new(
+                StatusCode::FORBIDDEN,
+                "invalid_host",
+                "loopback requests require a localhost, 127.0.0.1 or [::1] Host with a port",
+            )
+            .into_response();
+        }
+    }
+    if matches!(
+        *request.method(),
+        axum::http::Method::POST
+            | axum::http::Method::PUT
+            | axum::http::Method::PATCH
+            | axum::http::Method::DELETE
+    ) && !request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+        })
+    {
+        return ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "json_required",
+            "mutating requests require Content-Type: application/json",
+        )
+        .into_response();
+    }
+    next.run(request).await
 }
 async fn unavailable() -> ApiError {
     ApiError::not_found("no personal API route")
@@ -166,7 +218,11 @@ async fn catalogue(
     for repo in state.library.store.repositories()? {
         let snapshots = state.library.store.personal_history(&repo.id)?;
         let latest = snapshots.first();
-        let doc = latest.map(document).transpose()?;
+        let read = latest.map(document).transpose();
+        let unreadable = read.as_ref().err().map(|e| RepositoryStatus::Failed {
+            message: format!("Saved map is unreadable: {}", e.body.message),
+        });
+        let doc = read.ok().flatten();
         entries.push(CatalogueEntry {
             slug: format!("personal/{}", repo.id),
             label: Some(repo.name.clone()),
@@ -183,7 +239,7 @@ async fn catalogue(
             latest_snapshot_id: latest.map(|s| s.id.clone()),
             indexed_at: latest.map(|s| s.indexed_at.clone()),
             snapshot_count: Some(snapshots.len() as u64),
-            status: repository_status(&state, &repo)?,
+            status: unreadable.or(repository_status(&state, &repo)?),
         });
     }
     entries.sort_by(|a, b| {
@@ -199,21 +255,24 @@ async fn history(
 ) -> Result<Json<RepositoryHistory>, ApiError> {
     let repo = state.repository(&id)?;
     let history = state.library.store.personal_history(&id)?;
+    let mut unreadable = false;
     let reopen = history
         .first()
+        .filter(|s| document(s).is_ok())
         .map(|s| action(map_url(s), ActionMethod::Get));
     let snapshots = history
         .iter()
         .map(|s| {
-            let doc = document(s)?;
+            let doc = document(s).ok();
+            unreadable |= doc.is_none();
             Ok(RepositorySnapshot {
                 id: s.id.clone(),
                 commit: s.commit.clone(),
                 indexed_at: s.indexed_at.clone(),
-                files: doc.files.len() as i64,
-                districts: doc.districts.len() as i64,
+                files: doc.as_ref().map_or(0, |d| d.files.len() as i64),
+                districts: doc.as_ref().map_or(0, |d| d.districts.len() as i64),
                 core_revision: None,
-                reopen: Some(action(map_url(s), ActionMethod::Get)),
+                reopen: doc.map(|_| action(map_url(s), ActionMethod::Get)),
                 delete_snapshot: None,
             })
         })
@@ -221,7 +280,14 @@ async fn history(
     Ok(Json(RepositoryHistory {
         repository_id: id.clone(),
         name: repo.name.clone(),
-        status: repository_status(&state, &repo)?,
+        status: if unreadable {
+            Some(RepositoryStatus::Failed {
+                message: "One or more saved maps are unreadable; other snapshots remain available."
+                    .into(),
+            })
+        } else {
+            repository_status(&state, &repo)?
+        },
         current_core_revision: None,
         actions: RepositoryActions {
             reopen,
@@ -323,13 +389,15 @@ fn initial_job(id: Uuid, slug: String) -> JobSnapshot {
     }
 }
 fn start(state: Arc<WebState>, repo: Repository, batch: &str) -> Result<String, ApiError> {
-    let live = state.controls.lock().unwrap().len();
+    let mut controls = state.controls.lock().unwrap();
+    let live = controls.len();
     let matching = state.library.store.personal_repository_jobs(&repo.id)?;
-    if matching
-        .iter()
-        .any(|id| state.controls.lock().unwrap().contains_key(id))
-    {
-        return Err(ApiError::busy("repository is already indexing"));
+    if matching.iter().any(|id| controls.contains_key(id)) {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "already_indexing",
+            "repository is already indexing",
+        ));
     }
     let limits = &state.library.config.service.limits;
     if live >= limits.max_concurrent_jobs + limits.max_queued_jobs {
@@ -398,11 +466,8 @@ fn start(state: Arc<WebState>, repo: Repository, batch: &str) -> Result<String, 
             eprintln!("save personal progress: {e}");
         }
     }));
-    state
-        .controls
-        .lock()
-        .unwrap()
-        .insert(id.to_string(), control.clone());
+    controls.insert(id.to_string(), control.clone());
+    drop(controls);
     tokio::spawn(async move {
         let permit = state
             .slots
@@ -473,6 +538,17 @@ async fn add(
     {
         return Err(ApiError::busy("mapping queue is full"));
     }
+    let validation_state = state.clone();
+    let inputs = request.provider_ids.clone();
+    tokio::task::spawn_blocking(move || {
+        for input in inputs {
+            validation_state.library.validate_source(&input)?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))?
+    .map_err(invalid)?;
     let batch_id = Uuid::new_v4().to_string();
     let mut jobs = Vec::new();
     let mut sources = std::collections::HashSet::new();
@@ -502,7 +578,11 @@ async fn add(
             .iter()
             .any(|id| state.controls.lock().unwrap().contains_key(id))
         {
-            return Err(ApiError::busy("a selected repository is already indexing"));
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "already_indexing",
+                "a selected repository is already indexing",
+            ));
         }
     }
     if state.controls.lock().unwrap().len() + registrations.len()
@@ -723,16 +803,10 @@ pub async fn serve(
             .is_file(),
         "web bundle missing; build web/ and set TOLMAP_STATIC_DIR to its dist directory"
     );
-    let config = library.config.service.clone();
-    let bind = config.bind;
-    let service = Arc::new(AppState {
-        store: super::store::Store::open(&config.db_path)?,
-        config,
-        jobs: super::jobs::new_registry(),
-        rate_limiter: super::ratelimit::RateLimiter::new(),
-    });
+    let bind = library.config.service.bind;
+    let static_dir = library.config.service.static_dir.clone();
     let state = WebState::new(library);
-    let app = router(service, state.clone());
+    let app = router(static_dir.as_ref(), state.clone());
     let listener = tokio::net::TcpListener::bind(bind).await?;
     if !bind.ip().is_loopback() {
         eprintln!("No authentication: anyone who can reach this address can read source and manage repositories.");
@@ -747,4 +821,86 @@ pub async fn serve(
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{application_config::ApplicationConfig, config::ServeConfig, store::Store};
+    use super::*;
+    #[tokio::test]
+    async fn queued_cancel_publishes_no_snapshot_and_duplicate_start_is_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ServeConfig {
+            db_path: dir.path().join("db"),
+            ..ServeConfig::from_env()
+        };
+        let library = Library {
+            store: Store::open(&config.db_path).unwrap(),
+            config: ApplicationConfig {
+                data: dir.path().into(),
+                service: config,
+                retain_commits_per_repo: None,
+            },
+        };
+        let repo = Repository {
+            id: "queued".into(),
+            name: "queued".into(),
+            kind: "local".into(),
+            location: "/missing".into(),
+            observed_head: None,
+            observed_at: None,
+        };
+        library.store.register(&repo).unwrap();
+        let state = WebState::new(library);
+        let permit = state
+            .slots
+            .clone()
+            .acquire_many_owned(state.library.config.service.limits.max_concurrent_jobs as u32)
+            .await
+            .unwrap();
+        let id = start(state.clone(), repo.clone(), "batch").unwrap();
+        use tower::ServiceExt;
+        let app = router(None, state.clone());
+        let duplicate = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/repositories/queued/refresh")
+                    .header("host", "localhost:8787")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+        cancel(State(state.clone()), Path(id.clone()))
+            .await
+            .unwrap();
+        drop(permit);
+        let job = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let job = read_job(&state, &id).unwrap();
+                if job.status == JobStatus::Failed {
+                    break job;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(job.error_code.as_deref(), Some("cancelled"));
+        assert!(state
+            .library
+            .store
+            .personal_history("queued")
+            .unwrap()
+            .is_empty());
+        assert!(state
+            .library
+            .store
+            .personal_attempt("queued")
+            .unwrap()
+            .is_none());
+    }
 }

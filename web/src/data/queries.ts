@@ -123,7 +123,7 @@ export function useCatalogue() {
     queryFn: getServiceCatalogue,
     enabled: available === true,
     staleTime: personalWeb ? 0 : 15_000,
-    refetchInterval: personalWeb ? 2000 : false,
+    refetchInterval: personalWeb ? query => query.state.data?.some(repo => repo.status?.kind === "indexing") ? 2000 : 30_000 : false,
     retry: false,
   });
 

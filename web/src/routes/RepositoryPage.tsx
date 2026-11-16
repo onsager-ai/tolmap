@@ -72,7 +72,7 @@ export function RepositoryPage() {
       return response.json() as Promise<RepositoryHistory>;
     },
     retry: false,
-    refetchInterval: personalWeb ? 2000 : false,
+    refetchInterval: personalWeb ? query => query.state.data?.status?.kind === "indexing" ? 2000 : 30_000 : false,
   });
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [pending, setPending] = useState(false);
@@ -95,7 +95,7 @@ export function RepositoryPage() {
   async function perform(action: RepositoryAction, leave = false) {
     setPending(true); setError(null);
     try {
-      const response = await fetch(actionPath(action), { method: action.method, headers: { Accept: "application/json" } });
+      const response = await fetch(actionPath(action), { method: action.method, headers: { Accept: "application/json", "Content-Type": "application/json" } });
       if (!response.ok) throw new Error(`Action failed (${response.status}). Please retry.`);
       if (response.headers.get("content-type")?.includes("application/json")) {
         const result = await response.json() as Partial<IndexResponse>;

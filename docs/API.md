@@ -75,6 +75,9 @@ Settings are read at invocation/startup. Repository intent remains in
 `tolmap web [--addr IP:PORT] [--data DIR]` uses the same application loader,
 registry and retained snapshots as the CLI. It binds to `127.0.0.1:8787` by
 default. `--addr` overrides configured bind and port. There is no authentication.
+Loopback requests require `Host: localhost:PORT`, `127.0.0.1:PORT` or
+`[::1]:PORT`; other hosts are rejected. Mutations require
+`Content-Type: application/json` to reject cross-site simple requests.
 An off-loopback bind prints once at startup:
 
 ```text
@@ -110,7 +113,8 @@ requires the snapshot's immutable commit and uses the existing bounded Git-blob
 reader. Missing source remains explicit. Comparison/organization APIs and individual
 snapshot deletion are not advertised by the personal adapter in this slice.
 
-Home/history and job views poll shared state every two seconds while visible.
+Home/history poll every two seconds during indexing or queueing, otherwise every
+30 seconds. Active job views poll every two seconds while visible.
 A CLI refresh can run while web serves the last complete snapshot; it appears
 without restarting web. Web jobs have a bounded in-process FIFO and acquire the
 same cross-process repository/slot locks as CLI refresh. Competing CLI writes

@@ -134,7 +134,7 @@ export function getJob(jobId: string): Promise<JobSnapshot> {
  * value beyond that; useJobProgress's SSE/poll loop delivers the same
  * terminal snapshot right behind it either way. */
 export function cancelJob(jobId: string): Promise<JobSnapshot> {
-  return request<JobSnapshot>(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+  return request<JobSnapshot>(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" } });
 }
 
 export function getServiceCatalogue(): Promise<ServiceCatalogueEntry[]> {

@@ -199,9 +199,7 @@ impl Library {
         self.refresh(&repo, None, sources)?;
         Ok(repo)
     }
-    pub(crate) fn register(&self, input: &str, name: Option<&str>) -> Result<Repository> {
-        // Registration/name allocation needs a short global lock; indexing does not.
-        let registry = lock(&self.locks().join("registry.lock"))?;
+    pub(crate) fn validate_source(&self, input: &str) -> Result<(&'static str, String)> {
         let local = input.starts_with(['.', '/'])
             || (Path::new(input).is_dir() && checkout(Path::new(input)).is_ok());
         let (kind, location) = if local {
@@ -222,6 +220,12 @@ impl Library {
                 "personal data root must be outside mapped checkouts"
             );
         }
+        Ok((kind, location))
+    }
+    pub(crate) fn register(&self, input: &str, name: Option<&str>) -> Result<Repository> {
+        // Registration/name allocation needs a short global lock; indexing does not.
+        let registry = lock(&self.locks().join("registry.lock"))?;
+        let (kind, location) = self.validate_source(input)?;
         let repos = self.store.repositories()?;
         if let Some(existing) = repos
             .iter()

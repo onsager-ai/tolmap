@@ -41,7 +41,6 @@ export function page(id: string): StoryObj<Args> {
         const sheet = within(await waitElement('dialog[data-personal-add][open]'));
         expect(sheet.getByRole('button', { name: 'Add and map' })).toBeDisabled();
         if (id === 'personal-add-github') {
-          await userEvent.selectOptions(sheet.getByRole('combobox'), 'github');
           await userEvent.type(sheet.getByRole('textbox'), 'acme/public');
           expect(sheet.getByText(/Public repositories are acquired anonymously/)).toBeVisible();
           expect(sheet.getByRole('button', { name: 'Add and map' })).toBeEnabled();
@@ -55,7 +54,7 @@ export function page(id: string): StoryObj<Args> {
               expect(sheet.getAllByRole('checkbox')[0]).toBeDisabled();
               expect(sheet.getByRole('button', { name: 'Map 2 repositories' })).toBeEnabled();
               await userEvent.click(sheet.getAllByRole('checkbox')[1]);
-              expect(sheet.getByRole('button', { name: 'Map 1 repositories' })).toBeEnabled();
+              expect(sheet.getByRole('button', { name: 'Map 1 repository' })).toBeEnabled();
             }
           }
         }

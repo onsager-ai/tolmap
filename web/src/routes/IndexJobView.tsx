@@ -533,7 +533,7 @@ function FailurePage({ job, slug, narrow }: { job: JobSnapshot; slug: string | u
     setRetryError(null);
     try {
       if (personalWeb) {
-        const response = await fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/retry`, { method: "POST" });
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/retry`, { method: "POST", headers: { "Content-Type": "application/json" } });
         if (!response.ok) throw new Error("Refresh couldn't be started. Open the repository page to retry.");
         const result = await response.json() as import("@bindings/BatchIndexResponse").BatchIndexResponse;
         await navigate({ to: "/new", search: { job: result.jobs[0].job_id }, replace: true });

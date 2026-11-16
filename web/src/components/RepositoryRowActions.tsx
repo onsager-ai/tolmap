@@ -23,7 +23,7 @@ export function RepositoryRowActions({ repositoryId, name }: { repositoryId: str
     if (!action || pending) return;
     setPending(true); setError(undefined);
     try {
-      const response = await fetch(hostPath(action.path), { method: action.method, headers: { Accept: "application/json" } });
+      const response = await fetch(hostPath(action.path), { method: action.method, headers: { Accept: "application/json", "Content-Type": "application/json" } });
       if (!response.ok) throw new Error("Re-indexing couldn't be started. Try again shortly.");
       const result = await response.json() as IndexResponse;
       if (result.status === "done") window.location.assign(`/${result.slug}?commit=${encodeURIComponent(result.commit)}`);

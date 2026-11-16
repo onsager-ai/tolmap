@@ -12,9 +12,7 @@ use tolmap::{
         config::ServeConfig,
         jobs,
         personal_web::{self, WebState},
-        ratelimit::RateLimiter,
         store::{PersonalSnapshot, Repository, Store},
-        AppState,
     },
 };
 use tower::ServiceExt;
@@ -25,6 +23,7 @@ fn setup() -> (tempfile::TempDir, Router, Arc<WebState>) {
         db_path: dir.path().join("db"),
         cache_dir: dir.path().join("cache"),
         static_dir: Some(dir.path().join("assets")),
+        bind: "127.0.0.1:8787".parse().unwrap(),
         ..ServeConfig::from_env()
     };
     std::fs::create_dir(dir.path().join("assets")).unwrap();
@@ -40,13 +39,8 @@ fn setup() -> (tempfile::TempDir, Router, Arc<WebState>) {
         },
     };
     let web = WebState::new(library);
-    let state = Arc::new(AppState {
-        store: Store::open(&config.db_path).unwrap(),
-        config,
-        jobs: jobs::new_registry(),
-        rate_limiter: RateLimiter::new(),
-    });
-    (dir, personal_web::router(state, web.clone()), web)
+    let app = personal_web::router(config.static_dir.as_ref(), web.clone());
+    (dir, app, web)
 }
 async fn request(app: &Router, method: &str, path: &str, body: &str) -> (StatusCode, String) {
     let response = app
@@ -56,6 +50,7 @@ async fn request(app: &Router, method: &str, path: &str, body: &str) -> (StatusC
                 .method(method)
                 .uri(path)
                 .header("content-type", "application/json")
+                .header("host", "localhost:8787")
                 .body(Body::from(body.to_string()))
                 .unwrap(),
         )
@@ -424,4 +419,252 @@ async fn scans_are_sorted_skip_symlinks_and_mark_registered_checkouts() {
     assert_eq!(rows.as_array().unwrap().len(), 2);
     assert!(rows[0]["provider_id"].as_str().unwrap().ends_with("/a"));
     assert_eq!(rows[0]["connected_repository_id"], "repo-id");
+}
+
+#[tokio::test]
+async fn unreadable_maps_do_not_hide_catalogue_or_other_history() {
+    let (dir, app, state) = setup();
+    repo(&state.library.store, &dir.path().join("missing"));
+    publish(&state.library.store, dir.path(), "good");
+    publish(&state.library.store, dir.path(), "broken");
+    state
+        .library
+        .store
+        .register(&Repository {
+            id: "other".into(),
+            name: "other".into(),
+            kind: "local".into(),
+            location: dir.path().join("other").to_string_lossy().into_owned(),
+            observed_head: None,
+            observed_at: None,
+        })
+        .unwrap();
+    let broken = dir
+        .path()
+        .join("repositories/repo-id/snapshots/broken/map.json");
+    for corrupt in [true, false] {
+        if corrupt {
+            std::fs::write(&broken, "invalid JSON").unwrap();
+        } else {
+            std::fs::remove_file(&broken).unwrap();
+        }
+        let (status, body) = request(&app, "GET", "/api/maps", "").await;
+        assert_eq!(status, StatusCode::OK);
+        let rows: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(rows[0]["status"]["kind"], "failed");
+        assert_eq!(rows.as_array().unwrap().len(), 2);
+        assert_eq!(rows[1]["repository_id"], "other");
+        let (status, body) = request(&app, "GET", "/api/repositories/repo-id/history", "").await;
+        assert_eq!(status, StatusCode::OK);
+        let history: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(history["snapshots"].as_array().unwrap().len(), 2);
+        assert!(history["snapshots"][0]["reopen"].is_null());
+        assert_eq!(history["snapshots"][1]["reopen"]["path"], "/snapshot/good");
+    }
+}
+#[tokio::test]
+async fn browser_requests_reject_rebinding_hosts_and_simple_mutations() {
+    let (_dir, app, _state) = setup();
+    for host in [
+        "evil.example:8787",
+        "127.0.0.1.evil.example:8787",
+        "localhost",
+        "[::1].evil:8787",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/maps")
+                    .header("host", host)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{host}");
+    }
+    for host in ["localhost:8787", "127.0.0.1:8787", "[::1]:8787"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/maps")
+                    .header("host", host)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{host}");
+    }
+    for content_type in [
+        None,
+        Some("text/plain"),
+        Some("application/x-www-form-urlencoded"),
+        Some("multipart/form-data"),
+    ] {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/jobs/missing/cancel")
+            .header("host", "localhost:8787");
+        if let Some(value) = content_type {
+            builder = builder.header("content-type", value);
+        }
+        let response = app
+            .clone()
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+}
+#[tokio::test]
+async fn invalid_batch_source_registers_nothing() {
+    let (dir, app, state) = setup();
+    let checkout = dir.path().join("valid");
+    std::fs::create_dir(&checkout).unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("init")
+        .arg(&checkout)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let body = serde_json::json!({"provider_ids":[checkout.to_str().unwrap(), "https://invalid.example/repo"]}).to_string();
+    assert_eq!(
+        request(&app, "POST", "/api/personal/index", &body).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert!(state.library.store.repositories().unwrap().is_empty());
+}
+
+/// Run the actual web binary so its executor launches `tolmap worker`, rather
+/// than launching this integration-test executable as a worker.
+#[test]
+fn real_local_repository_add_poll_done() {
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        process::{Child, Command},
+        time::{Duration, Instant},
+    };
+    struct WebProcess(Child);
+    impl Drop for WebProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn http(
+        address: std::net::SocketAddr,
+        method: &str,
+        path: &str,
+        body: &str,
+    ) -> std::io::Result<(u16, serde_json::Value)> {
+        let mut stream = TcpStream::connect(address)?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        write!(stream, "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())?;
+        let mut text = String::new();
+        stream.read_to_string(&mut text)?;
+        let (headers, body) = text.split_once("\r\n\r\n").unwrap();
+        let status = headers.split_whitespace().nth(1).unwrap().parse().unwrap();
+        Ok((status, serde_json::from_str(body).unwrap()))
+    }
+    let root = tempfile::tempdir().unwrap();
+    let checkout = root.path().join("repo");
+    std::fs::create_dir_all(checkout.join("pkg")).unwrap();
+    std::fs::write(
+        checkout.join("pyproject.toml"),
+        "[project]\nname='pkg'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    std::fs::write(checkout.join("pkg/__init__.py"), "").unwrap();
+    for i in 0..8 {
+        std::fs::write(
+            checkout.join(format!("pkg/f{i}.py")),
+            format!(
+                "from .f{} import value\ndef value():\n    return {i}\n",
+                (i + 1) % 8
+            ),
+        )
+        .unwrap();
+    }
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+    ] {
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&checkout)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    let assets = root.path().join("assets");
+    std::fs::create_dir(&assets).unwrap();
+    std::fs::write(
+        assets.join("index.html"),
+        "<html><head></head><body></body></html>",
+    )
+    .unwrap();
+    let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = socket.local_addr().unwrap();
+    drop(socket);
+    let _web = WebProcess(
+        Command::new(env!("CARGO_BIN_EXE_tolmap"))
+            .args(["--data"])
+            .arg(root.path().join("data"))
+            .args(["web", "--addr", &address.to_string()])
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("TOLMAP_STATIC_DIR", assets)
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        if http(address, "GET", "/api/healthz", "").is_ok() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "web startup timed out");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let body = serde_json::json!({"provider_ids":[checkout.to_str().unwrap()]}).to_string();
+    let (status, accepted) = http(address, "POST", "/api/personal/index", &body).unwrap();
+    assert_eq!(status, 202, "{accepted}");
+    let id = accepted["jobs"][0]["job_id"].as_str().unwrap();
+    let done = loop {
+        let (status, job) = http(address, "GET", &format!("/api/jobs/{id}"), "").unwrap();
+        assert_eq!(status, 200);
+        assert_ne!(job["status"], "failed", "{job}");
+        if job["status"] == "done" {
+            break job;
+        }
+        assert!(Instant::now() < deadline, "job timed out: {job}");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let (status, rows) = http(address, "GET", "/api/maps", "").unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(
+        done["slug"],
+        format!(
+            "snapshot/{}",
+            rows[0]["latest_snapshot_id"].as_str().unwrap()
+        )
+    );
+    assert_eq!(rows[0]["snapshot_count"], 1);
 }
