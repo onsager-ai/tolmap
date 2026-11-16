@@ -1,4 +1,4 @@
-//! The executor (the executor contract): everything between "this job is
+//! The executor: everything between "this job is
 //! ready to run" and "the job child has exited". It materialises the clone
 //! in this host's own cache, copies it into a fresh job directory, hardens
 //! that directory, stages the inputs, spawns the job child with a v1
@@ -103,29 +103,15 @@ pub trait EventSink {
     /// The child's own peak RSS, from `wait_with_peak`, on every path that
     /// reaps it -- success, failure and cancel alike.
     fn peak_rss(&mut self, bytes: u64);
-    /// How the child ended, once reaped after its events (#97 phase 2,
-    /// step 4), and whether this executor itself had just sent its process
-    /// group SIGKILL (a cancel, or a stream it could not read). An agent
-    /// needs both to tell an out-of-memory kill from a kill of its own
-    /// (the executor contract "job child OOM-killed"). Local mode keeps
-    /// the default, which ignores it: there an OOM fails the job as it
-    /// always has.
+    /// How the child ended, and whether cancellation killed its process group.
     fn child_exited(&mut self, _status: std::process::ExitStatus, _killed_here: bool) {}
-    /// The child finished its `write_map` stage and the map it wrote has
-    /// been read back and checked (`worker_result::read_early_map`) --
-    /// called just before that `stage_finished` event is delivered, so
-    /// whatever the sink does with the map happens before anyone watching
-    /// the job sees the stage end. docs/UX.md §12: local mode publishes it
-    /// at once (the personal progress sink); an agent uploads it to the master
-    /// ahead of forwarding the event (the progress sink). The default
-    /// ignores it, and the job's result is unaffected either way.
+    /// Checked early map bytes, before the write-map stage event is delivered.
+    /// The default ignores early maps and waits for final artifact adoption.
     fn map_written(&mut self, _map: Bytes) {}
 }
 
-/// Whether to stop, and which process to kill when told to. In local mode
-/// the registry decides (the cancellation probe) and kills the child's
-/// process group itself on cancel; `child_started` must therefore kill at
-/// once if the job was cancelled before the child existed.
+/// Cancellation state and the child process group to kill. `child_started`
+/// must kill immediately if cancellation preceded the child's creation.
 pub trait CancelProbe {
     fn is_cancelled(&self) -> bool;
     fn child_started(&self, pid: u32);
@@ -229,10 +215,7 @@ fn execute_inner(
     // commit, keeping the branch name so the child still learns one. Runs
     // before `harden_job_dir` chowns the directory away from this process's
     // uid, and before anything below reads `checkout.commit` -- from here
-    // on it names what was actually built, which is what the application
-    // (local mode) and the application (remote mode) both check
-    // the child's reported commit against, so neither had to change to gain
-    // that check.
+    // on it names the source the application checks against the child's result.
     if worker_result::is_object_id(&job.commit) {
         if let Err(error) = pin_commit(&job_repo_dir, &job.commit, checkout.branch.as_deref()) {
             return fail(error);
@@ -383,8 +366,7 @@ pub(crate) fn kill_worker_group(pid: u32) {
 /// Reaps the job child and returns its own peak RSS in bytes, alongside its
 /// exit status -- `run_child`'s replacement for a plain `child.wait()`.
 ///
-/// **Why not `getrusage(RUSAGE_CHILDREN)`**, which the executor contract #2.1
-/// and #8 said to use before #149: that call reports the maximum over
+/// **Why not `getrusage(RUSAGE_CHILDREN)`**: that call reports the maximum over
 /// *every* child this process has ever reaped, not this one. A small job
 /// reaped after a large one would report the large one's peak, and this
 /// process also reaps its own git clone/fetch children (`service::clone`)
@@ -482,7 +464,7 @@ fn wait_with_peak(
 /// suites) -- a real shape change to `clone.rs`'s git-invocation plumbing,
 /// not a small addition, and not verifiable without a local `cargo build`
 /// this repo's rules don't allow here. Left as a documented gap rather than
-/// forced through unverified (the executor contract carries it over).
+/// forced through unverified.
 pub(crate) fn materialize_job_repo(
     cache_dir: &Path,
     repo_ref: &RepoRef,
@@ -532,7 +514,7 @@ pub(crate) fn materialize_job_repo(
 /// learns its branch from HEAD (`clone::current_branch` inside its own,
 /// now-instant "clone" of this already-checked-out directory), and that
 /// branch drives warm-start selection and the stored map row
-/// (the executor contract, "Keep the branch name"). A `None` branch --
+/// A `None` branch --
 /// the source itself was a detached checkout, which nothing in this
 /// codebase produces today but a hand-built fixture could -- detaches at
 /// `commit` instead, matching what was already true before the pin.
@@ -1008,7 +990,7 @@ pub(crate) fn run_child(
     // docs/UX.md §12: read back the map on the first successful write_map
     // event only. The child is untrusted and can repeat protocol events;
     // even a refused read must not be repeated. The owner is its effective
-    // uid, as jobs::worker_uid_in_effect works it out.
+    // uid, accounting for whether this parent can drop privilege.
     let child_uid = if is_root() {
         hardening.uid
     } else {
@@ -1238,7 +1220,7 @@ mod tests {
         (name != "HEAD" && !name.is_empty()).then_some(name)
     }
 
-    /// the executor contract "The commit is pinned": a branch that moves
+    /// A branch that moves
     /// between admission and this clone must not change what gets built.
     /// `pin_commit` is exercised directly against a job's own local-clone
     /// copy, which is exactly what `execute` hands it (`materialize_job_repo`

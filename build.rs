@@ -49,12 +49,8 @@ fn discover_system_prefix() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Build identity (the executor contract): bakes `TOLMAP_BUILD_COMMIT`
-/// into the binary as a compile-time env var (`option_env!` in
-/// `service::workers::build_commit`), so a mismatched worker build stays
-/// idle rather than racing the master to write a map (#153's departure 5,
-/// which this closes: `hello.build.commit` used to be the executable's own
-/// SHA-256 because nothing else was available).
+/// Bake the source revision into the binary for personal history provenance.
+/// The application reads `TOLMAP_BUILD_COMMIT` through `option_env!`.
 ///
 /// Preference order, all emitted through `cargo:rustc-env` (never left to
 /// a bare `option_env!` on the *caller's* shell variable, which Cargo does

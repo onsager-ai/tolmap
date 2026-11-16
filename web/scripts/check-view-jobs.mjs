@@ -185,7 +185,6 @@ const FAILURE_ROWS = [
   ["worker_crashed", "The mapping job stopped during Read", ["retry"]],
   ["busy", "tolmap is busy right now", ["retry"]],
   ["server_stopping", "tolmap is busy right now", ["retry"]],
-  ["rate_limited", "tolmap is busy right now", ["retry"]],
   ["index_failed", "Something went wrong while mapping", ["retry", "report"]],
   ["internal_error", "Something went wrong while mapping", ["retry", "report"]],
   ["mystery_code", "Something went wrong while mapping", ["retry", "report"]],

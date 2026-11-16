@@ -101,7 +101,7 @@ COPY --from=native /opt/leiden /opt/leiden
 # resolve there later.
 ENV LEIDEN_PREFIX=/opt/leiden
 
-# #97 phase 3 (the executor contract): `.dockerignore` excludes `.git/`
+# #97 phase 3 : `.dockerignore` excludes `.git/`
 # from the build context (it is VCS metadata, large, and no other stage
 # needs it), so `build.rs` cannot `git rev-parse HEAD` in here -- the caller
 # passes the commit it already has from its own checkout instead. Empty
@@ -236,7 +236,7 @@ ARG SCIP_GO_VERSION=v0.2.7
 ENV GOPATH=/opt/gopath
 RUN go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
 
-# --- Indexer versions file (#97 phase 3, the executor contract): what
+# --- Indexer versions file: what
 # this image pins, recorded once here rather than asked of each indexer at
 # agent start -- that would be slow, and it would run indexer binaries
 # before a worker even holds a job. `runtime` copies this to
@@ -396,7 +396,7 @@ COPY --from=scip-tools /opt/gopath/bin/scip-go /usr/local/bin/scip-go
 ENV PATH="/opt/go/bin:/opt/node/bin:${PATH}" \
     GOTOOLCHAIN=local
 
-# #97 phase 3 (the executor contract): the indexer versions this image
+# #97 phase 3 : the indexer versions this image
 # pins, written in `scip-tools` above from the same ARGs that installed
 # them. `TOLMAP_INDEXER_VERSIONS` defaults to this exact path.
 COPY --from=scip-tools /usr/local/share/tolmap/indexers.json /usr/local/share/tolmap/indexers.json
@@ -424,15 +424,12 @@ WORKDIR /app
 COPY --from=rust-builder /app/target/release/tolmap /app/tolmap
 COPY --from=web-builder /app/web/dist /app/web/dist
 
-# Opt-in static serving (src/service/http.rs, docs/API.md): this is an
-# image-layout constant -- the built bundle always lands at this exact
-# path inside this image -- not a deployment-tunable value, so it is baked
-# in here rather than left to a deploy-time env config. TOLMAP_BIND_ADDR,
-# TOLMAP_DB_PATH, TOLMAP_CACHE_DIR and the TOLMAP_MAX_*/TOLMAP_RATE_LIMIT_*
-# limits *are* deployment-tunable (they depend on the volume and the host's
-# shape) and are set at deploy time instead, not here -- see docs/API.md's
-# configuration table for what each one does.
-ENV TOLMAP_STATIC_DIR=/app/web/dist
+# The bundled viewer and published port are the image defaults. Binding all
+# interfaces exposes source and management without authentication; web prints
+# that warning at startup. Publish the container port on host loopback for
+# host-only access, and persist TOLMAP_DATA_DIR for the complete library.
+ENV TOLMAP_STATIC_DIR=/app/web/dist \
+    TOLMAP_BIND_ADDR=0.0.0.0:8787
 
 EXPOSE 8787
 

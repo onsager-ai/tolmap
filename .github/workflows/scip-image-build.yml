@@ -292,12 +292,31 @@ jobs:
           git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
           docker run -d --name tolmap-service --privileged -p 127.0.0.1:8787:8787 \
             -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 \
-            -e TOLMAP_DATA_DIR=/srv/data -e TOLMAP_WORKER_UID=0 -e TOLMAP_WORKER_GID=0 \
+            -e TOLMAP_DATA_DIR=/srv/data \
             -v "$PWD/sandbox/service-fixture:/srv/fixture:ro" \
             --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap web'
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8787/api/healthz && break; sleep 1; done
-          docker exec tolmap-service /app/tolmap add /srv/fixture --name fixture --all-sources
+          # Register via CLI; run both actual indexes through web so progress
+          # and the root-to-worker uid drop are observed for the same jobs.
+          if docker exec tolmap-service /app/tolmap add /srv/fixture --name fixture --pkg missing --lang ts; then exit 1; fi
           repository=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["repository_id"])')
+          run_job() {
+            job=$(curl -fsS -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:8787/api/repositories/$repository/refresh" | python3 -c 'import json,sys;print(json.load(sys.stdin)["job_id"])')
+            observed_worker=false
+            for _ in $(seq 1 300); do
+              # Assert the actual indexing child uses the image's uid 10001.
+              if docker exec tolmap-service sh -c 'for p in /proc/[0-9]*; do [ -r "$p/comm" ] || continue; [ "$(cat "$p/comm")" = tolmap ] || continue; tr "\0" " " < "$p/cmdline" | grep -q "/app/tolmap worker" || continue; grep -q "^Uid:[[:space:]]*10001[[:space:]]*10001" "$p/status" && exit 0; done; exit 1'; then observed_worker=true; fi
+              snapshot=$(curl -fsS "http://127.0.0.1:8787/api/jobs/$job")
+              status=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])' <<<"$snapshot")
+              [ "$status" = done ] || [ "$status" = failed ] && break
+              sleep 1
+            done
+            [ "$status" = done ]
+            [ "$observed_worker" = true ]
+            python3 -c 'import json,sys; stages={r["id"]:r for r in json.loads(sys.argv[1])["stages"]}; assert stages["install"]["state"]=="done", stages' "$snapshot"
+            docker exec tolmap-service sh -c '[ "$(stat -c "%u:%a" /srv/data)" = 0:700 ]'
+          }
+          run_job
           first_snapshot=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["latest_snapshot_id"])')
           curl -fsS "http://127.0.0.1:8787/api/maps/snapshot/$first_snapshot" -o sandbox/service-map.json
           python3 eval/check_scip_references.py sandbox/service-map.json --expect-install ts=installed
@@ -305,20 +324,16 @@ jobs:
           echo 'export const third = 3;' > sandbox/service-fixture/packages/core/src/extra.ts
           git -C sandbox/service-fixture add -A
           git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m second
-          job=$(curl -fsS -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:8787/api/repositories/$repository/refresh" | python3 -c 'import json,sys;print(json.load(sys.stdin)["job_id"])')
-          for _ in $(seq 1 300); do
-            snapshot=$(curl -fsS "http://127.0.0.1:8787/api/jobs/$job")
-            status=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])' <<<"$snapshot")
-            [ "$status" = done ] || [ "$status" = failed ] && break
-            sleep 2
-          done
-          [ "$status" = done ]
+          run_job
           second_snapshot=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["latest_snapshot_id"])')
           [ "$first_snapshot" != "$second_snapshot" ]
           curl -fsS "http://127.0.0.1:8787/api/maps/snapshot/$second_snapshot" -o sandbox/service-map-2.json
           python3 eval/check_scip_references.py sandbox/service-map-2.json --expect-install ts=installed
           docker exec tolmap-service python3 -c 'import glob,json; rows=[json.load(open(p)) for p in glob.glob("/srv/data/repositories/*/snapshots/*/index.json")]; assert any(row["prior_snapshot"] for row in rows), rows'
           docker logs tolmap-service > sandbox/service.log 2>&1
+          grep -qx 'cold start: no previous map' sandbox/service.log
+          grep -qx "warm start from $first_commit" sandbox/service.log
+          grep -qE '^names cache: [1-9][0-9]* entries in hand$' sandbox/service.log
           docker rm -f tolmap-service
 
       - name: Size and time summary

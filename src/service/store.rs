@@ -197,18 +197,6 @@ pub struct JobRow {
     pub snapshot_json: String,
 }
 
-/// What [`Store::requeue_job`] did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Requeued {
-    /// Back to `queued`, at this attempt.
-    Queued { attempt: i64 },
-    /// A counted loss past the retry bound: nothing was written, and the
-    /// caller fails the job having lost this many workers.
-    Exhausted { lost: i64 },
-    /// The row is terminal already (a cancel won), or at another epoch.
-    Unchanged,
-}
-
 pub struct Store {
     conn: Mutex<Connection>,
 }
@@ -300,7 +288,7 @@ impl Store {
         // `TOLMAP_CACHE_DIR=/data/cache`, and a `0700`-root-owned `/data`
         // would deny the dropped-uid worker child even search permission
         // into `/data/cache/work/.../job_dir`, breaking every job outright
-        // -- see `jobs::harden_persistent_dir`'s doc comment for the fuller
+        // -- see `executor::harden_persistent_dir`'s doc comment for the fuller
         // version of this. Locking the file (not an ancestor of anything
         // the worker needs to reach) gets the same "even a bug that points
         // the worker here can't read it" guarantee without that collateral
@@ -515,9 +503,9 @@ impl Store {
         Ok(stale.len())
     }
 
-    // ---- durable jobs (#97 phase 2), worker modes only ------------------
+    // ---- durable personal web progress ------------------------------
 
-    /// Admission: the job's first row, before `POST /api/index` answers.
+    /// Persist personal web admission before returning the job ID.
     pub fn insert_job(&self, row: &JobRow) -> Result<()> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         let now = crate::service::time::now_rfc3339();
@@ -543,35 +531,6 @@ impl Store {
             ],
         )?;
         Ok(())
-    }
-
-    /// Raises a live job's epoch for its next assignment and returns it,
-    /// with the job's admission order; `None` when the row is terminal (or
-    /// missing), so the job must not be assigned. Written before `assign`
-    /// is sent -- see the migration.
-    pub fn begin_attempt(&self, job_id: &str) -> Result<Option<(u64, i64)>> {
-        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
-        let tx = conn.transaction()?;
-        let changed = tx.execute(
-            &format!(
-                "UPDATE jobs SET epoch = epoch + 1, updated_at = ?2 WHERE job_id = ?1 AND {TERMINAL_JOB}"
-            ),
-            params![job_id, crate::service::time::now_rfc3339()],
-        )?;
-        let attempt = if changed == 1 {
-            Some(tx.query_row(
-                "SELECT epoch, queue_order FROM jobs WHERE job_id = ?1",
-                params![job_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-            )?)
-        } else {
-            None
-        };
-        tx.commit()?;
-        Ok(
-            attempt
-                .and_then(|(epoch, order)| u64::try_from(epoch).ok().map(|epoch| (epoch, order))),
-        )
     }
 
     /// A live job at `epoch` moves to `status` (`leased` or `running`)
@@ -607,118 +566,8 @@ impl Store {
         Ok(())
     }
 
-    /// Puts a live job at `epoch` back to `queued` with `snapshot_json`
-    /// (its stages reset) and no lease, on the class it is bound to. A
-    /// `counted` re-queue is a lost worker (§10.6): it raises `attempt` and
-    /// the job's lost workers on this class, unless `retries` lost-worker
-    /// retries are used up on this class already, in which case nothing is
-    /// written and the caller fails the job. One transaction, so the bound
-    /// is decided on the value it updates.
-    pub fn requeue_job(
-        &self,
-        job_id: &str,
-        epoch: u64,
-        counted: bool,
-        retries: u32,
-        snapshot_json: &str,
-    ) -> Result<Requeued> {
-        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
-        let tx = conn.transaction()?;
-        let found: Option<(i64, i64)> = tx
-            .query_row(
-                &format!(
-                    "SELECT attempt, class_lost FROM jobs
-                     WHERE job_id = ?1 AND epoch = ?2 AND {TERMINAL_JOB}"
-                ),
-                params![job_id, epoch as i64],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional_context()?;
-        let Some((attempt, class_lost)) = found else {
-            return Ok(Requeued::Unchanged);
-        };
-        // §10.6, per class: `class_lost` workers were lost on this class
-        // before this one, so this loss would be retry number
-        // `class_lost + 1`, past the bound once `class_lost >= retries`.
-        // With one class `class_lost` is `attempt - 1`, the bound #155
-        // checked.
-        if counted && class_lost >= i64::from(retries) {
-            return Ok(Requeued::Exhausted {
-                lost: class_lost + 1,
-            });
-        }
-        let attempt = attempt + i64::from(counted);
-        tx.execute(
-            "UPDATE jobs SET status = 'queued', attempt = ?3, class_lost = class_lost + ?4,
-                 lease_holder = NULL, lease_deadline_ms = NULL, snapshot_json = ?5,
-                 updated_at = ?6
-             WHERE job_id = ?1 AND epoch = ?2",
-            params![
-                job_id,
-                epoch as i64,
-                attempt,
-                i64::from(counted),
-                snapshot_json,
-                crate::service::time::now_rfc3339()
-            ],
-        )?;
-        tx.commit()?;
-        Ok(Requeued::Queued { attempt })
-    }
-
-    /// Puts a live job at `epoch` back to `queued` on another class (#97
-    /// phase 2, step 4: a reroute after `features`, an out-of-memory
-    /// escalation, or a lost worker that died of memory; the executor contract
-    /// §2.1, §6). Its lost workers on the new class start at 0 (§10.6: the
-    /// bound is per class). `counted` raises `attempt` for a lost worker; a
-    /// reroute or an escalation is not one. Never refuses: moving to a
-    /// class is not a retry on it.
-    pub fn rebind_job(
-        &self,
-        job_id: &str,
-        epoch: u64,
-        class: usize,
-        counted: bool,
-        snapshot_json: &str,
-    ) -> Result<Requeued> {
-        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
-        let tx = conn.transaction()?;
-        let changed = tx.execute(
-            &format!(
-                "UPDATE jobs SET status = 'queued', class = ?3, attempt = attempt + ?4,
-                     class_lost = 0, lease_holder = NULL, lease_deadline_ms = NULL,
-                     snapshot_json = ?5, updated_at = ?6
-                 WHERE job_id = ?1 AND epoch = ?2 AND {TERMINAL_JOB}"
-            ),
-            params![
-                job_id,
-                epoch as i64,
-                class as i64,
-                i64::from(counted),
-                snapshot_json,
-                crate::service::time::now_rfc3339()
-            ],
-        )?;
-        let attempt: Option<i64> = if changed == 1 {
-            Some(tx.query_row(
-                "SELECT attempt FROM jobs WHERE job_id = ?1",
-                params![job_id],
-                |row| row.get(0),
-            )?)
-        } else {
-            None
-        };
-        tx.commit()?;
-        Ok(match attempt {
-            Some(attempt) => Requeued::Queued { attempt },
-            None => Requeued::Unchanged,
-        })
-    }
-
     /// A job's terminal snapshot. The first terminal write wins: callers
-    /// write the in-memory snapshot, which is itself terminal once and for
-    /// all (`jobs::finish_failed`, `jobs::finish_done`), so every writer of
-    /// one job writes the same terminal state.
+    /// preserve the first completed or failed outcome.
     pub fn finish_job(&self, job_id: &str, status: &str, snapshot_json: &str) -> Result<()> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         conn.execute(
@@ -737,26 +586,6 @@ impl Store {
         Ok(())
     }
 
-    /// Every job not yet `done` or `failed`, in admission order: what a
-    /// restarted master reloads.
-    pub fn live_jobs(&self) -> Result<Vec<JobRow>> {
-        let conn = self.conn.lock().expect("store connection mutex poisoned");
-        let mut statement = conn.prepare(&format!(
-            "SELECT job_id, slug, commit_sha, spec_json, class, status, attempt, epoch,
-                    lease_holder, lease_deadline_ms, queue_order, snapshot_json
-             FROM jobs WHERE {TERMINAL_JOB} ORDER BY queue_order, job_id"
-        ))?;
-        let rows = statement
-            .query_map([], row_to_job)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub(crate) fn latest_request(&self, slug: &str) -> Result<Option<JobRow>> {
-        let conn = self.conn.lock().expect("store connection mutex poisoned");
-        conn.query_row("SELECT job_id, slug, commit_sha, spec_json, class, status, attempt, epoch, lease_holder, lease_deadline_ms, queue_order, snapshot_json FROM jobs WHERE slug = ?1 ORDER BY queue_order DESC LIMIT 1", [slug], row_to_job).optional_context()
-    }
-
     pub fn job(&self, job_id: &str) -> Result<Option<JobRow>> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         conn.query_row(
@@ -769,59 +598,9 @@ impl Store {
         .optional_context()
     }
 
-    /// The largest admission number ever given out, so a restarted master
-    /// continues after it.
-    pub fn max_job_order(&self) -> Result<i64> {
-        let conn = self.conn.lock().expect("store connection mutex poisoned");
-        Ok(conn.query_row(
-            "SELECT COALESCE(MAX(queue_order), 0) FROM jobs",
-            [],
-            |row| row.get(0),
-        )?)
-    }
-
-    /// Keeps the newest `keep` terminal rows, so `GET /api/jobs/{id}` still
-    /// answers for recent jobs after a restart without the table growing
-    /// forever. Live rows are never touched.
-    pub fn prune_finished_jobs(&self, keep: usize) -> Result<usize> {
-        let conn = self.conn.lock().expect("store connection mutex poisoned");
-        Ok(conn.execute(
-            "DELETE FROM jobs WHERE status IN ('done', 'failed') AND job_id NOT IN (
-                 SELECT job_id FROM jobs WHERE status IN ('done', 'failed')
-                 ORDER BY updated_at DESC, job_id DESC LIMIT ?1)",
-            params![keep as i64],
-        )?)
-    }
-
     pub fn insert(&self, row: &MapRow) -> Result<()> {
         let conn = self.conn.lock().expect("store connection mutex poisoned");
         insert_map(&conn, row)
-    }
-
-    /// The single visibility switch for an immutable, complete artifact set.
-    /// Names and the map pointer advance together; a cancelled/stale durable
-    /// attempt cannot replace the last complete snapshot.
-    pub(crate) fn publish(
-        &self,
-        row: &MapRow,
-        names: &NameCache,
-        fence: Option<(&str, u64)>,
-    ) -> Result<()> {
-        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
-        let tx = conn.transaction()?;
-        if let Some((job, epoch)) = fence {
-            let current: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM jobs WHERE job_id = ?1 AND epoch = ?2 AND status IN ('leased', 'running'))",
-                params![job, i64::try_from(epoch)?], |row| row.get(0))?;
-            anyhow::ensure!(current, "stale_or_cancelled_attempt");
-        }
-        for (fingerprint, entry) in names {
-            tx.execute("INSERT OR REPLACE INTO district_names (slug, fingerprint, entry_json) VALUES (?1, ?2, ?3)",
-                params![row.slug, fingerprint, serde_json::to_string(entry)?])?;
-        }
-        insert_map(&tx, row)?;
-        tx.commit()?;
-        Ok(())
     }
 }
 
@@ -979,166 +758,6 @@ mod tests {
         assert_eq!(saved[0].peak_rss_bytes, None);
     }
 
-    fn job_row(id: &str, order: i64) -> JobRow {
-        JobRow {
-            job_id: id.to_owned(),
-            slug: format!("o/{id}"),
-            commit: "c0".to_owned(),
-            spec_json: "{}".to_owned(),
-            class: 0,
-            status: "queued".to_owned(),
-            attempt: 1,
-            epoch: 0,
-            lease_holder: None,
-            lease_deadline_ms: None,
-            queue_order: order,
-            snapshot_json: "{}".to_owned(),
-        }
-    }
-
-    /// #97 phase 2: each assignment raises the epoch first; a counted
-    /// re-queue raises the attempt until the retry bound, then refuses; an
-    /// uncounted one never does; and a terminal row stays terminal whatever
-    /// is written after it.
-    #[test]
-    fn job_rows_fence_epochs_bound_retries_and_stay_terminal() {
-        let (_dir, store) = temp_store();
-        store.insert_job(&job_row("a", 1)).unwrap();
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((1, 1)));
-        store
-            .save_job_state("a", 1, "leased", Some("agent 0"), Some(5), "{\"s\":1}")
-            .unwrap();
-        // A write for another epoch is ignored.
-        store
-            .save_job_state("a", 7, "running", None, None, "{\"s\":7}")
-            .unwrap();
-        let row = store.job("a").unwrap().unwrap();
-        assert_eq!(row.status, "leased");
-        assert_eq!(row.lease_holder.as_deref(), Some("agent 0"));
-        assert_eq!(row.snapshot_json, "{\"s\":1}");
-        // Two lost-worker retries, then the bound.
-        assert_eq!(
-            store.requeue_job("a", 1, true, 2, "{}").unwrap(),
-            Requeued::Queued { attempt: 2 }
-        );
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((2, 1)));
-        assert_eq!(
-            store.requeue_job("a", 2, false, 2, "{}").unwrap(),
-            Requeued::Queued { attempt: 2 },
-            "a restart or a graceful stop is not a lost worker"
-        );
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((3, 1)));
-        assert_eq!(
-            store.requeue_job("a", 3, true, 2, "{}").unwrap(),
-            Requeued::Queued { attempt: 3 }
-        );
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((4, 1)));
-        assert_eq!(
-            store.requeue_job("a", 4, true, 2, "{}").unwrap(),
-            Requeued::Exhausted { lost: 3 }
-        );
-        assert_eq!(
-            store.requeue_job("a", 3, true, 2, "{}").unwrap(),
-            Requeued::Unchanged,
-            "a superseded epoch cannot re-queue"
-        );
-        store.finish_job("a", "failed", "{\"end\":1}").unwrap();
-        store.finish_job("a", "done", "{\"end\":2}").unwrap();
-        store
-            .save_job_state("a", 4, "running", None, None, "{}")
-            .unwrap();
-        assert_eq!(store.begin_attempt("a").unwrap(), None);
-        assert_eq!(
-            store.requeue_job("a", 4, false, 2, "{}").unwrap(),
-            Requeued::Unchanged
-        );
-        let row = store.job("a").unwrap().unwrap();
-        assert_eq!(
-            (row.status.as_str(), row.snapshot_json.as_str()),
-            ("failed", "{\"end\":1}")
-        );
-        assert!(store.live_jobs().unwrap().is_empty());
-    }
-
-    /// §10.6 per class (#97 phase 2, step 4): moving a job to another class
-    /// starts its lost-worker count on that class at 0, so it gets the full
-    /// bound there; a reroute or an escalation raises no attempt, a lost
-    /// worker that died of memory does.
-    #[test]
-    fn the_retry_bound_starts_again_on_a_new_class() {
-        let (_dir, store) = temp_store();
-        store.insert_job(&job_row("a", 1)).unwrap();
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((1, 1)));
-        assert_eq!(
-            store.requeue_job("a", 1, true, 2, "{}").unwrap(),
-            Requeued::Queued { attempt: 2 }
-        );
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((2, 1)));
-        assert_eq!(
-            store.requeue_job("a", 2, true, 2, "{}").unwrap(),
-            Requeued::Queued { attempt: 3 }
-        );
-        // Class 0's two retries are used; a reroute to class 1 is not a
-        // lost worker and raises nothing.
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((3, 1)));
-        assert_eq!(
-            store.rebind_job("a", 3, 1, false, "{}").unwrap(),
-            Requeued::Queued { attempt: 3 }
-        );
-        assert_eq!(store.job("a").unwrap().unwrap().class, 1);
-        // Two more lost workers on class 1 are retried, the third is not.
-        for (epoch, attempt) in [(4, 4), (5, 5)] {
-            assert_eq!(store.begin_attempt("a").unwrap(), Some((epoch, 1)));
-            assert_eq!(
-                store.requeue_job("a", epoch, true, 2, "{}").unwrap(),
-                Requeued::Queued { attempt }
-            );
-        }
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((6, 1)));
-        // A lost worker that died of memory moves on and counts.
-        assert_eq!(
-            store.rebind_job("a", 6, 2, true, "{}").unwrap(),
-            Requeued::Queued { attempt: 6 }
-        );
-        assert_eq!(store.begin_attempt("a").unwrap(), Some((7, 1)));
-        assert_eq!(
-            store.requeue_job("a", 7, true, 0, "{}").unwrap(),
-            Requeued::Exhausted { lost: 1 },
-            "with no retries the first loss on a class fails the job"
-        );
-        assert_eq!(
-            store.rebind_job("a", 6, 0, false, "{}").unwrap(),
-            Requeued::Unchanged,
-            "a superseded epoch cannot move the job"
-        );
-        store.finish_job("a", "failed", "{}").unwrap();
-        assert_eq!(
-            store.rebind_job("a", 7, 0, false, "{}").unwrap(),
-            Requeued::Unchanged,
-            "a terminal row stays terminal"
-        );
-    }
-
-    #[test]
-    fn live_jobs_come_back_in_admission_order_and_old_finished_ones_are_pruned() {
-        let (_dir, store) = temp_store();
-        for (id, order) in [("c", 3), ("a", 1), ("b", 2), ("d", 4)] {
-            store.insert_job(&job_row(id, order)).unwrap();
-        }
-        store.finish_job("d", "done", "{}").unwrap();
-        let live: Vec<String> = store
-            .live_jobs()
-            .unwrap()
-            .into_iter()
-            .map(|row| row.job_id)
-            .collect();
-        assert_eq!(live, ["a", "b", "c"]);
-        assert_eq!(store.max_job_order().unwrap(), 4);
-        assert_eq!(store.prune_finished_jobs(0).unwrap(), 1);
-        assert!(store.job("d").unwrap().is_none());
-        assert_eq!(store.live_jobs().unwrap().len(), 3);
-    }
-
     fn temp_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("test.sqlite3")).unwrap();
@@ -1188,169 +807,6 @@ mod tests {
         assert_eq!(latest[1].commit, "c");
         assert_eq!(store.latest("o/r").unwrap().unwrap().commit, "c");
         assert!(store.history("o/missing").unwrap().is_empty());
-    }
-
-    #[test]
-    fn matching_running_epoch_publishes_complete_artifacts_and_names() {
-        let (dir, store) = temp_store();
-        let old_dir = dir.path().join("snapshots/old");
-        let old_map = old_dir.join("old.json");
-        std::fs::create_dir_all(old_map.with_extension("symbols")).unwrap();
-        std::fs::write(&old_map, b"old map").unwrap();
-        std::fs::write(old_map.with_extension("symbols.json"), b"old symbols").unwrap();
-        std::fs::write(old_dir.join("index.json"), b"old source revision").unwrap();
-        let old_names = NameCache::from([(
-            "old-fingerprint".into(),
-            CacheEntry {
-                name: "old district".into(),
-                district: 0,
-                size: 1,
-                namer: "idf".into(),
-                numbered: false,
-            },
-        )]);
-        store
-            .publish(&row("o/r", "old", "2026-01-01", &old_map), &old_names, None)
-            .unwrap();
-
-        let new_dir = dir.path().join("snapshots/new-complete");
-        let new_map = new_dir.join("new.json");
-        std::fs::create_dir_all(new_map.with_extension("symbols")).unwrap();
-        std::fs::write(&new_map, b"new map").unwrap();
-        std::fs::write(new_map.with_extension("symbols.json"), b"new symbols").unwrap();
-        std::fs::write(
-            new_map.with_extension("symbols").join("0.json"),
-            b"new district symbols",
-        )
-        .unwrap();
-        std::fs::write(new_dir.join("index.json"), b"new source revision").unwrap();
-        let new_names = NameCache::from([(
-            "new-fingerprint".into(),
-            CacheEntry {
-                name: "new district".into(),
-                district: 0,
-                size: 1,
-                namer: "idf".into(),
-                numbered: false,
-            },
-        )]);
-        let next = row("o/r", "new", "2026-01-02", &new_map);
-        let mut job = job_row("publish", 1);
-        job.slug = "o/r".into();
-        job.status = "running".into();
-        job.epoch = 7;
-        store.insert_job(&job).unwrap();
-
-        assert!(store.get("o/r", "new").unwrap().is_none());
-        assert_eq!(store.latest("o/r").unwrap().unwrap().commit, "old");
-        store
-            .publish(&next, &new_names, Some(("publish", 7)))
-            .unwrap();
-
-        let visible = store.get("o/r", "new").unwrap().expect("published map");
-        assert_eq!(visible.map_path, new_map);
-        assert_eq!(std::fs::read(&visible.map_path).unwrap(), b"new map");
-        assert_eq!(
-            std::fs::read(visible.map_path.with_extension("symbols.json")).unwrap(),
-            b"new symbols"
-        );
-        assert_eq!(
-            std::fs::read(visible.map_path.with_extension("symbols").join("0.json")).unwrap(),
-            b"new district symbols"
-        );
-        assert_eq!(
-            std::fs::read(visible.map_path.parent().unwrap().join("index.json")).unwrap(),
-            b"new source revision"
-        );
-        assert_eq!(store.latest("o/r").unwrap().unwrap().commit, "new");
-        assert_eq!(
-            store.load_names("o/r").unwrap()["new-fingerprint"].name,
-            "new district"
-        );
-        assert_eq!(std::fs::read(old_map).unwrap(), b"old map");
-        assert_eq!(
-            store.load_names("o/r").unwrap()["old-fingerprint"].name,
-            "old district"
-        );
-    }
-
-    #[test]
-    fn publication_fences_stale_and_cancelled_attempts_and_keeps_last_complete() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("store.sqlite");
-        let store = Store::open(&db).unwrap();
-        let old_dir = dir.path().join("snapshots/old");
-        std::fs::create_dir_all(&old_dir).unwrap();
-        let old_path = old_dir.join("map.json");
-        std::fs::write(&old_path, b"old complete map").unwrap();
-        std::fs::write(old_dir.join("symbols.json"), b"old complete symbols").unwrap();
-        let old_source = dir.path().join("prepared/old/source-revision");
-        std::fs::create_dir_all(old_source.parent().unwrap()).unwrap();
-        std::fs::write(&old_source, b"old commit").unwrap();
-        let old = row("o/a", "old", "2026-01-01", &old_path);
-        let old_names = NameCache::from([(
-            "old-fingerprint".into(),
-            CacheEntry {
-                name: "old district".into(),
-                district: 0,
-                size: 1,
-                namer: "idf".into(),
-                numbered: false,
-            },
-        )]);
-        store.publish(&old, &old_names, None).unwrap();
-        let mut job = job_row("a", 1);
-        job.status = "running".into();
-        job.epoch = 2;
-        store.insert_job(&job).unwrap();
-        let staged_dir = dir.path().join("snapshots/new");
-        std::fs::create_dir_all(&staged_dir).unwrap();
-        let staged = staged_dir.join("map.json");
-        std::fs::write(&staged, b"new partial map").unwrap();
-        std::fs::write(staged_dir.join("symbols.json"), b"new partial symbols").unwrap();
-        let new_source = dir.path().join("prepared/new/source-revision");
-        std::fs::create_dir_all(new_source.parent().unwrap()).unwrap();
-        std::fs::write(&new_source, b"new commit").unwrap();
-        let next = row("o/a", "new", "2026-01-02", &staged);
-        let new_names = NameCache::from([(
-            "new-fingerprint".into(),
-            CacheEntry {
-                name: "new district".into(),
-                district: 0,
-                size: 1,
-                namer: "idf".into(),
-                numbered: false,
-            },
-        )]);
-        // Crash before the switch: staged bytes have no visible row.
-        assert!(store.get("o/a", "new").unwrap().is_none());
-        drop(store);
-        let restarted = Store::open(&db).unwrap();
-        assert_eq!(restarted.latest("o/a").unwrap().unwrap().commit, "old");
-        assert!(restarted
-            .publish(&next, &new_names, Some(("a", 1)))
-            .is_err());
-        restarted.finish_job("a", "failed", "{}").unwrap();
-        assert!(restarted
-            .publish(&next, &new_names, Some(("a", 2)))
-            .is_err());
-        drop(restarted);
-        let restored = Store::open(&db).unwrap();
-        let visible = restored.latest("o/a").unwrap().unwrap();
-        assert_eq!(visible.commit, "old");
-        assert_eq!(visible.map_path, old_path);
-        assert_eq!(
-            std::fs::read(&visible.map_path).unwrap(),
-            b"old complete map"
-        );
-        assert_eq!(
-            std::fs::read(old_dir.join("symbols.json")).unwrap(),
-            b"old complete symbols"
-        );
-        assert_eq!(std::fs::read(old_source).unwrap(), b"old commit");
-        let names = restored.load_names("o/a").unwrap();
-        assert!(names.contains_key("old-fingerprint"));
-        assert!(!names.contains_key("new-fingerprint"));
     }
 
     #[test]

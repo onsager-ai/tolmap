@@ -361,7 +361,6 @@ const FAILURES = {
   worker_crashed: { rows: { ...FETCHED, detect: ["done", 1], parse: ["failed", 51] }, error: "worker exited unexpectedly (signal 9); last stage: Parsing files" },
   busy: { rows: {}, error: "the index queue is full; please try again later" },
   server_stopping: { rows: { ...FETCHED }, error: "the service is shutting down and did not finish this job" },
-  rate_limited: { rows: {}, error: "too many index requests for this repository; try again later" },
   index_failed: { rows: { ...FETCHED, detect: ["done", 1], parse: ["done", 38], resolve: ["failed", 2] }, error: "indexing failed: unexpected token in some/file.py" },
   internal_error: { rows: { ...READ_DONE, blend_prune: ["done", 2], partition: ["failed", 1] }, error: "internal error: partition produced no districts" },
   mystery_code: { rows: { ...READ_DONE }, error: "an error code this page has never seen" },

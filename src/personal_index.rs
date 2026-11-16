@@ -136,6 +136,7 @@ impl EventSink for Sink {
         match event {
             WorkerEvent::StageStarted { stage, .. } => self.stage(&format!("{stage:?}")),
             WorkerEvent::Progress { value, .. } => self.stage(&value.label),
+            WorkerEvent::Log { message, .. } => eprintln!("{message}"),
             _ => {}
         }
     }
@@ -340,6 +341,12 @@ fn run_configured(
         ),
         install: config.filter(|c| c.scip_install).map(|_| "sandbox".into()),
     };
+    // Workers run as a separate uid in the image and cannot traverse the
+    // root-owned 0700 library. Only disposable job files live in this scratch
+    // directory; the job itself is hardened to the worker uid before spawning.
+    let scratch = tempfile::Builder::new().prefix("tolmap-job-").tempdir()?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(scratch.path(), std::fs::Permissions::from_mode(0o711))?;
     let env = ExecEnv {
         clone_cache: config
             .map(|c| c.cache_dir.join(&s.repository))
@@ -347,8 +354,8 @@ fn run_configured(
         clone_cache_bytes: config
             .map(|c| c.limits.clone_cache_bytes)
             .unwrap_or(2 * 1024 * 1024 * 1024),
-        job_root: s.data.join("jobs"),
-        install_root: s.data.join("install"),
+        job_root: scratch.path().join("jobs"),
+        install_root: scratch.path().join("install"),
         worker_exe: std::env::current_exe()?,
         worker_uid: config.map(|c| c.worker_uid).unwrap_or(10001),
         worker_gid: config.map(|c| c.worker_gid).unwrap_or(10001),
@@ -382,9 +389,14 @@ fn run_configured(
         let dir = s.data.join("snapshots").join(id.to_string());
         private(&dir)?;
         let o = &result.output;
+        // Adoption first takes custody on the scratch filesystem. Only checked
+        // artifacts are copied into the private retained store, which may be on
+        // a different mounted filesystem (rename cannot cross that boundary).
+        let staging = scratch.path().join("adopted");
+        private(&staging)?;
         let adopted = worker_result::adopt(
             &result.output_dir,
-            &dir,
+            &staging,
             "repository",
             &worker_result::Reported {
                 map_path: &o.map_path,
@@ -397,11 +409,31 @@ fn run_configured(
             None,
         )
         .map_err(|e| anyhow::anyhow!("invalid worker artifacts: {e}"))?;
+        // Unclaimed worker output is not part of the checked artifact set.
+        std::fs::remove_dir_all(staging.join("output"))?;
+        copy_artifacts(&staging, &dir)?;
         crate::naming::save_cache(&dir.join("names.json"), &adopted.names)?;
         publish_snapshot(&s, id, prepared, &commit, sequence, cancel.as_ref())
     })();
     let _ = std::fs::remove_dir_all(work);
     publish
+}
+
+// The source is already in parent-owned custody after worker_result::adopt.
+fn copy_artifacts(source: &Path, destination: &Path) -> Result<()> {
+    private(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if kind.is_dir() {
+            copy_artifacts(&entry.path(), &target)?;
+        } else {
+            ensure!(kind.is_file(), "artifact must be a regular file");
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) struct RefreshArgs {

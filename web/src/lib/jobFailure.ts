@@ -120,7 +120,6 @@ export function classifyFailure(job: Pick<JobSnapshot, "error_code" | "error" | 
     }
     case "busy":
     case "server_stopping":
-    case "rate_limited":
       return {
         code,
         cls: "transient",

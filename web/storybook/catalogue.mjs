@@ -12,7 +12,7 @@ export const cases = [
   ['home-unavailable', 'Home unavailable', '/', 'unavailable'],
   ['job-missing', 'No job selected', '/new', 'home'],
   ...['queued', 'fetch', 'read', 'map', 'detail'].map(state => [`job-${state}`, `Indexing ${state}`, '/new?job=fixture&slug=onsager-ai/tolmap', state]),
-  ...['detection_uncertain', 'detection_failed', 'cancelled', 'clone_failed', 'worker_crashed', 'busy', 'server_stopping', 'rate_limited', 'index_failed', 'internal_error', 'unknown'].map(code => [`failed-${code.replaceAll('_', '-')}`, `Failure · ${code}`, '/new?job=fixture&slug=onsager-ai/tolmap', code]),
+  ...['detection_uncertain', 'detection_failed', 'cancelled', 'clone_failed', 'worker_crashed', 'busy', 'server_stopping', 'index_failed', 'internal_error', 'unknown'].map(code => [`failed-${code.replaceAll('_', '-')}`, `Failure · ${code}`, '/new?job=fixture&slug=onsager-ai/tolmap', code]),
   ['map-overview', 'Map overview', '/onsager-ai/tolmap', 'map-ready'],
   ['organization-overview', 'Organization overview', '/org/acme-platform', 'organization-ready'],
   ['organization-card', 'Organization repository card', '/org/acme-platform?repo=acme%2Fapp', 'organization-ready'],

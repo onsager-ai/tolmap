@@ -37,7 +37,7 @@ Settings are read at invocation/startup. Repository intent remains in
 
 `tolmap web [--addr IP:PORT] [--data DIR]` uses the same application loader,
 registry and retained snapshots as the CLI. It binds to `127.0.0.1:8787` by
-default. `--addr` overrides configured bind and port. There is no authentication.
+default. `bind_addr` / `TOLMAP_BIND_ADDR` accepts an IP or `IP:PORT`; a separate configured `port` overrides its port, and `--addr` overrides both. There is no authentication.
 Loopback requests require `Host: localhost:PORT`, `127.0.0.1:PORT` or
 `[::1]:PORT`; other hosts are rejected. Mutations require
 `Content-Type: application/json` to reject cross-site simple requests.

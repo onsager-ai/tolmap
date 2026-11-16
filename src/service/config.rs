@@ -141,7 +141,7 @@ pub struct ServeConfig {
     ///
     /// Env: `TOLMAP_RETAIN_COMMITS_PER_REPO`.
     pub retain_commits_per_repo: usize,
-    /// Uid/gid the worker child (`service::jobs::process_worker_exe`) is
+    /// Uid/gid the worker child (`service::executor::run_child`) is
     /// dropped to when the service itself is running as root -- the
     /// Dockerfile runtime stage's case, and the only one where dropping
     /// privilege is even possible (`CommandExt::uid()/gid()` fails if the
@@ -182,7 +182,17 @@ impl ServeConfig {
         // does not parse as an `IpAddr`, so a typo'd TOLMAP_BIND_ADDR can't
         // take the service down at startup (same handling as every
         // queue/rate variable).
-        let bind_ip = env_var_or("TOLMAP_BIND_ADDR", IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let bind = env::var("TOLMAP_BIND_ADDR")
+            .ok()
+            .and_then(|value| {
+                value.parse::<SocketAddr>().ok().or_else(|| {
+                    value
+                        .parse::<IpAddr>()
+                        .ok()
+                        .map(|ip| SocketAddr::new(ip, port))
+                })
+            })
+            .unwrap_or_else(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
         let cache_dir = env::var("TOLMAP_CACHE_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| env::temp_dir().join("tolmap-cache"));
@@ -214,7 +224,7 @@ impl ServeConfig {
         let worker_uid = env_var_or("TOLMAP_WORKER_UID", 10001u32);
         let worker_gid = env_var_or("TOLMAP_WORKER_GID", 10001u32);
         ServeConfig {
-            bind: SocketAddr::new(bind_ip, port),
+            bind,
             db_path,
             cache_dir,
             static_dir,

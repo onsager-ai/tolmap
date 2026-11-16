@@ -21,7 +21,6 @@ export const FailedCloneFailed = { ...page('failed-clone-failed') };
 export const FailedWorkerCrashed = { ...page('failed-worker-crashed') };
 export const FailedBusy = { ...page('failed-busy') };
 export const FailedServerStopping = { ...page('failed-server-stopping') };
-export const FailedRateLimited = { ...page('failed-rate-limited') };
 export const FailedIndexFailed = { ...page('failed-index-failed') };
 export const FailedInternalError = { ...page('failed-internal-error') };
 export const FailedUnknown = { ...page('failed-unknown') };

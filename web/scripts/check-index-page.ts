@@ -206,7 +206,6 @@ console.log("\nfailure pages by error code (§6.5)");
     ["worker_crashed", "transient", "The mapping job stopped", ["retry"]],
     ["busy", "transient", "tolmap is busy right now", ["retry"]],
     ["server_stopping", "transient", "tolmap is busy right now", ["retry"]],
-    ["rate_limited", "transient", "tolmap is busy right now", ["retry"]],
     ["index_failed", "bug", "Something went wrong while mapping", ["retry", "report"]],
     ["internal_error", "bug", "Something went wrong while mapping", ["retry", "report"]],
     ["some_future_code", "bug", "Something went wrong while mapping", ["retry", "report"]],

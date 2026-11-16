@@ -138,7 +138,14 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
  if(width===320&&colorScheme==='light'){
   await page.getByRole('link',{name:'View repository reader'}).click();
   await page.getByRole('heading',{name:'reader',exact:true}).waitFor();
+  const refreshResponse = page.waitForResponse(response => response.request().method() === 'POST' && response.url().endsWith(`/api/repositories/${fixture.repositoryId}/refresh`));
   await page.getByRole('button',{name:'Refresh',exact:true}).click();
+  const refreshJob = await (await refreshResponse).json();
+  const terminal = await page.waitForFunction(async ({origin,id}) => {
+    const job = await (await fetch(`${origin}/api/jobs/${id}`)).json();
+    return ['done','failed'].includes(job.status) ? job : false;
+  }, {origin:browserOrigin,id:refreshJob.job_id}, {timeout:120000,polling:250});
+  assert.equal((await terminal.jsonValue()).status,'done','personal refresh must complete before opening latest map');
   await page.getByRole('link',{name:'Open latest map',exact:true}).click();
   await page.locator('.map-svg').waitFor();
   await page.locator('[data-open-search]').click();await page.getByRole('combobox',{name:'Search districts, files and symbols'}).fill('cart.py');

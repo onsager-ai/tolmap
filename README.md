@@ -106,7 +106,9 @@ Existing data is never discovered or imported. Re-add repositories to start new 
 
 ## Self-hosting
 
-Build the `Dockerfile` and run `tolmap web`. Configure it with the shared application settings in `docs/API.md`, and persist `TOLMAP_CACHE_DIR` and `TOLMAP_DB_PATH` on a volume so the store and clone cache survive a restart.
+Build the `Dockerfile` and run `tolmap web`. Configure it with the shared application settings in `docs/API.md`, and persist `TOLMAP_DATA_DIR` on a volume so the database, snapshots, retained source and cache survive a restart.
+
+The image binds `0.0.0.0:8787` so a published container port is reachable. There is no authentication: anyone reaching the listener can read source and manage repositories. Publish the port on loopback when access should stay on the host.
 
 The maintainers' own production/staging hosting config (Fly, Railway, pricing and machine sizing) is not in this repo.
 

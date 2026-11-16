@@ -4,7 +4,7 @@ export const REQUIRED_STORIES = [
   'home', 'home-empty', 'home-loading', 'home-unavailable',
   'home-repositories', 'repository-history', 'repository-running', 'repository-empty', 'repository-no-capabilities', 'repository-delete-snapshot',
   'job-missing', 'job-queued', 'job-fetch', 'job-read', 'job-map', 'job-detail',
-  'failed-detection-uncertain', 'failed-detection-failed', 'failed-cancelled', 'failed-clone-failed', 'failed-worker-crashed', 'failed-busy', 'failed-server-stopping', 'failed-rate-limited', 'failed-index-failed', 'failed-internal-error', 'failed-unknown',
+  'failed-detection-uncertain', 'failed-detection-failed', 'failed-cancelled', 'failed-clone-failed', 'failed-worker-crashed', 'failed-busy', 'failed-server-stopping', 'failed-index-failed', 'failed-internal-error', 'failed-unknown',
   'map-overview', 'organization-overview', 'organization-card', 'organization-loading', 'organization-error', 'map-loading', 'map-unavailable', 'map-district', 'map-file', 'map-symbol', 'map-folder', 'map-layer-c', 'map-layer-x', 'map-layer-p', 'map-detail-pending',
   'map-lens-loaded', 'map-lens-unresolved', 'map-lens-empty', 'map-lens-error',
   'map-lens-compare-commits', 'map-lens-compare-overlap', 'map-lens-compare-loading', 'map-lens-compare-stale', 'map-lens-compare-error',

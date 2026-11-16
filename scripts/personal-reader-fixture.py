@@ -70,6 +70,39 @@ assert original['text']==committed_source,'dirty tracked source entered the snap
 assert get(base+'/source?path=untracked-local.py&commit='+a)['status']=='missing'
 provenance=get(base+'/provenance');assert provenance['commit']==a
 export=get(base);assert export['districts']
+SOURCE_FIELDS={'version','repository','commit','path','status','text','bytes','long_line'}
+MAP_REQUIRED={'repo','q','names','districts','F','N','E','L','S','U','roads','lang'}
+MAP_ALLOWED=MAP_REQUIRED|{'C','coverage','P','footprint_centroids','file_neighbourhoods','neighbourhoods','D'}
+SYMBOLS_REQUIRED={'district','files','symbol_indices','symbols','edges','kinds','module_code_lines'}
+SYMBOLS_ALLOWED=SYMBOLS_REQUIRED|{'symbol_rings','module_rings','header_rings'}
+assert set(original)==SOURCE_FIELDS,original
+assert set(provenance)=={'version','repository','commit'},provenance
+assert MAP_REQUIRED<=set(export)<=MAP_ALLOWED,set(export)
+host_paths=(str(pathlib.Path.cwd().resolve()),str(root),str(repo))
+source_lines=[line.strip() for line in committed_source.splitlines() if len(line.strip())>=16 and ' ' in line.strip()]
+def private_safe(label,value):
+    text=json.dumps(value)
+    assert all(path not in text for path in host_paths),(label,'host path')
+    assert all(path not in text for path in ('/home/','/tmp/','/Users/')),(label,'absolute path')
+    assert committed_source not in text and json.dumps(committed_source)[1:-1] not in text,(label,'source text')
+    assert all(line not in text for line in source_lines),(label,'source line')
+    assert 'UNTRACKED_SOURCE_739' not in text and 'UNCOMMITTED_TRACKED_739' not in text,label
+private_safe('export',export);private_safe('provenance',provenance)
+for file,status in [('binary.dat','binary'),('large.txt','large'),('escape','unsupported'),('missing.py','missing')]:
+    value=get(base+'/source?path='+file+'&commit='+a)
+    assert set(value)==SOURCE_FIELDS and value['status']==status and value['text'] is None,(file,value)
+long_line=get(base+'/source?path=long.txt&commit='+a)
+assert long_line['status']=='ready' and long_line['long_line'] is True,long_line
+for path in ['../secret','.git/config','escape/other']:
+    from urllib.parse import quote
+    code,body,_=req(base+'/source?path='+quote(path,safe='')+'&commit='+a)
+    if path=='escape/other':
+        assert code==200 and json.loads(body)['status']=='missing',(path,code,body)
+    else:assert code==400,(path,code,body)
+assert req(base+'/source?path=shop/cart.py&commit='+'0'*40)[0]==404
+# Cross-origin browser requests fail the loopback Host boundary, including POST.
+assert req('/api/repositories/'+repository_id+'/refresh','POST',{}, {'Host':'attacker.invalid','Origin':'https://attacker.invalid'})[0]==403
+
 assert req('/api/maps/snapshot/'+sid+'/source?path=shop/cart.py')[0]==400
 assert req('/api/maps',headers={'Host':'attacker.invalid'})[0]==403
 assert req(history_path.replace('/history','/refresh'),'POST',{}, {'Content-Type':'text/plain'})[0]==415
@@ -92,17 +125,28 @@ assert get(base_for(bid)+'/freshness')['state']=='failed'
 git('add','.');git('commit','-m','C')
 job=post('/api/repositories/'+repository_id+'/refresh')['job_id']
 def worker_pids():
-    result=[]
-    for entry in pathlib.Path('/proc').iterdir():
-        if not entry.name.isdigit():continue
-        try:
-            args=(entry/'cmdline').read_bytes().split(b'\0')
-            if len(args)>1 and args[1]==b'worker' and b'tolmap' in args[0]:result.append(int(entry.name))
-        except (OSError,ProcessLookupError):pass
+    # Only this web process's descendants; other CI jobs may index concurrently.
+    pending=[p.pid];seen=set();result=[]
+    while pending:
+        parent=pending.pop()
+        try:children_files=list(pathlib.Path(f'/proc/{parent}/task').glob('*/children'))
+        except (FileNotFoundError,ProcessLookupError):continue
+        for children in children_files:
+            try:ids=[int(value) for value in children.read_text().split()]
+            except (FileNotFoundError,ProcessLookupError):continue
+            for child in ids:
+                if child in seen:continue
+                seen.add(child);pending.append(child)
+                try:
+                    args=pathlib.Path(f'/proc/{child}/cmdline').read_bytes().split(b'\0')
+                    if len(args)>1 and args[1]==b'worker':result.append(child)
+                except (OSError,ProcessLookupError):pass
     return result
 for _ in range(1000):
     workers=worker_pids()
-    if workers:break
+    if workers:
+        for worker in workers:os.killpg(worker,signal.SIGSTOP)
+        break
     assert get('/api/jobs/'+job)['status'] not in ('done','failed'),'worker finished before cancellation qualification'
     time.sleep(.01)
 else:raise AssertionError('actual indexing worker was never observed')
@@ -133,6 +177,26 @@ try:
 finally:off.rename(source_path)
 for district in export['districts']:
     symbols=get(base+'/symbols?district='+str(district));assert symbols['district']==int(district)
+    assert SYMBOLS_REQUIRED<=set(symbols)<=SYMBOLS_ALLOWED,set(symbols)
+    private_safe('symbols '+str(district),symbols)
+# Missing artifacts/storage are explicit; neither case can substitute B for A.
+with sqlite3.connect(root/'store/tolmap.sqlite3') as db:
+    snapshot_dir=pathlib.Path(db.execute('SELECT map_path FROM personal_snapshots WHERE id=?',(sid,)).fetchone()[0]).parent
+snapshot_off=snapshot_dir.with_name(snapshot_dir.name+'.offline');snapshot_dir.rename(snapshot_off)
+try:
+    assert req(base)[0]==404
+    assert get(base_for(bid)+'/provenance')['commit']==b
+    missing_snapshot=next(row for row in get(history_path)['snapshots'] if row['id']==sid)
+    assert missing_snapshot['reopen'] is None,missing_snapshot
+finally:snapshot_off.rename(snapshot_dir)
+store=root/'store';store_off=root/'store.offline';store.rename(store_off)
+try:
+    assert req(base)[0]==404
+    missing=get(base+'/source?path=shop/cart.py&commit='+a)
+    assert missing['status']=='expired' and missing['text'] is None,missing
+finally:store_off.rename(store)
+assert get(base)==export
+assert get(base+'/source?path=shop/cart.py&commit='+a)['text']==committed_source
 # Inspect real process/worker outbound connect syscalls, including failures.
 network_trace=os.environ.get('TOLMAP_TEST_NETWORK_TRACE')
 if network_trace:
