@@ -144,6 +144,35 @@ const MIGRATIONS: &[&str] = &[
     // whenever the job moves to another class (`rebind_job`), and it is
     // what the retry bound is checked against.
     "ALTER TABLE jobs ADD COLUMN class_lost INTEGER NOT NULL DEFAULT 0;",
+    r#"
+    CREATE TABLE repositories (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK(kind IN ('local', 'github')),
+        location TEXT NOT NULL,
+        observed_head TEXT,
+        observed_at TEXT,
+        UNIQUE(kind, location)
+    );
+    CREATE TABLE personal_snapshots (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        repository TEXT NOT NULL REFERENCES repositories(id),
+        commit_sha TEXT NOT NULL,
+        map_path TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE INDEX personal_history ON personal_snapshots(repository, sequence DESC);
+    CREATE TABLE personal_attempts (
+        id TEXT PRIMARY KEY,
+        repository TEXT NOT NULL REFERENCES repositories(id),
+        status TEXT NOT NULL,
+        error TEXT,
+        started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        finished_at TEXT
+    );
+    "#,
 ];
 
 /// The two statuses a `jobs` row never leaves.
@@ -285,6 +314,8 @@ impl Store {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
                 .with_context(|| format!("harden store file {}", path.display()))?;
         }
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
         // WAL so a long-running index build's occasional store write does
         // not block concurrent GET /api/maps reads behind it.
         conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -296,16 +327,20 @@ impl Store {
     }
 
     fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock().expect("store connection mutex poisoned");
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let mut conn = self.conn.lock().expect("store connection mutex poisoned");
+        let transaction =
+            conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let version: i64 = transaction.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         for (offset, migration) in MIGRATIONS.iter().enumerate() {
             let target = offset as i64 + 1;
             if version < target {
-                conn.execute_batch(migration)
+                transaction
+                    .execute_batch(migration)
                     .with_context(|| format!("apply migration {target}"))?;
-                conn.pragma_update(None, "user_version", target)?;
+                transaction.pragma_update(None, "user_version", target)?;
             }
         }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1505,3 +1540,7 @@ mod tests {
         );
     }
 }
+
+#[path = "personal_store.rs"]
+mod personal;
+pub use personal::{PersonalSnapshot, Repository};

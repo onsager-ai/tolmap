@@ -38,3 +38,5 @@ pub mod symbols;
 pub mod worker;
 
 pub const SEED: u64 = 7;
+
+pub mod personal;

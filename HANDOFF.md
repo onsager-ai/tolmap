@@ -2,7 +2,7 @@
 
 You are picking up a measured prototype, not a product.
 
-**The Python and vanilla-JS code in this package is a reference implementation and a test oracle. Do not build on it.** The product is Rust + React/TypeScript, and the first thing to ship is a **website that maps any public repository**, in the shape of DeepWiki. `docs/ARCHITECTURE.md` has the target stack, the MVP scope, the module-by-module port map and the two places real risk lives. Freeze `src/tolmap/` and `viewer/` at v0.1.
+**The Python and vanilla-JS code in this package is a reference implementation and a test oracle. Do not build on it.** The product is Rust + React/TypeScript, and the current direction is a **personal repository library with a primary CLI and shared web viewer** (issue #314). The historical public MVP notes below describe the earlier direction. `docs/ARCHITECTURE.md` has the target stack, the MVP scope, the module-by-module port map and the two places real risk lives. Freeze `src/tolmap/` and `viewer/` at v0.1.
 
 Read `docs/FINDINGS.md` before writing any of the port. Several obvious-looking "improvements" have already been tried and falsified there, and the reference implementation is the thing the port is checked against.
 

@@ -10,6 +10,9 @@ use clap::{Parser, Subcommand};
     about = "Turn a source repository into a deterministic map"
 )]
 struct Cli {
+    /// Shared personal data root (TOLMAP_DATA_DIR, then application config).
+    #[arg(long, global = true)]
+    data: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -22,6 +25,12 @@ enum DebtCommand {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Register and index committed local or public GitHub source.
+    Add(tolmap::personal::AddArgs),
+    /// List registrations and last observed freshness; never index or fetch.
+    Repos,
+    /// Remove a registration and its tolmap-owned history and source.
+    Rm { name: String },
     /// Summarize districts in a stored map (docs/QUERY.md).
     Overview(tolmap::query::QueryOptions),
     /// Locate a file or symbol in a stored map (docs/QUERY.md).
@@ -31,15 +40,12 @@ enum Command {
     /// Find a file import path, never a runtime call chain (docs/QUERY.md).
     Route(tolmap::query::RouteArgs),
     /// Inspect committed snapshot freshness without indexing.
-    Status(tolmap::local::cli::StatusArgs),
+    Status(tolmap::personal::StatusArgs),
     /// Explicitly refresh committed HEAD without a server or upload.
-    Refresh(tolmap::local::cli::RefreshArgs),
+    Refresh(tolmap::personal::RefreshArgs),
     /// Analyze a committed private checkout with a loopback-only viewer.
     Local {
         repo: PathBuf,
-        /// Private storage outside the checkout; never collected as public maps.
-        #[arg(long)]
-        data: PathBuf,
         /// Existing production web/dist bundle.
         #[arg(long)]
         static_dir: PathBuf,
@@ -50,7 +56,13 @@ enum Command {
         // Exactly one of `repo` or `--graph` is required -- validated in
         // `main`, since clap's derive can't express "either, not both"
         // across a positional and a flag as cleanly as a manual check does.
-        repo: Option<PathBuf>,
+        checkout: Option<PathBuf>,
+        #[arg(long, conflicts_with_all=["checkout","graph"])]
+        repo: Option<String>,
+        #[arg(long, conflicts_with_all=["checkout","graph"])]
+        commit: Option<String>,
+        #[arg(long, conflicts_with_all=["checkout","graph"])]
+        snapshot: Option<String>,
         /// Source root inside the repository. Detected when omitted (see
         /// `tolmap detect`) -- an explicit value always wins over detection,
         /// since the repository holds intent and a maintainer's override is
@@ -185,7 +197,15 @@ enum Command {
     /// what was found and why -- the thing to run when a map looks wrong
     /// (see docs/FINDINGS.md finding 7: a wrong `--pkg` fails silently, not
     /// loudly, so this exists to make the choice visible and overridable).
-    Detect { repo: PathBuf },
+    Detect {
+        checkout: Option<PathBuf>,
+        #[arg(long, conflicts_with = "checkout")]
+        repo: Option<String>,
+        #[arg(long, conflicts_with = "checkout")]
+        commit: Option<String>,
+        #[arg(long, conflicts_with = "checkout")]
+        snapshot: Option<String>,
+    },
     /// What a change does to the map (issue #170, docs/CHECK.md): the
     /// districts it crosses and the change in modularity with the base
     /// partition held fixed, with the cross-district edges behind it. Exits
@@ -195,11 +215,17 @@ enum Command {
     Check {
         /// Any path inside the git repository; the check runs on its top
         /// level.
-        repo: PathBuf,
+        checkout: Option<PathBuf>,
+        #[arg(long, conflicts_with = "checkout")]
+        repo: Option<String>,
+        #[arg(long, conflicts_with = "base_map")]
+        commit: Option<String>,
+        #[arg(long, conflicts_with = "base_map")]
+        snapshot: Option<String>,
         /// The commit the change is measured against: its map supplies the
         /// districts. Checked out into a temporary worktree.
         #[arg(long)]
-        base: String,
+        base: Option<String>,
         /// The changed commit. Defaults to the working tree, uncommitted
         /// and untracked files included.
         #[arg(long)]
@@ -207,7 +233,7 @@ enum Command {
         /// A stored map of --base, named `<full commit id>.json` as the
         /// service store names it, instead of building the base map. The
         /// base graph is still extracted: a map keeps no edge weights.
-        #[arg(long)]
+        #[arg(long, alias = "map", conflicts_with = "repo")]
         base_map: Option<PathBuf>,
         /// Select all sources above build's detection floor.
         #[arg(long, conflicts_with_all = ["pkg", "lang"])]
@@ -246,6 +272,12 @@ enum Command {
         /// A map JSON: a service store file or an exported map.
         #[arg(long)]
         map: Option<PathBuf>,
+        #[arg(long, conflicts_with = "map")]
+        repo: Option<String>,
+        #[arg(long, conflicts_with = "map")]
+        commit: Option<String>,
+        #[arg(long, conflicts_with = "map")]
+        snapshot: Option<String>,
         #[arg(long, default_value = "text", value_parser = ["text", "json", "lens"])]
         format: String,
         /// Keep only these finding kinds (repeatable).
@@ -382,8 +414,14 @@ enum LensCommand {
     Check {
         lens: PathBuf,
         /// A map JSON: a service store file or an exported map.
+        #[arg(long, conflicts_with_all=["repo","commit","snapshot"])]
+        map: Option<PathBuf>,
         #[arg(long)]
-        map: PathBuf,
+        repo: Option<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long)]
+        snapshot: Option<String>,
         #[arg(long, default_value = "text", value_parser = ["text", "json"])]
         format: String,
     },
@@ -397,8 +435,14 @@ enum LensCommand {
     /// read or a file cannot be written.
     Suggest {
         /// A map JSON: a service store file or an exported map.
+        #[arg(long, conflicts_with_all=["repo","commit","snapshot"])]
+        map: Option<PathBuf>,
         #[arg(long)]
-        map: PathBuf,
+        repo: Option<String>,
+        #[arg(long)]
+        commit: Option<String>,
+        #[arg(long)]
+        snapshot: Option<String>,
         /// Directory to write the lens files into; created if absent.
         #[arg(long)]
         out: Option<PathBuf>,
@@ -649,32 +693,78 @@ fn wants_multi_source(pkg: &[String], lang: &[String], all_sources: bool) -> boo
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let data = cli.data.as_deref();
     match cli.command {
-        Command::Route(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
-            Ok(snapshot.route(&args.from, &args.to, args.options.limit.unwrap_or(25)))
-        })),
+        Command::Route(args) => std::process::exit(tolmap::query::run_with_data(
+            &args.options,
+            data,
+            |snapshot| Ok(snapshot.route(&args.from, &args.to, args.options.limit.unwrap_or(25))),
+        )),
         Command::Overview(options) => {
-            std::process::exit(tolmap::query::run(&options, |snapshot| {
+            std::process::exit(tolmap::query::run_with_data(&options, data, |snapshot| {
                 Ok(snapshot.overview(options.limit.unwrap_or(snapshot.map.districts.len())))
             }))
         }
-        Command::Where(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
-            snapshot.where_is(&args.target, args.options.limit.unwrap_or(25))
-        })),
-        Command::Deps(args) => std::process::exit(tolmap::query::run(&args.options, |snapshot| {
-            Ok(snapshot.deps(&args.path, args.direction, args.options.limit.unwrap_or(25)))
-        })),
-        Command::Status(args) => std::process::exit(tolmap::local::cli::status(args)),
-        Command::Refresh(args) => std::process::exit(tolmap::local::cli::refresh(args)),
+        Command::Where(args) => std::process::exit(tolmap::query::run_with_data(
+            &args.options,
+            data,
+            |snapshot| snapshot.where_is(&args.target, args.options.limit.unwrap_or(25)),
+        )),
+        Command::Deps(args) => std::process::exit(tolmap::query::run_with_data(
+            &args.options,
+            data,
+            |snapshot| {
+                Ok(snapshot.deps(&args.path, args.direction, args.options.limit.unwrap_or(25)))
+            },
+        )),
+        Command::Add(args) => tolmap::personal::run_add(args, data),
+        Command::Repos => {
+            let library = tolmap::personal::Library::open(data)?;
+            let rows = library
+                .store
+                .repositories()?
+                .iter()
+                .map(|r| library.status(r))
+                .collect::<Result<Vec<_>>>()?;
+            println!("{}", serde_json::to_string(&rows)?);
+            Ok(())
+        }
+        Command::Rm { name } => {
+            let library = tolmap::personal::Library::open(data)?;
+            library.remove(&library.resolve(Some(&name))?)
+        }
+        Command::Status(args) => {
+            let library = tolmap::personal::Library::open(data)?;
+            let status = library.status(&library.resolve(args.repo.as_deref())?)?;
+            if args.format == "json" {
+                println!("{}", serde_json::to_string(&status)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            }
+            Ok(())
+        }
+        Command::Refresh(args) => {
+            let library = tolmap::personal::Library::open(data)?;
+            let repo = library.resolve(args.repo.as_deref().or(args.name.as_deref()))?;
+            let result = library.refresh(&repo, args.commit.as_deref(), &args.sources);
+            println!("{}", serde_json::to_string(&library.status(&repo)?)?);
+            result.map(|_| ())
+        }
         Command::Local {
             repo,
-            data,
             static_dir,
             port,
-        } => tokio::runtime::Runtime::new()?
-            .block_on(tolmap::local::serve(repo, data, static_dir, port)),
-        Command::Build {
+        } => tokio::runtime::Runtime::new()?.block_on(tolmap::local::serve(
             repo,
+            data.context("local requires --data")?.to_owned(),
+            static_dir,
+            port,
+        )),
+        Command::Build {
+            checkout,
+            repo,
+            commit,
+            snapshot,
             pkg,
             lang,
             all_sources,
@@ -691,6 +781,17 @@ fn main() -> Result<()> {
             refs,
             install,
         } => {
+            let selected_source = if graph.is_none() && checkout.is_none() {
+                Some(tolmap::personal::SourceView::resolve(
+                    repo.as_deref(),
+                    commit.as_deref(),
+                    snapshot.as_deref(),
+                    data,
+                )?)
+            } else {
+                None
+            };
+            let repo = checkout.or_else(|| selected_source.as_ref().map(|s| s.path.clone()));
             let mut progress = cli_progress();
             if let Some(cache) = extraction_cache {
                 let repository = repo
@@ -866,7 +967,25 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Command::Detect { repo } => {
+        Command::Detect {
+            checkout,
+            repo,
+            commit,
+            snapshot,
+        } => {
+            let selected_source = if checkout.is_none() {
+                Some(tolmap::personal::SourceView::resolve(
+                    repo.as_deref(),
+                    commit.as_deref(),
+                    snapshot.as_deref(),
+                    data,
+                )?)
+            } else {
+                None
+            };
+            let repo = checkout
+                .or_else(|| selected_source.as_ref().map(|s| s.path.clone()))
+                .unwrap();
             let detection = tolmap::detect::detect(&repo)?;
             println!("chosen: {}", detection.chosen.describe());
             if detection.candidates.len() > 1 {
@@ -887,6 +1006,9 @@ fn main() -> Result<()> {
         Command::Debt {
             command,
             map,
+            repo,
+            commit,
+            snapshot,
             format,
             kind,
             path,
@@ -898,8 +1020,14 @@ fn main() -> Result<()> {
                 Some(DebtCommand::Diff { before, after }) => {
                     tolmap::debt::run_diff(&before, &after)
                 }
-                None => match map {
-                    Some(map) => tolmap::debt::run_filtered(
+                None => match tolmap::personal::resolve_map(
+                    map.as_deref(),
+                    repo.as_deref(),
+                    commit.as_deref(),
+                    snapshot.as_deref(),
+                    data,
+                ) {
+                    Ok(map) => tolmap::debt::run_filtered(
                         &map,
                         &format,
                         &kind,
@@ -908,8 +1036,8 @@ fn main() -> Result<()> {
                         top,
                         cycle_evidence,
                     ),
-                    None => {
-                        eprintln!("tolmap debt: provide --map or `debt diff`");
+                    Err(error) => {
+                        eprintln!("tolmap debt: {error:#}");
                         2
                     }
                 },
@@ -917,11 +1045,56 @@ fn main() -> Result<()> {
             std::process::exit(code)
         }
         Command::Lens {
-            command: LensCommand::Check { lens, map, format },
-        } => std::process::exit(tolmap::lens::run_check(&lens, &map, &format)),
+            command:
+                LensCommand::Check {
+                    lens,
+                    map,
+                    repo,
+                    commit,
+                    snapshot,
+                    format,
+                },
+        } => {
+            let map = match tolmap::personal::resolve_map(
+                map.as_deref(),
+                repo.as_deref(),
+                commit.as_deref(),
+                snapshot.as_deref(),
+                data,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    std::process::exit(2)
+                }
+            };
+            std::process::exit(tolmap::lens::run_check(&lens, &map, &format))
+        }
         Command::Lens {
-            command: LensCommand::Suggest { map, out },
-        } => std::process::exit(tolmap::lens_suggest::run(&map, out.as_deref())),
+            command:
+                LensCommand::Suggest {
+                    map,
+                    repo,
+                    commit,
+                    snapshot,
+                    out,
+                },
+        } => {
+            let map = match tolmap::personal::resolve_map(
+                map.as_deref(),
+                repo.as_deref(),
+                commit.as_deref(),
+                snapshot.as_deref(),
+                data,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e:#}");
+                    std::process::exit(2)
+                }
+            };
+            std::process::exit(tolmap::lens_suggest::run(&map, out.as_deref()))
+        }
         Command::Org {
             command: OrgCommand::Check { manifest },
         } => std::process::exit(tolmap::org::run_check(&manifest)),
@@ -935,11 +1108,18 @@ fn main() -> Result<()> {
                 },
         } => std::process::exit(tolmap::org::run_build(
             &manifest,
-            &tolmap::org::BuildOptions { clones, maps },
+            &tolmap::org::BuildOptions {
+                clones,
+                maps,
+                data: data.map(PathBuf::from),
+            },
             out.as_deref(),
         )),
         Command::Check {
+            checkout,
             repo,
+            commit,
+            snapshot,
             base,
             head,
             base_map,
@@ -951,6 +1131,23 @@ fn main() -> Result<()> {
             report_only,
             format,
         } => {
+            let resolved = tolmap::personal::resolve_check(
+                checkout,
+                repo.as_deref(),
+                commit.as_deref(),
+                snapshot.as_deref(),
+                base,
+                base_map,
+                head.as_deref(),
+                data,
+            );
+            let (repo, base, base_map) = match resolved {
+                Ok(v) => v,
+                Err(error) => {
+                    eprintln!("{error:#}");
+                    std::process::exit(2)
+                }
+            };
             let options = tolmap::check::CheckOptions {
                 repo,
                 base,
@@ -1075,6 +1272,42 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn personal_selectors_parse_and_conflict() {
+        for args in [
+            vec!["tolmap", "add", "--scan", "/projects", "--data", "/data"],
+            vec!["tolmap", "refresh", "engine"],
+            vec![
+                "tolmap", "overview", "--repo", "engine", "--commit", "abcdef",
+            ],
+            vec!["tolmap", "check", "--repo", "engine", "--snapshot", "id"],
+            vec!["tolmap", "build", "--repo", "engine"],
+            vec!["tolmap", "detect", "--repo", "engine"],
+            vec!["tolmap", "lens", "suggest", "--repo", "engine"],
+            vec![
+                "tolmap",
+                "local",
+                "/repo",
+                "--data",
+                "/legacy",
+                "--static-dir",
+                "/static",
+            ],
+        ] {
+            Cli::try_parse_from(args).expect("valid personal selectors");
+        }
+        for args in [
+            vec!["tolmap", "refresh", "engine", "--repo", "engine"],
+            vec![
+                "tolmap", "overview", "--map", "map.json", "--repo", "engine",
+            ],
+            vec!["tolmap", "check", "--map", "map.json", "--commit", "abcdef"],
+            vec!["tolmap", "add", "/repo", "--scan", "/projects"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
 
     fn build_refs(args: &[&str]) -> tolmap::extract::RefsMode {
         match Cli::try_parse_from(args).expect("parse").command {

@@ -4,6 +4,7 @@
 //! implements.
 
 pub mod agent;
+pub mod application_config;
 pub mod clone;
 pub mod compare;
 pub mod config;

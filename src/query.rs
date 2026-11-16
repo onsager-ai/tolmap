@@ -17,8 +17,14 @@ use crate::schema::{MapDocument, SymbolsDocument};
 #[derive(Clone, Debug, Args)]
 pub struct QueryOptions {
     /// Map JSON or a build output directory containing exactly one map.
+    #[arg(long, conflicts_with_all=["repo","commit","snapshot"])]
+    pub map: Option<PathBuf>,
     #[arg(long)]
-    pub map: PathBuf,
+    pub repo: Option<String>,
+    #[arg(long)]
+    pub commit: Option<String>,
+    #[arg(long)]
+    pub snapshot: Option<String>,
     #[arg(long, default_value = "json", value_parser = ["json", "text"])]
     pub format: String,
     /// Maximum rows (deps: per direction; route: file steps); default 25, overview: all districts.
@@ -461,7 +467,23 @@ impl Snapshot {
 }
 
 pub fn run(options: &QueryOptions, query: impl FnOnce(&Snapshot) -> Result<QueryResponse>) -> i32 {
-    let report = match Snapshot::load(&options.map).and_then(|snapshot| query(&snapshot)) {
+    run_with_data(options, None, query)
+}
+pub fn run_with_data(
+    options: &QueryOptions,
+    data: Option<&Path>,
+    query: impl FnOnce(&Snapshot) -> Result<QueryResponse>,
+) -> i32 {
+    let report = match crate::personal::resolve_map(
+        options.map.as_deref(),
+        options.repo.as_deref(),
+        options.commit.as_deref(),
+        options.snapshot.as_deref(),
+        data,
+    )
+    .and_then(|p| Snapshot::load(&p))
+    .and_then(|snapshot| query(&snapshot))
+    {
         Ok(report) => report,
         Err(e) => {
             eprintln!("{e:#}");
