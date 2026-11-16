@@ -765,19 +765,33 @@ fn snapshot_at(
         .find(|s| s.commit == commit)
         .ok_or_else(crate::comparison::unavailable)
 }
+/// Each snapshot retains a full clone only up to its own commit, so a base
+/// snapshot's source lacks later heads. The newest snapshot's source holds
+/// the history every comparison resolves against.
+fn latest_source(state: &WebState, repository: &str) -> Result<PathBuf, ApiError> {
+    Ok(state
+        .library
+        .store
+        .personal_history(repository)?
+        .into_iter()
+        .next()
+        .ok_or_else(crate::comparison::unavailable)?
+        .source_path)
+}
 async fn compare(
     State(state): State<Arc<WebState>>,
     Path((owner, id)): Path<(String, String)>,
     Query(query): Query<crate::comparison::CompareQuery>,
 ) -> Result<Response, ApiError> {
     let base = snapshot_at(&state, &owner, &id, &query.base)?;
+    let source = latest_source(&state, &base.repository)?;
     let cache = state.library.config.service.cache_dir.join("comparisons");
     let repository = format!("{owner}/{id}");
     let value = tokio::task::spawn_blocking(move || {
         crate::comparison::run(
             crate::comparison::Inputs {
                 repository: &repository,
-                repo: &base.source_path,
+                repo: &source,
                 base_map: &base.map_path,
                 cache: &cache,
             },
@@ -795,15 +809,10 @@ async fn compare_lenses(
 ) -> Result<Response, ApiError> {
     let base = snapshot_at(&state, &owner, &id, &query.base)?;
     let head = snapshot_at(&state, &owner, &id, &query.head)?;
+    let source = latest_source(&state, &base.repository)?;
     let repository = format!("{owner}/{id}");
     let value = tokio::task::spawn_blocking(move || {
-        super::lens::compare_at(
-            repository,
-            base.source_path,
-            base.map_path,
-            head.map_path,
-            query,
-        )
+        super::lens::compare_at(repository, source, base.map_path, head.map_path, query)
     })
     .await
     .map_err(|e| ApiError::internal(e.to_string()))??;
@@ -821,11 +830,12 @@ async fn compare_debt(
 ) -> Result<Response, ApiError> {
     let base = snapshot_at(&state, &owner, &id, &query.base)?;
     let head = snapshot_at(&state, &owner, &id, &query.head)?;
+    let source = latest_source(&state, &base.repository)?;
     let repository = format!("{owner}/{id}");
     let value = tokio::task::spawn_blocking(move || {
         super::debt::compare_debt_at(
             repository,
-            base.source_path,
+            source,
             base.map_path,
             head.map_path,
             query.base,
