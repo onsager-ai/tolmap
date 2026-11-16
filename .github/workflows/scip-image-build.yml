@@ -319,8 +319,11 @@ jobs:
               [ "$status" = done ] || [ "$status" = failed ] && break
               sleep 1
             done
-            [ "$status" = done ]
-            [ "$observed_worker" = true ]
+            if [ "$status" != done ] || [ "$observed_worker" != true ]; then
+              echo "job status=$status observed_worker=$observed_worker: $snapshot"
+              docker logs tolmap-service 2>&1 | tail -60
+              exit 1
+            fi
             python3 -c 'import json,sys; stages={r["id"]:r for r in json.loads(sys.argv[1])["stages"]}; assert stages["install"]["state"]=="done", stages' "$snapshot"
             docker exec tolmap-service sh -c '[ "$(stat -c "%u:%a" /srv/data)" = 0:700 ]'
           }
