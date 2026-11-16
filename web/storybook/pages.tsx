@@ -148,13 +148,6 @@ export function page(id: string): StoryObj<Args> {
         await waitFor(() => expect(root.querySelector('[data-catalogue-error]')?.textContent).toContain("tolmap's index couldn't be reached."));
       } else if (id === 'job-missing') {
         await waitFor(() => expect(canvas.getByText('No mapping job to show.')).toBeVisible());
-      } else if (id.startsWith("organization-")) {
-        if (id === "organization-loading") await waitElement("[data-organization-loading]");
-        else if (id === "organization-error") await waitElement("[data-organization-error]");
-        else {
-          await waitElement("[data-organization-canvas] [data-organization-repository]");
-          if (id === "organization-card") await waitElement("[data-organization-card]");
-        }
       } else if (id.startsWith("map-") || id.startsWith("source-")) {
         if (id === 'map-loading') await waitElement('[data-load-progress="idle"], [data-load-progress="downloading"], [data-load-progress="parsing"]');
         else if (id === 'map-unavailable') await waitFor(() => expect(root.body.textContent).toContain("couldn't load onsager-ai/tolmap."));

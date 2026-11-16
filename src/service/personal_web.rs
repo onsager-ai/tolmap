@@ -111,6 +111,9 @@ pub fn router(static_dir: Option<&PathBuf>, state: Arc<WebState>) -> Router {
         .route("/api/jobs/{id}", get(job))
         .route("/api/jobs/{id}/cancel", post(cancel))
         .route("/api/jobs/{id}/retry", post(retry))
+        .route("/api/compare/{owner}/{id}", get(compare))
+        .route("/api/compare/{owner}/{id}/lenses", get(compare_lenses))
+        .route("/api/compare/{owner}/{id}/debt", get(compare_debt))
         .route("/api/maps/{owner}/{id}", get(map))
         .route("/api/maps/{owner}/{id}/{*rest}", get(map_detail))
         .route("/api/index", any(unavailable));
@@ -726,6 +729,122 @@ fn resolve_snapshot(
         return Err(ApiError::not_found("snapshot commit mismatch"));
     }
     Ok(snapshot)
+}
+/// The retained snapshot of the repository behind `{owner}/{id}` at exactly
+/// `commit`. No newer or nearest snapshot is substituted.
+fn snapshot_at(
+    state: &WebState,
+    owner: &str,
+    id: &str,
+    commit: &str,
+) -> Result<PersonalSnapshot, ApiError> {
+    if !crate::source::valid_commit(commit) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "comparison_input",
+            "base and head must be full commit IDs",
+        ));
+    }
+    let repository = match owner {
+        "snapshot" => {
+            state
+                .library
+                .store
+                .personal_snapshot(id)?
+                .ok_or_else(|| ApiError::not_found("snapshot unavailable"))?
+                .repository
+        }
+        "personal" => id.to_owned(),
+        _ => return Err(ApiError::not_found("personal map unavailable")),
+    };
+    state
+        .library
+        .store
+        .personal_history(&repository)?
+        .into_iter()
+        .find(|s| s.commit == commit)
+        .ok_or_else(crate::comparison::unavailable)
+}
+/// Each snapshot retains a full clone only up to its own commit, so a base
+/// snapshot's source lacks later heads. The newest snapshot's source holds
+/// the history every comparison resolves against.
+fn latest_source(state: &WebState, repository: &str) -> Result<PathBuf, ApiError> {
+    Ok(state
+        .library
+        .store
+        .personal_history(repository)?
+        .into_iter()
+        .next()
+        .ok_or_else(crate::comparison::unavailable)?
+        .source_path)
+}
+async fn compare(
+    State(state): State<Arc<WebState>>,
+    Path((owner, id)): Path<(String, String)>,
+    Query(query): Query<crate::comparison::CompareQuery>,
+) -> Result<Response, ApiError> {
+    let base = snapshot_at(&state, &owner, &id, &query.base)?;
+    let source = latest_source(&state, &base.repository)?;
+    let cache = state.library.config.service.cache_dir.join("comparisons");
+    let repository = format!("{owner}/{id}");
+    let value = tokio::task::spawn_blocking(move || {
+        crate::comparison::run(
+            crate::comparison::Inputs {
+                repository: &repository,
+                repo: &source,
+                base_map: &base.map_path,
+                cache: &cache,
+            },
+            query,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))??;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response())
+}
+async fn compare_lenses(
+    State(state): State<Arc<WebState>>,
+    Path((owner, id)): Path<(String, String)>,
+    Query(query): Query<super::lens::LensCompareQuery>,
+) -> Result<Response, ApiError> {
+    let base = snapshot_at(&state, &owner, &id, &query.base)?;
+    let head = snapshot_at(&state, &owner, &id, &query.head)?;
+    let source = latest_source(&state, &base.repository)?;
+    let repository = format!("{owner}/{id}");
+    let value = tokio::task::spawn_blocking(move || {
+        super::lens::compare_at(repository, source, base.map_path, head.map_path, query)
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))??;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response())
+}
+#[derive(Deserialize)]
+struct DebtCompareQuery {
+    base: String,
+    head: String,
+}
+async fn compare_debt(
+    State(state): State<Arc<WebState>>,
+    Path((owner, id)): Path<(String, String)>,
+    Query(query): Query<DebtCompareQuery>,
+) -> Result<Response, ApiError> {
+    let base = snapshot_at(&state, &owner, &id, &query.base)?;
+    let head = snapshot_at(&state, &owner, &id, &query.head)?;
+    let source = latest_source(&state, &base.repository)?;
+    let repository = format!("{owner}/{id}");
+    let value = tokio::task::spawn_blocking(move || {
+        super::debt::compare_debt_at(
+            repository,
+            source,
+            base.map_path,
+            head.map_path,
+            query.base,
+            query.head,
+        )
+    })
+    .await
+    .map_err(|e| ApiError::internal(e.to_string()))??;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(value)).into_response())
 }
 async fn map(
     State(state): State<Arc<WebState>>,

@@ -135,6 +135,75 @@ pub(crate) fn renames(
         .collect())
 }
 
+#[derive(Clone, serde::Deserialize)]
+pub struct LensCompareQuery {
+    pub base: String,
+    pub head: String,
+    pub lens: String,
+    pub other: Option<String>,
+}
+
+pub(crate) fn compare_at(
+    repository: String,
+    repo: PathBuf,
+    map_path: PathBuf,
+    head_map_path: PathBuf,
+    query: LensCompareQuery,
+) -> Result<crate::lens_comparison::LensComparison, ApiError> {
+    use sha2::{Digest, Sha256};
+    comparison::resolve(&repo, &query.base)?;
+    comparison::resolve(&repo, &query.head)?;
+    let other = query.other.as_deref().unwrap_or(&query.lens);
+    if other != query.lens && query.base != query.head {
+        return Err(ApiError::invalid_request(
+            "two lenses must use the same commit",
+        ));
+    }
+    let bytes = std::fs::read(&map_path).map_err(|_| comparison::unavailable())?;
+    let frame: MapDocument =
+        serde_json::from_slice(&bytes).map_err(|e| ApiError::internal(e.to_string()))?;
+    let before = resolve_at(
+        repository.clone(),
+        repo.clone(),
+        query.base.clone(),
+        map_path.clone(),
+        query.lens.clone(),
+    )?
+    .report;
+    let (head_lens, _) = read_lens(&repository, &repo, &query.head, other)?;
+    let renames = renames(&repo, &query.base, &query.head)?;
+    let head_map = if query.base == query.head {
+        frame.clone()
+    } else {
+        let head_bytes = std::fs::read(head_map_path).map_err(|_| comparison::unavailable())?;
+        let snapshot: MapDocument =
+            serde_json::from_slice(&head_bytes).map_err(|e| ApiError::internal(e.to_string()))?;
+        crate::check::lens_head_map(&repo, &query.base, &query.head, &frame, &snapshot)
+            .map_err(|e| ApiError::internal(e.to_string()))?
+    };
+    let mut after = lens::resolve(&head_lens, &head_map);
+    lens::report_renames(&mut after, &renames);
+    let mode = if other == query.lens {
+        crate::lens_comparison::ComparisonMode::Commits
+    } else {
+        crate::lens_comparison::ComparisonMode::Membership
+    };
+    let changes = crate::lens_comparison::changes(&before, &after, &frame, &renames, mode);
+    Ok(crate::lens_comparison::LensComparison {
+        version: 1,
+        repository,
+        base: query.base,
+        head: query.head,
+        lens: query.lens.clone(),
+        other: other.into(),
+        base_map_sha256: format!("{:x}", Sha256::digest(bytes)),
+        lower_bound: true,
+        before,
+        after,
+        changes,
+    })
+}
+
 pub(crate) fn list_at(
     repository: String,
     repo_path: PathBuf,

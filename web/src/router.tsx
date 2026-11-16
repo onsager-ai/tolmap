@@ -6,9 +6,8 @@ import { ReservedPage } from "@/routes/ReservedPage";
 import { MapView } from "@/routes/MapView";
 import { BatchProgressView } from "@/routes/BatchProgressView";
 import { IndexJobView } from "@/routes/IndexJobView";
-import { OrganizationView } from "@/routes/OrganizationView";
 import { RESERVED_NAMES } from "@/routes/reserved";
-import { validateMapSearch, validateJobSearch, validateOrganizationSearch } from "@/routes/search";
+import { validateMapSearch, validateJobSearch } from "@/routes/search";
 
 const rootRoute = createRootRoute({ component: RootLayout });
 
@@ -26,7 +25,7 @@ const indexRoute = createRoute({
 // single-segment /$owner route (a profile page, say) gets added, not just
 // today.
 const reservedRoutes = [...RESERVED_NAMES]
-  .filter((name) => name !== "new" && name !== "org")
+  .filter((name) => name !== "new")
   .map((name) =>
     createRoute({
       getParentRoute: () => rootRoute,
@@ -52,16 +51,6 @@ const batchRoute = createRoute({
   component: BatchProgressView,
 });
 
-/** Organizations are an application namespace, never a GitHub owner. Its
- * explicit route is registered before the repository route and `org` is
- * reserved above so a future one-segment owner route cannot capture it. */
-const organizationRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/org/$name",
-  validateSearch: validateOrganizationSearch,
-  component: OrganizationView,
-});
-
 const repositoryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/repositories/$repositoryId/history",
@@ -82,7 +71,7 @@ const ownerRepoRoute = createRoute({
   component: MapView,
 });
 
-export const routeTree = rootRoute.addChildren([indexRoute, newRoute, batchRoute, organizationRoute, repositoryRoute, ...reservedRoutes, ownerRepoRoute]);
+export const routeTree = rootRoute.addChildren([indexRoute, newRoute, batchRoute, repositoryRoute, ...reservedRoutes, ownerRepoRoute]);
 
 export const router = createRouter({ routeTree });
 
