@@ -76,8 +76,21 @@ Both map paths support `/symbols?district=N`, `/provenance`, `/source?commit=SHA
 `/freshness`, `/debt`, `/lenses` and `/lenses/{name}` using retained artifacts/source.
 A snapshot URL never substitutes a different snapshot at the same commit. Source
 requires the snapshot's immutable commit and uses the existing bounded Git-blob
-reader. Missing source remains explicit. Comparison/organization APIs and individual
-snapshot deletion are not advertised by the personal adapter .
+reader. Missing source remains explicit. Individual snapshot deletion and the
+organization view are not offered by the personal adapter.
+
+| Comparison route | Result |
+|---|---|
+| `GET /api/compare/{owner}/{id}?base=SHA&head=SHA` | `Comparison` for two full commit IDs, with optional `max_districts`, `max_dq` and `report_only`. `{owner}/{id}` is `snapshot/{snapshot_id}` or `personal/{repository_id}`. |
+| `GET /api/compare/{owner}/{id}/lenses?base=SHA&head=SHA&lens=NAME[&other=NAME]` | `LensComparison` between commits, or between two lenses at one commit. |
+| `GET /api/compare/{owner}/{id}/debt?base=SHA&head=SHA` | `LensComparison` of the built-in debt lens between commits. |
+
+The base commit must be a retained complete snapshot of that repository, matched
+by exact full commit ID; otherwise the route returns 404 `comparison_unavailable`
+and no newer snapshot is substituted. Lens and debt comparison also require a
+retained head snapshot. A malformed commit ID is 400. Head source is read from the
+retained Git objects, and comparisons are cached under the library cache
+directory (`comparisons/`).
 
 Home/history poll every two seconds during indexing or queueing, otherwise every
 30 seconds. Active job views poll every two seconds while visible.
@@ -94,7 +107,7 @@ worker cancellation kills the current worker process group.
 
 Each job runs `tolmap worker` with a JSON spec on stdin and versioned progress events on stdout. The executor pins committed source, isolates child processes, supports cancellation and validates artifacts before publication. SCIP dependency installation keeps the sandbox in [SCIP_SANDBOX.md](SCIP_SANDBOX.md). There is no network worker listener, worker token or public admission API.
 
-`GET /api/healthz` returns `{"ok":true}`. Unmatched API paths return JSON errors and never the SPA fallback. Static assets support gzip. Organization and comparison HTTP endpoints are retired; use `tolmap org check/build` and `tolmap check --repo NAME`.
+`GET /api/healthz` returns `{"ok":true}`. Unmatched API paths return JSON errors and never the SPA fallback. Static assets support gzip. The organization HTTP endpoint is retired; use `tolmap org check/build`.
 
 ### `tolmap lens suggest --map <map.json> [--out <dir>]`
 

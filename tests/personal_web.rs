@@ -668,3 +668,143 @@ fn real_local_repository_add_poll_done() {
     );
     assert_eq!(rows[0]["snapshot_count"], 1);
 }
+/// Index two commits of a tiny repository through the CLI, then compare them
+/// through the web routes against the retained base snapshot.
+#[test]
+fn compare_routes_use_retained_base_snapshot() {
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        process::{Child, Command},
+        time::{Duration, Instant},
+    };
+    struct WebProcess(Child);
+    impl Drop for WebProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    fn http(
+        address: std::net::SocketAddr,
+        path: &str,
+    ) -> std::io::Result<(u16, serde_json::Value)> {
+        let mut stream = TcpStream::connect(address)?;
+        stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut text = String::new();
+        stream.read_to_string(&mut text)?;
+        let (headers, body) = text.split_once("\r\n\r\n").unwrap();
+        let status = headers.split_whitespace().nth(1).unwrap().parse().unwrap();
+        Ok((status, serde_json::from_str(body).unwrap()))
+    }
+    let root = tempfile::tempdir().unwrap();
+    let checkout = root.path().join("repo");
+    std::fs::create_dir_all(checkout.join("pkg")).unwrap();
+    std::fs::write(
+        checkout.join("pyproject.toml"),
+        "[project]\nname='pkg'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    std::fs::write(checkout.join("pkg/__init__.py"), "").unwrap();
+    for i in 0..8 {
+        std::fs::write(
+            checkout.join(format!("pkg/f{i}.py")),
+            format!(
+                "from .f{} import value\ndef value():\n    return {i}\n",
+                (i + 1) % 8
+            ),
+        )
+        .unwrap();
+    }
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&checkout)
+            .args(["-c", "user.name=Fixture"])
+            .args(["-c", "user.email=fixture@example.invalid"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    let data = root.path().join("data");
+    let tolmap = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_tolmap"))
+            .arg("--data")
+            .arg(&data)
+            .args(args)
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "tolmap {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    tolmap(&["add", checkout.to_str().unwrap()]);
+    std::fs::write(
+        checkout.join("pkg/f0.py"),
+        "from .f1 import value\ndef value():\n    return 100\n",
+    )
+    .unwrap();
+    git(&["commit", "-qam", "head"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    tolmap(&["refresh", "repo"]);
+    let assets = root.path().join("assets");
+    std::fs::create_dir(&assets).unwrap();
+    std::fs::write(
+        assets.join("index.html"),
+        "<html><head></head><body></body></html>",
+    )
+    .unwrap();
+    let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = socket.local_addr().unwrap();
+    drop(socket);
+    let _web = WebProcess(
+        Command::new(env!("CARGO_BIN_EXE_tolmap"))
+            .arg("--data")
+            .arg(&data)
+            .args(["web", "--addr", &address.to_string()])
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("TOLMAP_STATIC_DIR", assets)
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while http(address, "/api/healthz").is_err() {
+        assert!(Instant::now() < deadline, "web startup timed out");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (_, rows) = http(address, "/api/maps").unwrap();
+    let snapshot = rows[0]["latest_snapshot_id"].as_str().unwrap();
+    let owned = format!("/api/compare/snapshot/{snapshot}");
+    let (status, comparison) = http(address, &format!("{owned}?base={base}&head={head}")).unwrap();
+    assert_eq!(status, 200, "{comparison}");
+    assert_eq!(comparison["provenance"]["base"], base);
+    assert_eq!(comparison["provenance"]["head"], head);
+    let (status, debt) = http(address, &format!("{owned}/debt?base={base}&head={head}")).unwrap();
+    assert_eq!(status, 200, "{debt}");
+    assert_eq!(debt["base"], base);
+    // An un-indexed base is unavailable; a malformed commit is a bad request.
+    let unindexed = "c".repeat(40);
+    let (status, error) = http(address, &format!("{owned}?base={unindexed}&head={head}")).unwrap();
+    assert_eq!(status, 404, "{error}");
+    assert_eq!(error["error"], "comparison_unavailable");
+    let (status, _) = http(address, &format!("{owned}?base=main&head={head}")).unwrap();
+    assert_eq!(status, 400);
+}
