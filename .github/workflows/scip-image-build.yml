@@ -292,11 +292,21 @@ jobs:
           # checkout must be owned by the container user: copy it in and
           # commit there rather than bind-mounting a runner-owned tree.
           docker cp sandbox/service-fixture tolmap-service:/srv/fixture
+          # Assert ownership of both the copied worktree and its Git metadata;
+          # sanitised product Git intentionally ignores the global safe list.
+          docker exec tolmap-service sh -c 'chown -R 0:0 /srv/fixture; stat -c "%u:%g %n" /srv/fixture'
           fixture_git() { docker exec tolmap-service git -C /srv/fixture -c user.name=ci -c user.email=ci@example.invalid "$@"; }
           fixture_git init --quiet
           fixture_git add -A
           fixture_git commit --quiet -m fixture
-          if docker exec tolmap-service /app/tolmap add /srv/fixture --name fixture --pkg missing --lang ts; then exit 1; fi
+          # Match source::git exactly before calling the expected index failure.
+          # This synthetic fixture has no secrets; native stderr diagnoses any
+          # repository/runtime setup error instead of hiding it behind add.
+          docker exec tolmap-service env -i PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 /usr/bin/git --no-replace-objects --literal-pathspecs -C /srv/fixture rev-parse --show-toplevel
+          docker exec tolmap-service env -i PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 /usr/bin/git --no-replace-objects --literal-pathspecs -C /srv/fixture rev-parse 'HEAD^{commit}'
+          if docker exec tolmap-service /app/tolmap add /srv/fixture --name fixture --pkg missing --lang ts > sandbox/first-add.log 2>&1; then exit 1; fi
+          cat sandbox/first-add.log
+          grep -q 'source root does not exist' sandbox/first-add.log
           repository=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["repository_id"])')
           run_job() {
             job=$(curl -fsS -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:8787/api/repositories/$repository/refresh" | python3 -c 'import json,sys;print(json.load(sys.stdin)["job_id"])')

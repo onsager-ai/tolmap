@@ -153,3 +153,44 @@ async fn static_dir_set_api_404_is_never_html() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("\"ok\""));
 }
+
+#[tokio::test]
+async fn personal_html_is_injected_before_gzip_for_root_and_snapshot() {
+    use std::io::Read;
+    let bundle = bundle_dir();
+    std::fs::write(
+        bundle.path().join("index.html"),
+        format!(
+            "<!doctype html><html><head><title>tolmap</title></head><body>{}</body></html>",
+            "viewer content ".repeat(100)
+        ),
+    )
+    .unwrap();
+    let (_dir, state) = state_with_static_dir(Some(bundle.path().to_path_buf()));
+    for path in ["/", "/snapshot/retained-id"] {
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("host", "localhost:8787")
+                    .header(header::ACCEPT_ENCODING, "gzip")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let mut html = String::new();
+        flate2::read::GzDecoder::new(bytes.as_ref())
+            .read_to_string(&mut html)
+            .unwrap();
+        assert!(
+            html.contains("<meta name=\"tolmap-personal\" content=\"1\">"),
+            "{html}"
+        );
+        assert!(html.contains("<script id=\"tolmap-host\""));
+        assert!(html.ends_with("</body></html>"));
+    }
+}

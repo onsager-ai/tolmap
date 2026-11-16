@@ -94,6 +94,7 @@ cc = "=1.4.7"
 tree-sitter-python = { path = "vendor/tree-sitter-python" }
 
 [dev-dependencies]
+flate2 = "=1.1.10"
 # tower::ServiceExt::oneshot -- drives the axum Router directly in
 # tests/service_hardening.rs without binding a real socket. Already in
 # Cargo.lock as an axum dependency; pinning the same version here just
