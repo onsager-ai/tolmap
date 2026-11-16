@@ -33,6 +33,43 @@ implementation so the frontend and the service can be built in parallel
 against the same shape; the implementation must not drift from it without
 updating this file in the same change.
 
+## Personal shared store and application configuration
+
+The personal CLI (issue #314 PR 1) extends `service::store::Store` with a
+repository registry, durable attempts and UUID snapshots. Public catalogue
+keys and `serve` behavior remain unchanged. Personal history is retained until
+repository removal. `local` and `serve` stores are not imported or read by the
+personal CLI.
+
+The shared CLI/web loader reads a flat TOML table at
+`$XDG_CONFIG_HOME/tolmap/config.toml` or `$HOME/.config/tolmap/config.toml`:
+
+```toml
+data_dir = "/private/tolmap"
+# db_path = "/private/tolmap/tolmap.sqlite3"
+# cache_dir = "/private/tolmap/cache"
+bind_addr = "127.0.0.1"
+port = 8787
+refs = "hand"
+prune_variant = "node-relative"
+namer = "idf"
+scip_install = "off"
+max_concurrent_jobs = 1
+max_queued_jobs = 16
+clone_cache_bytes = 2147483648
+```
+
+Settings use the service vocabulary, with lowercase keys corresponding to
+`TOLMAP_*` variables, including `static_dir`, `organizations_dir`, `namer_model`
+and `retain_commits_per_repo`. Credentials do not belong in this file. Precedence
+is flag > environment > application file > default. A higher-priority root
+beats lower-priority `db_path`/`cache_dir`; at equal priority individual paths
+win. Personal history has no default retention limit. The existing `serve`
+entry point continues to read its existing environment configuration until the
+web slice replaces it; hosted worker/admission settings stay service concerns.
+Settings are read at invocation/startup. Repository intent remains in
+`.tolmap/config.toml`; it cannot relocate the application database.
+
 ## Configuration
 
 Everything below is read once, at startup, from the environment; an unset

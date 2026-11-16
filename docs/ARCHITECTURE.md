@@ -57,7 +57,30 @@ The warm start reads the previous membership from the store, not from a file. Fi
 
 Later, and only for teams that want layout drift visible in a pull request, a `tolmap check` run can write a small derived summary into the repo — district count, modularity, which files changed district — under the explicit lockfile contract of recording the commit it came from and refusing to be treated as current when that does not match `HEAD`. That is a reviewable *diff artifact*, not a source of truth, and it is out of MVP scope.
 
-## MVP: a site that maps any public repository
+## Personal repository library
+
+Issue #314 replaces the hosted-first direction with a personal CLI and a web
+viewer over shared state. The CLI uses one private data root, defaulting to
+`$XDG_DATA_HOME/tolmap` or `$HOME/.local/share/tolmap`, and application settings
+in `$XDG_CONFIG_HOME/tolmap/config.toml` or `$HOME/.config/tolmap/config.toml`.
+`.tolmap/config.toml` continues to express repository intent.
+
+The service SQLite store owns registrations (stable UUID, unique display name,
+source identity), durable attempts, and personal snapshot rows keyed by UUID.
+Publication sequence defines latest; commits are not unique snapshot keys.
+The existing public `(slug, commit)` tables keep their own behavior while
+`serve` remains available. No old stores are discovered, read or imported.
+
+Personal indexing reuses local independent Git capture and atomic artifact
+publication. Each successful refresh retains its map, names, symbols, extraction
+metadata and independently pinned source objects. A short SQLite transaction
+publishes the row only after artifacts are complete. Kernel `flock` locks guard
+repository writes and shared capacity slots across processes. Readers keep the
+last published row during indexing; abandoned attempts become failed when the
+next writer acquires the repository lock. Lock files live outside removable
+repository directories so removal cannot create two lock inodes for one ID.
+
+## Historical public MVP direction
 
 The first product is a website in the shape of DeepWiki — paste a repository, get a map, no install. The map of a repository lives at `/<owner>/<repo>`, with no forge prefix: `<host>/scrapy/scrapy`.
 

@@ -25,20 +25,26 @@ that all callers or dependencies were found.
 ## First check freshness
 
 ```sh
-tolmap status --repo .
-# If absent/stale, explicitly request a committed-HEAD snapshot:
-tolmap refresh --repo . --all-sources
-tolmap status --repo .
+# Register once (committed source only), then infer from the current checkout:
+tolmap add . --all-sources
+tolmap status
+# Explicitly refresh only when requested:
+tolmap refresh --all-sources
+tolmap status
 ```
 
-Read the status row's `freshness`, `checkout_commit`, `indexed_commit`, source
-scope and `dirty`. Status never indexes; refresh is explicit. Use the returned
-`map_path` with the queries below, for example `MAP=/absolute/path/to/map.json`.
-A fresh map can still have dirty files: **dirty and untracked files are never
-in a committed snapshot**. Commit them before refreshing to include them.
-`check` without `--head` separately analyses dirty-tree changes. Stop a local
-server before refreshing its store. Use `--data /private/store` consistently
-when sharing a nondefault local store.
+Read `freshness`, `checkout_commit`, `snapshot.commit`, `snapshot.map_path`,
+`attempt` and `dirty`. From elsewhere use `--repo NAME`; `tolmap repos` lists
+names and last observed state. Reads never index or fetch. `--commit SHA`
+selects the latest snapshot at a retained revision; `--snapshot ID` selects an exact history entry.
+`--map FILE` remains available and conflicts with database selectors. Freshness
+and dirty state are disclosed on stderr without changing compact query JSON.
+Dirty and untracked files are excluded from snapshots; `check` without `--head`
+compares working-tree changes separately. CLI refresh can coexist with readers.
+The shared root comes from `--data`, `TOLMAP_DATA_DIR`, application config or
+XDG/HOME defaults. No old `local`/`serve` stores are read or imported. Set
+`MAP` from `snapshot.map_path` for the explicit-file examples below, or omit
+`--map "$MAP"` to use the registered checkout's latest published snapshot.
 
 For a CI-built map, verify its recorded commit/build provenance against the
 checkout instead; local status describes the local store, not arbitrary files.

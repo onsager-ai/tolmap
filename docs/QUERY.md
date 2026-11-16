@@ -2,7 +2,8 @@
 
 `tolmap overview`, `where`, `deps` and `route` answer small structural questions
 from an existing local or CI-built map. They do not index, refresh, read a
-checkout, access the hub or make model calls. Issue #303 defines this slice.
+checkout contents for extraction, access the hub or make model calls. Registered
+queries may inspect Git status to disclose stale/dirty state on stderr. Issue #303 defines this slice.
 
 ```sh
 tolmap overview --map out
@@ -14,7 +15,13 @@ tolmap route src/main.rs src/schema.rs --map data/tolmap.json
 
 ## Inputs and flags
 
-All commands require `--map <file-or-directory>` and accept `--format json|text`
+All commands select a registered repository with `--repo NAME`, or infer the
+nearest registered checkout containing the current directory. Exact names win;
+unique short names are accepted, and ambiguity lists names and IDs. Reads use
+the latest successful publication, never index or fetch. `--commit SHA` selects
+a retained commit/prefix and uses its latest snapshot; `--snapshot ID` selects
+an exact retained snapshot. `--map <file-or-directory>` remains an explicit input and
+conflicts with repository/commit/snapshot selectors. All accept `--format json|text`
 (default `json`) and `--limit N` (zero requests totals alone). `overview`
 returns every district by default. `deps` defaults to 25 rows per direction;
 `where` and `route` default to 25 rows overall.
@@ -218,3 +225,48 @@ without committed HEAD; **3** internal/storage/indexing failure. A refresh that
 reaches indexing but fails still prints the resulting status with its retained
 previous map and failed attempt. Errors before a store/attempt is available may
 only emit stderr. Malformed stored metadata is an error, never silently ignored.
+
+## Shared personal CLI
+
+```sh
+tolmap add /path/to/checkout --name engine --all-sources
+tolmap add owner/name
+tolmap add --scan /path/to/projects --all-sources
+tolmap repos
+tolmap status --repo engine
+tolmap refresh engine
+tolmap refresh --repo engine --commit <available-commit>
+tolmap overview --repo engine
+tolmap check --repo engine --report-only
+tolmap debt --repo engine --format json
+tolmap rm engine
+```
+
+`--data ROOT` is global; otherwise `TOLMAP_DATA_DIR`, application config, then
+XDG/HOME defaults choose the shared root. Local identity is canonical checkout
+root; identical origins never merge checkouts. Basename collisions receive a
+path hash suffix. GitHub URL/name spellings deduplicate case-insensitively.
+Remote acquisition is anonymous with helpers/prompts disabled; private GitHub
+support is a later slice. Failed adds remain registered and appear in `repos`.
+
+A moved checkout can be relinked with `add NEW_PATH --name EXISTING` only when
+the old path is missing and the new checkout contains its last indexed commit.
+The registration ID and history survive. Otherwise the command names both paths
+and fails. `rm` removes tolmap-owned history/source, never the original checkout.
+Refresh reuses a complete snapshot for the same commit and source selection;
+changed source selections may retain repeated commits. Source objects are independent of the original checkout and clone cache.
+No existing stores are discovered or imported.
+
+Refresh excludes dirty and untracked content; check without `--head` compares
+against the local working tree including those changes. In database mode,
+`--commit` selects check's base snapshot and `--base`, if given, must agree.
+Remote checks require an explicit `--head` available in retained source.
+Explicit `check PATH --base REV [--base-map FILE]` stays available (`--map`
+is an alias for `--base-map`). Query/check/debt exit contracts and thresholds
+remain unchanged. Source-oriented `build`, `detect` and lens commands also
+accept repository/commit/snapshot selection; explicit graph/path inputs stay
+available. `local` and `serve` remain separate commands in this slice.
+
+Organization members without manifest paths or `--clones` resolve their qualified
+registered names at the manifest's exact pinned commit. Explicit member paths,
+clone roots and stored-map roots keep precedence; pin ambiguity fails.

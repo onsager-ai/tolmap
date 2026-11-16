@@ -422,10 +422,18 @@ fn selected_sources(repo: &Path, args: &RefreshArgs) -> Result<Option<Vec<(Strin
 }
 
 fn refresh_snapshot(s: Arc<Local>, args: &RefreshArgs) -> Result<()> {
+    refresh_revision(s, args, "HEAD", None)
+}
+fn refresh_revision(
+    s: Arc<Local>,
+    args: &RefreshArgs,
+    revision: &str,
+    config: Option<&crate::service::config::ServeConfig>,
+) -> Result<()> {
     eprintln!("Preparing committed HEAD; dirty files are excluded; no upload");
     let commit = String::from_utf8(checked(command(
         &s.checkout,
-        &["rev-parse", "HEAD^{commit}"],
+        &["rev-parse", &format!("{revision}^{{commit}}")],
     ))?)?
     .trim()
     .to_owned();
@@ -446,7 +454,7 @@ fn refresh_snapshot(s: Arc<Local>, args: &RefreshArgs) -> Result<()> {
     crate::incremental::atomic_write(&s.data.join("attempt.json"), &serde_json::to_vec(&attempt)?)?;
     *s.attempt.lock().unwrap() = Some(attempt.clone());
     let result = (|| -> Result<()> {
-        prepare(&s)?;
+        prepare_revision(&s, &commit)?;
         let (prepared, prepared_commit) = {
             let p = s.prepared.lock().unwrap();
             let p = p.as_ref().context("source preparation failed")?;
@@ -472,7 +480,7 @@ fn refresh_snapshot(s: Arc<Local>, args: &RefreshArgs) -> Result<()> {
         });
         // Default selection retains the worker's confidence admission rule;
         // explicit CLI sources are owner intent, without an HTML token.
-        run(
+        run_configured(
             s.clone(),
             prepared,
             commit,
@@ -481,6 +489,7 @@ fn refresh_snapshot(s: Arc<Local>, args: &RefreshArgs) -> Result<()> {
             sources,
             id,
             cancel,
+            config,
         )
     })();
     match &result {
@@ -603,4 +612,53 @@ mod tests {
         assert_eq!(stale.results[0].commits_behind, Some(1));
         assert!(!stale.results[0].dirty);
     }
+}
+
+/// Index in a registry-owned directory, reusing the local immutable snapshot
+/// protocol and independent Git object capture. The caller holds the repo lock.
+pub(crate) fn personal_refresh(
+    checkout: PathBuf,
+    data: PathBuf,
+    repository: &str,
+    args: &RefreshArgs,
+    revision: &str,
+    config: &crate::service::config::ServeConfig,
+) -> Result<crate::service::store::PersonalSnapshot> {
+    private(&data)?;
+    private(&data.join("snapshots"))?;
+    ensure!(
+        !data.canonicalize()?.starts_with(checkout.canonicalize()?),
+        "private storage must be outside the checkout"
+    );
+    let s = Arc::new(Local {
+        checkout,
+        data,
+        repository: repository.into(),
+        assets: PathBuf::new(),
+        origin: String::new(),
+        prepared: Mutex::new(None),
+        job: Mutex::new(None),
+        notice: Mutex::new(String::new()),
+        attempt: Mutex::new(None),
+    });
+    refresh_revision(s.clone(), args, revision, Some(config))?;
+    let snapshot = snapshots(&s)?
+        .pop()
+        .context("indexing produced no complete snapshot")?;
+    Ok(crate::service::store::PersonalSnapshot {
+        id: snapshot.id.to_string(),
+        repository: repository.into(),
+        commit: snapshot.commit,
+        map_path: s
+            .data
+            .join("snapshots")
+            .join(snapshot.id.to_string())
+            .join("map.json"),
+        source_path: s
+            .data
+            .join("prepared")
+            .join(snapshot.prepared.to_string())
+            .join("source.git"),
+        indexed_at: String::new(),
+    })
 }

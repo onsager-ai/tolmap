@@ -958,6 +958,8 @@ pub(crate) fn satisfies(requirement: &str, version: &str, ecosystem: Ecosystem) 
 
 #[derive(Debug, Default, Clone)]
 pub struct BuildOptions {
+    /// Shared personal root for registered members without explicit clone paths.
+    pub data: Option<PathBuf>,
     /// `<clones>/<owner>/<repo>` is a local clone of each member that gives
     /// no `path`.
     pub clones: Option<PathBuf>,
@@ -1069,15 +1071,24 @@ pub fn build(
     let mut trees = Vec::new();
     for member in &members {
         let (owner, repo) = member.owner_repo();
+        let registered = if member.path.is_none() && options.clones.is_none() {
+            let library = crate::personal::Library::open(options.data.as_deref())
+                .map_err(|e| OrgError::Input(format!("member {}: {e:#}", member.repo)))?;
+            let repo = library
+                .resolve(Some(&member.repo))
+                .map_err(|e| OrgError::Input(format!("member {}: {e:#}", member.repo)))?;
+            Some(
+                library
+                    .snapshot(&repo, Some(&member.commit), None)
+                    .map_err(|e| OrgError::Input(format!("member {}: {e:#}", member.repo)))?,
+            )
+        } else {
+            None
+        };
         let clone = match (&member.path, &options.clones) {
             (Some(path), _) => base.join(path),
             (None, Some(clones)) => clones.join(owner).join(repo),
-            (None, None) => {
-                return Err(OrgError::Input(format!(
-                    "member {} gives no path; pass --clones",
-                    member.repo
-                )))
-            }
+            (None, None) => registered.as_ref().unwrap().source_path.clone(),
         };
         if !clone.is_dir() {
             return Err(OrgError::Input(format!(
@@ -1097,11 +1108,15 @@ pub fn build(
         }
         let mut scratch = Scratch::new(&clone)?;
         let tree_dir = scratch.worktree(&member.commit, "tree")?;
-        let stored = options.maps.as_ref().map(|maps| {
-            maps.join(owner)
-                .join(repo)
-                .join(format!("{}.json", member.commit))
-        });
+        let stored = options
+            .maps
+            .as_ref()
+            .map(|maps| {
+                maps.join(owner)
+                    .join(repo)
+                    .join(format!("{}.json", member.commit))
+            })
+            .or_else(|| registered.as_ref().map(|s| s.map_path.clone()));
         let (source, bytes) = match stored.filter(|path| path.is_file()) {
             Some(path) => (
                 MapSource::Stored,

@@ -179,10 +179,13 @@ fn command(repo: &Path, args: &[&str]) -> std::process::Command {
     c
 }
 fn prepare(s: &Local) -> Result<()> {
+    prepare_revision(s, "HEAD")
+}
+fn prepare_revision(s: &Local, revision: &str) -> Result<()> {
     ensure!(s.job.lock().unwrap().is_none(), "indexing is still running");
     let commit = String::from_utf8(checked(command(
         &s.checkout,
-        &["rev-parse", "HEAD^{commit}"],
+        &["rev-parse", &format!("{revision}^{{commit}}")],
     ))?)?
     .trim()
     .to_owned();
@@ -199,6 +202,14 @@ fn prepare(s: &Local) -> Result<()> {
         .arg(&s.checkout)
         .arg(&bare);
     checked(c)?;
+    // A historical commit may be reachable only by its object ID, rather than
+    // a branch copied by clone. Pin it in the independent source before GC.
+    let mut capture = source::git(&bare);
+    capture
+        .args(["fetch", "--no-tags", "--"])
+        .arg(&s.checkout)
+        .arg(format!("{commit}:refs/tolmap/snapshot"));
+    checked(capture)?;
     // Independent objects, no alternates/hardlinks: moving/GC'ing the original
     // checkout cannot substitute or expire source belonging to an old map.
     let preview = root.join("preview");
@@ -278,6 +289,30 @@ fn run(
     id: Uuid,
     cancel: Arc<Probe>,
 ) -> Result<()> {
+    run_configured(
+        s,
+        prepared,
+        commit,
+        all,
+        confirmed_scope,
+        local_sources,
+        id,
+        cancel,
+        None,
+    )
+}
+#[allow(clippy::too_many_arguments)]
+fn run_configured(
+    s: Arc<Local>,
+    prepared: Uuid,
+    commit: String,
+    all: bool,
+    confirmed_scope: Option<String>,
+    local_sources: Option<Vec<(String, String)>>,
+    id: Uuid,
+    cancel: Arc<Probe>,
+    config: Option<&crate::service::config::ServeConfig>,
+) -> Result<()> {
     let source = s
         .data
         .join("prepared")
@@ -306,15 +341,27 @@ fn run(
         local: true,
         commit: commit.clone(),
         all_sources: all,
-        prune_variant: "node-relative".into(),
-        namer: "idf".into(),
-        namer_model: String::new(),
-        refs: Some("hand".into()),
-        install: None,
+        prune_variant: config
+            .map(|c| c.prune_variant.to_string())
+            .unwrap_or_else(|| "node-relative".into()),
+        namer: config
+            .map(|c| c.namer.to_string())
+            .unwrap_or_else(|| "idf".into()),
+        namer_model: config.map(|c| c.namer_model.clone()).unwrap_or_default(),
+        refs: Some(
+            config
+                .map(|c| c.refs.to_string())
+                .unwrap_or_else(|| "hand".into()),
+        ),
+        install: config.filter(|c| c.scip_install).map(|_| "sandbox".into()),
     };
     let env = ExecEnv {
-        clone_cache: s.data.join("cache"),
-        clone_cache_bytes: 2 * 1024 * 1024 * 1024,
+        clone_cache: config
+            .map(|c| c.cache_dir.join(&s.repository))
+            .unwrap_or_else(|| s.data.join("cache")),
+        clone_cache_bytes: config
+            .map(|c| c.limits.clone_cache_bytes)
+            .unwrap_or(2 * 1024 * 1024 * 1024),
         job_root: s.data.join("jobs"),
         install_root: s.data.join("install"),
         worker_exe: std::env::current_exe()?,

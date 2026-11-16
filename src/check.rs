@@ -245,7 +245,15 @@ pub fn render_json(report: &CheckReport) -> String {
 pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
     let started = Instant::now();
     let thresholds = resolve_thresholds(options)?;
-    let top = toplevel(&options.repo)?;
+    let top = if options.head.is_some()
+        && git_stdout(&options.repo, &["rev-parse", "--is-bare-repository"])
+            .map(|s| String::from_utf8_lossy(&s).trim() == "true")
+            .unwrap_or(false)
+    {
+        options.repo.clone()
+    } else {
+        toplevel(&options.repo)?
+    };
     let base = resolve_commit(&top, &options.base, "--base")?;
     let head = options
         .head
@@ -1070,6 +1078,7 @@ fn resolve_commit(top: &Path, reference: &str, flag: &str) -> Result<String, Che
 }
 
 /// A full git object id, as the service store names its maps.
+#[cfg(test)]
 fn is_object_id(value: &str) -> bool {
     matches!(value.len(), 40 | 64)
         && value
@@ -1092,16 +1101,10 @@ fn load_base_map(path: &Path, base: &str) -> Result<MapDocument, CheckError> {
             path.display()
         ))
     })?;
-    let recorded = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    if !is_object_id(recorded) {
-        return Err(input(format!(
-            "--base-map {}: cannot verify which commit it was built from; name it <full commit id>.json, as the service store does",
-            path.display()
-        )));
-    }
+    let recorded = crate::query::Snapshot::load(path)
+        .map_err(|error|input(format!("--base-map {}: {error:#}",path.display())))?
+        .identity.commit
+        .ok_or_else(||input(format!("--base-map {}: cannot verify its commit; use a retained snapshot or name it <full commit id>.json",path.display())))?;
     if recorded != base {
         return Err(input(format!(
             "--base-map {} was built from {recorded}, not --base {base}",

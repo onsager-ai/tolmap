@@ -1,4 +1,4 @@
-//! Headless commands exercise the production child worker and local store.
+//! Personal CLI exercises the production worker and retained snapshot protocol.
 use serde_json::Value;
 use std::{
     fs,
@@ -27,34 +27,9 @@ fn git(repo: &Path, args: &[&str]) -> String {
     );
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
-fn cli(repo: &Path, data: &Path, command: &str, flags: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tolmap"))
-        .arg(command)
-        .arg("--repo")
-        .arg(repo)
-        .arg("--data")
-        .arg(data)
-        .args(flags)
-        .output()
-        .unwrap()
-}
-fn response(output: Output, code: i32) -> Value {
-    assert_eq!(
-        output.status.code(),
-        Some(code),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-#[test]
-fn explicit_refresh_publishes_committed_head_and_reuses_second_cache() {
-    let root = tempfile::tempdir().unwrap();
-    let repo = root.path().join("repo");
-    let data = root.path().join("data");
+fn fixture(repo: &Path) -> String {
     fs::create_dir_all(repo.join("pkg")).unwrap();
-    git(&repo, &["init", "-q"]);
+    git(repo, &["init", "-q"]);
     for i in 0..8 {
         fs::write(
             repo.join(format!("pkg/f{i}.py")),
@@ -65,161 +40,435 @@ fn explicit_refresh_publishes_committed_head_and_reuses_second_cache() {
         )
         .unwrap();
     }
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-qm", "initial"]);
-    let head = git(&repo, &["rev-parse", "HEAD"]);
-    let none = response(cli(&repo, &data, "status", &[]), 0);
-    assert_eq!(none["results"][0]["freshness"], "none");
-    assert!(!data.exists(), "status must not create a store");
-    // This file must not enter committed extraction or its cache.
-    fs::write(repo.join("pkg/dirty.py"), "x = 1\n").unwrap();
-    let first = response(
-        cli(&repo, &data, "refresh", &["--pkg", "pkg", "--lang", "py"]),
-        0,
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "initial"]);
+    git(repo, &["rev-parse", "HEAD"])
+}
+fn cli(cwd: &Path, data: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tolmap"))
+        .current_dir(cwd)
+        .env("XDG_CONFIG_HOME", data.join("config-home"))
+        .arg("--data")
+        .arg(data)
+        .args(args)
+        .output()
+        .unwrap()
+}
+fn response(output: Output) -> Value {
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    let first_row = &first["results"][0];
-    assert_eq!(first_row["freshness"], "fresh");
-    assert_eq!(first_row["dirty"], true);
-    assert_eq!(first_row["changed_files"], 1);
-    assert_eq!(first_row["indexed_commit"], head);
-    assert_eq!(first["map"]["commit"], head);
-    assert_eq!(first_row["previous_map_reused"], false);
-    let path = Path::new(first_row["map_path"].as_str().unwrap());
-    let map: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+fn add(cwd: &Path, data: &Path, repo: &Path, name: Option<&str>) -> Value {
+    let mut args = vec![
+        "add",
+        repo.to_str().unwrap(),
+        "--pkg",
+        "pkg",
+        "--lang",
+        "py",
+    ];
+    if let Some(name) = name {
+        args.extend(["--name", name]);
+    }
+    response(cli(cwd, data, &args))
+}
+
+#[test]
+fn refresh_queries_history_failure_and_removal_share_one_store() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("repo");
+    let data = root.path().join("data");
+    let head = fixture(&repo);
+    fs::write(repo.join("pkg/dirty.py"), "x=1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir(&data).unwrap();
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o750)).unwrap();
+    let registration = add(root.path(), &data, &repo, Some("fixture"));
+    assert_eq!(
+        fs::metadata(&data).unwrap().permissions().mode() & 0o777,
+        0o750
+    );
+    let first = response(cli(&repo, &data, &["status"]));
+    assert_eq!(first["snapshot"]["commit"], head);
+    assert_eq!(first["dirty"], true);
+    assert_eq!(first["freshness"], "fresh");
+    let first_id = first["snapshot"]["id"].as_str().unwrap().to_string();
+    let first_path = first["snapshot"]["map_path"].as_str().unwrap().to_string();
+    let source = first["snapshot"]["source_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let map: Value = serde_json::from_slice(&fs::read(&first_path).unwrap()).unwrap();
     assert!(!map["F"]
         .as_array()
         .unwrap()
         .iter()
         .any(|p| p == "pkg/dirty.py"));
-    let query = Command::new(env!("CARGO_BIN_EXE_tolmap"))
-        .args(["where", "pkg/f0.py", "--map"])
-        .arg(path)
-        .output()
-        .unwrap();
-    assert!(query.status.success());
-    let query: Value = serde_json::from_slice(&query.stdout).unwrap();
-    assert_eq!(query["map"], first["map"]);
-    let symbol = Command::new(env!("CARGO_BIN_EXE_tolmap"))
-        .args(["where", "pkg/f0.py::value", "--map"])
-        .arg(path)
-        .output()
-        .unwrap();
-    let symbol = response(symbol, 0);
-    assert_eq!(symbol["total"], 1);
-    assert!(symbol["coverage"]["calls_total"].is_number());
-    assert_eq!(symbol["map"], first["map"]);
-    let second = response(
-        cli(&repo, &data, "refresh", &["--pkg", "pkg", "--lang", "py"]),
-        0,
+    for args in [
+        vec!["overview"],
+        vec!["where", "pkg/f0.py"],
+        vec!["where", "pkg/f0.py::value"],
+        vec!["deps", "pkg/f0.py"],
+        vec!["route", "pkg/f0.py", "pkg/f1.py"],
+    ] {
+        let inferred = response(cli(&repo.join("pkg"), &data, &args));
+        let mut named = args.clone();
+        named.extend(["--repo", "fixture"]);
+        assert_eq!(inferred, response(cli(root.path(), &data, &named)));
+        assert_eq!(inferred["map"]["commit"], head);
+    }
+    let explicit = response(cli(root.path(), &data, &["overview", "--map", &first_path]));
+    assert_eq!(explicit, response(cli(&repo, &data, &["overview"])));
+    assert!(!cli(
+        &repo,
+        &data,
+        &["overview", "--map", &first_path, "--repo", "fixture"]
+    )
+    .status
+    .success());
+    assert!(!cli(root.path(), &data, &["overview"]).status.success());
+    response(cli(
+        root.path(),
+        &data,
+        &["debt", "--repo", "fixture", "--format", "json"],
+    ));
+    let check = response(cli(
+        &repo,
+        &data,
+        &[
+            "check",
+            "--repo",
+            "fixture",
+            "--report-only",
+            "--format",
+            "json",
+        ],
+    ));
+    assert!(check.is_object());
+    let detected = cli(root.path(), &data, &["detect", "--repo", "fixture"]);
+    assert!(
+        detected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&detected.stderr)
     );
-    let row = &second["results"][0];
-    assert_eq!(row["previous_map_reused"], true);
-    assert_ne!(row["map_path"], first_row["map_path"]);
-    let observations = row["extraction_cache"].as_array().unwrap();
-    assert_eq!(observations.len(), 1);
-    assert_eq!(observations[0]["parsed"], 0);
-    assert_eq!(observations[0]["reused"], 8);
-    assert!(path.exists(), "refresh preserves history");
-    // An incomplete newer directory never displaces the published snapshot.
-    let partial = data
-        .join("snapshots")
-        .join(uuid::Uuid::new_v4().to_string());
-    fs::create_dir(&partial).unwrap();
-    fs::write(partial.join("map.json"), "partial").unwrap();
-    let after = response(cli(&repo, &data, "status", &[]), 0);
-    assert_eq!(after["results"][0]["map_path"], row["map_path"]);
-    assert_eq!(after["map"], second["map"]);
+    let lens_out = root.path().join("lenses");
+    let suggest = cli(
+        root.path(),
+        &data,
+        &[
+            "lens",
+            "suggest",
+            "--repo",
+            "fixture",
+            "--out",
+            lens_out.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        suggest.status.success(),
+        "{}",
+        String::from_utf8_lossy(&suggest.stderr)
+    );
+    let view =
+        tolmap::personal::SourceView::resolve(Some("fixture"), None, None, Some(&data)).unwrap();
+    let view_path = view.path.clone();
+    assert_eq!(view_path.file_name().unwrap(), first_id.as_str());
+    drop(view);
+    // Simulate a killed reader leaving its deterministic worktree behind.
+    git(
+        Path::new(&source),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            view_path.to_str().unwrap(),
+            &head,
+        ],
+    );
+    let view =
+        tolmap::personal::SourceView::resolve(Some("fixture"), None, None, Some(&data)).unwrap();
+    assert_eq!(view.path, view_path);
+    drop(view);
+    let index_file = repo.join(".git/index");
+    let saved_index = fs::read(&index_file).unwrap();
+    fs::write(&index_file, "broken index").unwrap();
+    let unknown = response(cli(&repo, &data, &["status"]));
+    assert!(unknown["dirty"].is_null());
+    response(cli(&repo, &data, &["overview"]));
+    response(cli(&repo, &data, &["repos"]));
+    fs::write(&index_file, saved_index).unwrap();
+    let historical = cli(
+        root.path(),
+        &data,
+        &[
+            "refresh", "fixture", "--commit", &head, "--pkg", "pkg", "--lang", "py",
+        ],
+    );
+    response(historical);
+    let observed = response(cli(&repo, &data, &["status"]));
+    assert_eq!(
+        observed["repository"]["observed_at"],
+        first["repository"]["observed_at"]
+    );
+    let second = response(cli(
+        &repo,
+        &data,
+        &["refresh", "fixture", "--pkg", "pkg", "--lang", "py"],
+    ));
+    assert_eq!(second["snapshot"]["id"], first_id);
+    let second_path = second["snapshot"]["map_path"].as_str().unwrap().to_owned();
+    let index: Value = serde_json::from_slice(
+        &fs::read(Path::new(&second_path).with_file_name("index.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(index["extraction"][0]["parsed"], 8);
+    let by_commit = response(cli(&repo, &data, &["overview", "--commit", &head]));
+    assert_eq!(by_commit["map"]["commit"], head);
+    let library = tolmap::personal::Library::open(Some(&data)).unwrap();
+    let registered = library.resolve(Some("fixture")).unwrap();
+    assert_eq!(
+        library
+            .store
+            .personal_history(&registered.id)
+            .unwrap()
+            .len(),
+        1
+    );
+    // A different source request at the same commit creates another snapshot;
+    // commit selectors still choose its latest publication.
+    response(cli(
+        &repo,
+        &data,
+        &["refresh", "fixture", "--pkg", ".", "--lang", "py"],
+    ));
+    let latest = library.store.personal_history(&registered.id).unwrap();
+    assert_eq!(latest.len(), 2);
+    assert_eq!(
+        library.snapshot(&registered, Some(&head), None).unwrap().id,
+        latest[0].id
+    );
+    response(cli(&repo, &data, &["overview", "--commit", &head]));
+    response(cli(&repo, &data, &["overview", "--snapshot", &first_id]));
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "next"]);
-    let stale = response(cli(&repo, &data, "status", &[]), 0);
-    assert_eq!(stale["results"][0]["freshness"], "stale");
-    assert_eq!(stale["results"][0]["commits_behind"], 1);
-    let failed = response(
-        cli(
-            &repo,
-            &data,
-            "refresh",
-            &["--pkg", "missing", "--lang", "py"],
-        ),
-        2,
+    let next_head = git(&repo, &["rev-parse", "HEAD"]);
+    assert!(!cli(
+        &repo,
+        &data,
+        &[
+            "check",
+            "--repo",
+            "fixture",
+            "--base",
+            &next_head,
+            "--report-only"
+        ]
+    )
+    .status
+    .success());
+    let stale = response(cli(&repo, &data, &["status"]));
+    assert_eq!(stale["freshness"], "stale");
+    let failed = cli(
+        &repo,
+        &data,
+        &[
+            "refresh", "--repo", "fixture", "--pkg", "missing", "--lang", "py",
+        ],
     );
-    assert_eq!(failed["results"][0]["freshness"], "failed");
-    assert_eq!(failed["results"][0]["map_path"], row["map_path"]);
-    assert_eq!(failed["results"][0]["indexed_commit"], head);
-    assert_eq!(
-        failed["results"][0]["requested_commit"],
-        git(&repo, &["rev-parse", "HEAD"])
-    );
-}
-
-#[test]
-fn input_errors_and_failed_attempts_have_explicit_exit_codes() {
-    let root = tempfile::tempdir().unwrap();
-    let repo = root.path().join("repo");
-    let data = root.path().join("data");
-    fs::create_dir(&repo).unwrap();
-    assert_eq!(cli(&repo, &data, "status", &[]).status.code(), Some(2));
-    git(&repo, &["init", "-q"]);
-    assert_eq!(cli(&repo, &data, "status", &[]).status.code(), Some(2));
-    for i in 0..8 {
-        fs::write(
-            repo.join(format!("module_{i}.py")),
-            "def value():\n    return 1\n",
-        )
-        .unwrap();
-    }
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-qm", "unmarked source"]);
-    assert_eq!(
-        cli(&repo, &data, "refresh", &["--all-sources", "--pkg", "."])
+    assert!(!failed.status.success());
+    let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(failed["snapshot"]["id"], latest[0].id);
+    assert_eq!(failed["attempt"][0], "failed");
+    assert!(Path::new(&first_path).exists());
+    assert!(
+        !cli(&repo, &data, &["refresh", "fixture", "--repo", "fixture"])
             .status
-            .code(),
-        Some(2)
+            .success()
     );
-    let failed = response(cli(&repo, &data, "refresh", &[]), 3);
-    assert_eq!(failed["results"][0]["freshness"], "failed");
-    assert!(failed["results"][0]["error"]
-        .as_str()
-        .unwrap()
-        .contains("confidence"));
-    assert!(failed["map"].is_null());
-    let status = response(cli(&repo, &data, "status", &[]), 0);
-    assert_eq!(status["results"][0]["freshness"], "failed");
-    // A malformed store must not be treated as a missing snapshot.
-    fs::write(data.join("attempt.json"), "partial-json").unwrap();
-    assert_eq!(cli(&repo, &data, "status", &[]).status.code(), Some(3));
+    assert!(!cli(&repo, &data, &["overview", "--commit", "deadbeef"])
+        .status
+        .success());
+    // Retained objects remain readable after removal of the original checkout.
+    fs::remove_dir_all(&repo).unwrap();
+    assert_eq!(
+        git(Path::new(&source), &["show", &format!("{head}:pkg/f0.py")]),
+        "from .f1 import value\ndef value():\n    return 0"
+    );
+    let missing = response(cli(root.path(), &data, &["status", "--repo", "fixture"]));
+    assert_eq!(missing["freshness"], "missing");
+    response(cli(root.path(), &data, &["overview", "--repo", "fixture"]));
+    let removed = cli(root.path(), &data, &["rm", "fixture"]);
+    assert!(removed.status.success());
+    assert!(!Path::new(&first_path).exists());
+    assert!(!Path::new(&source).exists());
+    assert_eq!(
+        response(cli(root.path(), &data, &["repos"])),
+        serde_json::json!([])
+    );
+    assert!(!registration["id"].as_str().unwrap().is_empty());
 }
 
 #[test]
-fn indexing_and_interruption_are_read_without_mutating_the_store() {
+fn collisions_relink_verification_and_scan_are_deterministic() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a/repo");
+    let b = root.path().join("b/repo");
+    let data = root.path().join("data");
+    let head = fixture(&a);
+    fixture(&b);
+    let first = add(root.path(), &data, &a, None);
+    let second = add(root.path(), &data, &b, None);
+    assert_eq!(first["name"], "repo");
+    assert!(second["name"].as_str().unwrap().starts_with("repo-"));
+    assert_ne!(first["id"], second["id"]);
+    symlink(root.path().join("a"), root.path().join("symlink")).unwrap();
+    assert_eq!(
+        tolmap::personal::scan(&root.path().join("a")).unwrap(),
+        vec![a.canonicalize().unwrap()]
+    );
+    assert!(tolmap::personal::scan(&root.path().join("symlink"))
+        .unwrap()
+        .is_empty());
+    let moved = root.path().join("moved");
+    fs::rename(&a, &moved).unwrap();
+    let relink = add(root.path(), &data, &moved, Some("repo"));
+    assert_eq!(relink["id"], first["id"]);
+    assert_eq!(
+        response(cli(&moved, &data, &["status"]))["snapshot"]["commit"],
+        head
+    );
+    // A different history cannot steal the missing registration.
+    fs::rename(&moved, root.path().join("hidden")).unwrap();
+    fs::write(b.join("unique.py"), "unique=1\n").unwrap();
+    git(&b, &["add", "."]);
+    git(&b, &["commit", "--amend", "-qm", "unrelated"]);
+    // b is already registered, so use a separate independent checkout.
+    let wrong = root.path().join("wrong");
+    fixture(&wrong);
+    fs::write(wrong.join("unique.py"), "x=2\n").unwrap();
+    git(&wrong, &["add", "."]);
+    git(&wrong, &["commit", "--amend", "-qm", "different root"]);
+    assert!(!cli(
+        root.path(),
+        &data,
+        &[
+            "add",
+            wrong.to_str().unwrap(),
+            "--name",
+            "repo",
+            "--pkg",
+            "pkg",
+            "--lang",
+            "py"
+        ]
+    )
+    .status
+    .success());
+    assert!(cli(root.path(), &data, &["rm", "repo"]).status.success());
+    assert!(root.path().join("hidden").exists());
+}
+
+#[test]
+fn locks_coordinate_readers_refresh_remove_and_crash_recovery() {
     use std::os::fd::AsRawFd;
     let root = tempfile::tempdir().unwrap();
     let repo = root.path().join("repo");
     let data = root.path().join("data");
-    fs::create_dir(&repo).unwrap();
-    fs::create_dir(&data).unwrap();
-    git(&repo, &["init", "-q"]);
-    fs::write(repo.join("module.py"), "x = 1\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-qm", "first"]);
-    let head = git(&repo, &["rev-parse", "HEAD"]);
-    let attempt = serde_json::json!({"indexed_commit":null,"requested_commit":head,"state":"indexing","failure_reason":null,"failure_code":null,"retryable":false,"job_id":"fixture"});
-    let bytes = serde_json::to_vec(&attempt).unwrap();
-    fs::write(data.join("attempt.json"), &bytes).unwrap();
-    let lock = fs::File::create(data.join("writer.lock")).unwrap();
+    fixture(&repo);
+    let registered = add(root.path(), &data, &repo, Some("fixture"));
+    let id = registered["id"].as_str().unwrap();
+    let store = tolmap::service::store::Store::open(&data.join("tolmap.sqlite3")).unwrap();
+    let before = store.personal_history(id).unwrap();
+    let guard = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.join("tolmap.locks").join(format!("{id}.lock")))
+        .unwrap();
     assert_eq!(
-        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        unsafe { libc::flock(guard.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
         0
     );
-    let status = response(cli(&repo, &data, "status", &[]), 0);
-    assert_eq!(status["results"][0]["freshness"], "indexing");
-    assert_eq!(cli(&repo, &data, "refresh", &[]).status.code(), Some(3));
-    drop(lock);
-    let interrupted = response(cli(&repo, &data, "status", &[]), 0);
-    assert_eq!(interrupted["results"][0]["freshness"], "failed");
-    assert!(interrupted["results"][0]["error"]
-        .as_str()
-        .unwrap()
-        .contains("interrupted"));
-    assert_eq!(fs::read(data.join("attempt.json")).unwrap(), bytes);
+    store.personal_begin(id, "interrupted").unwrap();
+    let read = response(cli(&repo, &data, &["overview"]));
+    assert_eq!(read["map"]["commit"], before[0].commit);
+    assert!(
+        !cli(&repo, &data, &["refresh", "--pkg", "pkg", "--lang", "py"])
+            .status
+            .success()
+    );
+    assert!(!cli(&repo, &data, &["rm", "fixture"]).status.success());
+    assert_eq!(
+        response(cli(&repo, &data, &["status"]))["attempt"][0],
+        "running"
+    );
+    drop(guard);
+    assert_eq!(
+        response(cli(&repo, &data, &["status"]))["attempt"][0],
+        "failed"
+    );
+    response(cli(
+        &repo,
+        &data,
+        &["refresh", "--pkg", "pkg", "--lang", "py"],
+    ));
+    assert_eq!(store.personal_history(id).unwrap().len(), 1);
+    let slot = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(data.join("tolmap.locks/slot-0.lock"))
+        .unwrap();
+    assert_eq!(
+        unsafe { libc::flock(slot.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    assert!(!cli(&repo, &data, &["refresh"]).status.success());
+    response(cli(&repo, &data, &["overview"]));
+}
+
+#[test]
+fn failed_registration_remains_listed_and_scan_reports_each_result() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = root.path().join("empty");
+    let data = root.path().join("data");
+    fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    let failed = cli(root.path(), &data, &["add", repo.to_str().unwrap()]);
+    assert!(!failed.status.success());
+    // An unborn checkout has no HEAD; list still reports its registration.
+    let good = root.path().join("good");
+    fixture(&good);
+    let scan = cli(
+        root.path(),
+        &data,
+        &[
+            "add",
+            "--scan",
+            root.path().to_str().unwrap(),
+            "--pkg",
+            "pkg",
+            "--lang",
+            "py",
+        ],
+    );
+    assert!(!scan.status.success());
+    assert!(String::from_utf8_lossy(&scan.stdout).contains("good"));
+    let rows = response(cli(root.path(), &data, &["repos"]));
+    assert_eq!(rows.as_array().unwrap().len(), 2);
+    assert!(rows[0]["snapshot"].is_null());
+    fs::rename(&repo, root.path().join("empty-moved")).unwrap();
+    let replacement = root.path().join("replacement");
+    fixture(&replacement);
+    let relink = cli(
+        root.path(),
+        &data,
+        &["add", replacement.to_str().unwrap(), "--name", "empty"],
+    );
+    assert!(!relink.status.success());
+    assert!(String::from_utf8_lossy(&relink.stderr).contains("no successful snapshot"));
 }
