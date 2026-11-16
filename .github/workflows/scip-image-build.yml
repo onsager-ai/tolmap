@@ -140,10 +140,12 @@ jobs:
       - name: Add a bind-mounted checkout as its owner (non-root)
         run: |
           set -euo pipefail
-          mkdir -p owned/repos/fixture owned/data
+          mkdir -p owned/repos/fixture/fixture owned/data
           git -C owned/repos/fixture init -q -b main
-          printf 'def f():\n    return 1\n' > owned/repos/fixture/a.py
-          git -C owned/repos/fixture add a.py
+          printf '[project]\nname = "fixture"\nversion = "0"\n' > owned/repos/fixture/pyproject.toml
+          printf '' > owned/repos/fixture/fixture/__init__.py
+          printf 'def f():\n    return 1\n' > owned/repos/fixture/fixture/a.py
+          git -C owned/repos/fixture add .
           git -C owned/repos/fixture -c user.name=t -c user.email=t@example.com commit -q -m init
           docker run --rm --user "$(id -u):$(id -g)" \
             -e HOME=/data -e TOLMAP_DATA_DIR=/data \
