@@ -11,8 +11,15 @@ const ACCESS_ERROR: &str = "GitHub access failed; configure a git credential hel
 /// Permit only the session settings needed by existing credential providers.
 /// Git config/trace overrides are excluded; indexing keeps its original environment.
 fn helper_environment(command: &mut Command) {
-    for name in [
+    let paths = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
+    let paths = std::env::split_paths(&paths)
+        .filter(|path| path.is_absolute())
+        .collect::<Vec<_>>();
+    command.env(
         "PATH",
+        std::env::join_paths(paths).expect("PATH entries remain valid"),
+    );
+    for name in [
         "HOME",
         "XDG_CONFIG_HOME",
         "XDG_RUNTIME_DIR",
@@ -42,7 +49,7 @@ fn helper_command(program: &str) -> Command {
 }
 
 fn exchange(mut command: Command, input: &[u8]) -> Result<Output> {
-    use std::os::unix::process::CommandExt;
+    use std::os::{fd::AsRawFd, unix::process::CommandExt};
     let mut child = command
         .process_group(0)
         .stdin(Stdio::piped())
@@ -51,31 +58,84 @@ fn exchange(mut command: Command, input: &[u8]) -> Result<Output> {
         .spawn()
         .context("credential provider unavailable")?;
     let pid = child.id();
-    let input = input.to_vec();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let waiter = std::thread::spawn(move || {
-        let result = (|| {
-            if let Err(error) = child.stdin.take().unwrap().write_all(&input) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
+    let mut stdin = child.stdin.take();
+    let mut stdout = child.stdout.take().unwrap();
+    let result = (|| -> Result<Output> {
+        for fd in [stdin.as_ref().unwrap().as_raw_fd(), stdout.as_raw_fd()] {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            ensure!(
+                flags >= 0
+                    && unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } >= 0,
+                "credential pipe unavailable"
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut written = 0;
+        let mut bytes = Vec::new();
+        let mut eof = false;
+        loop {
+            ensure!(
+                std::time::Instant::now() < deadline,
+                "credential provider timed out"
+            );
+            if let Some(pipe) = stdin.as_mut() {
+                match pipe.write(&input[written..]) {
+                    Ok(n) => written += n,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error.into()),
+                }
+                if written == input.len() {
+                    stdin.take();
+                }
             }
-            child.wait_with_output()
-        })();
-        let _ = sender.send(result);
-    });
-    let result = receiver.recv_timeout(std::time::Duration::from_secs(15));
+            if !eof {
+                let mut buffer = [0; 4096];
+                match stdout.read(&mut buffer) {
+                    Ok(0) => eof = true,
+                    Ok(n) => {
+                        bytes.extend_from_slice(&buffer[..n]);
+                        ensure!(bytes.len() <= 64 * 1024, "credential response too large");
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            // Do not reap before EOF: retaining the direct child also reserves
+            // its process-group ID until timeout cleanup has killed that group.
+            if eof {
+                if let Some(status) = child.try_wait()? {
+                    return Ok(Output {
+                        status,
+                        stdout: bytes,
+                        stderr: Vec::new(),
+                    });
+                }
+            }
+            let mut fds = [
+                libc::pollfd {
+                    fd: if eof { -1 } else { stdout.as_raw_fd() },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: stdin.as_ref().map_or(-1, |p| p.as_raw_fd()),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                },
+            ];
+            unsafe {
+                libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, 50);
+            }
+        }
+    })();
     if result.is_err() {
-        // A GUI/keyring helper may ignore noninteractive settings. Bound the
-        // whole provider group, including its shell and descendants, then reap.
         unsafe {
             libc::kill(-(pid as i32), libc::SIGKILL);
         }
+        let _ = child.wait();
     }
-    let _ = waiter.join();
+    // Nonblocking pipes are dropped here even if an escaped daemon owns copies.
     result
-        .context("credential provider timed out")?
-        .context("credential provider unavailable")
 }
 
 /// Git's helper protocol is the only secret channel. Ignore store/erase so even
@@ -86,7 +146,12 @@ pub fn credential(operation: &str) -> Result<()> {
     }
     let mut input = Vec::new();
     std::io::stdin().take(16 * 1024).read_to_end(&mut input)?;
-    let request = std::str::from_utf8(&input).context("invalid credential request")?;
+    std::io::stdout().write_all(&provider_response(&input)?)?;
+    Ok(())
+}
+
+fn provider_response(input: &[u8]) -> Result<Vec<u8>> {
+    let request = std::str::from_utf8(input).context("invalid credential request")?;
     ensure!(
         request.lines().any(|line| line == "protocol=https")
             && request.lines().any(|line| line == "host=github.com"),
@@ -96,27 +161,47 @@ pub fn credential(operation: &str) -> Result<()> {
     git.args(["-c", "credential.interactive=false", "credential", "fill"]);
     if let Ok(output) = exchange(git, &input) {
         if output.status.success() {
-            std::io::stdout().write_all(&output.stdout)?;
-            return Ok(());
+            return Ok(output.stdout);
         }
     }
     let mut gh = helper_command("gh");
+    for name in ["GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"] {
+        if let Some(value) = std::env::var_os(name) {
+            gh.env(name, value);
+        }
+    }
     gh.args(["auth", "git-credential", "get"]);
     if let Ok(output) = exchange(gh, &input) {
         if output.status.success() {
-            std::io::stdout().write_all(&output.stdout)?;
+            return Ok(output.stdout);
         }
     }
+    Ok(Vec::new())
+}
+
+/// The bridge has no provider secrets in its environment. The parent invokes
+/// providers, so gh environment tokens never pass through network Git or shells.
+pub fn bridge(socket: &Path, operation: &str) -> Result<()> {
+    if operation != "get" {
+        return Ok(());
+    }
+    let mut request = Vec::new();
+    std::io::stdin().take(16 * 1024).read_to_end(&mut request)?;
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(35)))?;
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let mut response = Vec::new();
+    stream.take(64 * 1024).read_to_end(&mut response)?;
+    std::io::stdout().write_all(&response)?;
     Ok(())
 }
 
-fn command(root: &Path, authenticated: bool) -> Result<Command> {
+fn command(root: &Path, socket: Option<&Path>) -> Result<Command> {
     let mut command = crate::source::git(root);
     command.args(["-c", "credential.helper=", "-c", "core.askPass="]);
-    if authenticated {
-        // Keep network Git's global config disabled, but pass the helper session
-        // environment through to our bridge, which starts a clean provider Git.
-        helper_environment(&mut command);
+    if let Some(socket) = socket {
+        // Network Git and its bridge receive no credential-provider environment.
         let executable = std::env::current_exe().context("tolmap executable unavailable")?;
         // Git interprets !helpers as shell commands; quote the executable path.
         let executable = executable
@@ -126,13 +211,64 @@ fn command(root: &Path, authenticated: bool) -> Result<Command> {
         command.args([
             "-c",
             &format!(
-                "credential.helper=!'{}' personal-github-credential",
-                executable
+                "credential.helper=!'{}' personal-github-credential --socket '{}'",
+                executable,
+                socket
+                    .to_str()
+                    .context("credential socket path must be UTF-8")?
+                    .replace('\'', "'\\''")
             ),
         ]);
     }
     command.stdin(Stdio::null());
     Ok(command)
+}
+
+fn network(
+    root: &Path,
+    authenticated: bool,
+    run: impl FnOnce(Command) -> Result<Output>,
+) -> Result<Output> {
+    use std::os::unix::{fs::DirBuilderExt, net::UnixListener};
+    if !authenticated {
+        return run(command(root, None)?);
+    }
+    let dir = std::env::temp_dir().join(format!("tolmap-credential-{}", uuid::Uuid::new_v4()));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    let socket = dir.join("helper");
+    let result = (|| {
+        let listener = UnixListener::bind(&socket)?;
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else {
+                    break;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut request = Vec::new();
+                if Read::by_ref(&mut stream)
+                    .take(16 * 1024)
+                    .read_to_end(&mut request)
+                    .is_err()
+                {
+                    continue;
+                }
+                if request.is_empty() {
+                    break;
+                }
+                if let Ok(response) = provider_response(&request) {
+                    let _ = stream.write_all(&response);
+                }
+            }
+        });
+        let output = command(root, Some(&socket)).and_then(run);
+        // Empty request stops the provider listener after network Git exits.
+        let _ = std::os::unix::net::UnixStream::connect(&socket);
+        let _ = server.join();
+        output
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
 }
 
 fn refused(output: &Output) -> bool {
@@ -164,12 +300,14 @@ fn attempt(mut run: impl FnMut(bool) -> Result<Output>) -> Result<(Output, bool)
     Ok((authenticated, true))
 }
 
-pub fn acquire(root: &Path, path: &Path, location: &str) -> Result<&'static str> {
+pub fn acquire(root: &Path, path: &Path, location: &str) -> Result<()> {
     let url = format!("https://{location}.git");
-    let (head, head_credentials) = attempt(|authenticated| {
-        Ok(command(root, authenticated)?
-            .args(["ls-remote", "--symref", "--", &url, "HEAD"])
-            .output()?)
+    let (head, _) = attempt(|authenticated| {
+        network(root, authenticated, |mut git| {
+            Ok(git
+                .args(["ls-remote", "--symref", "--", &url, "HEAD"])
+                .output()?)
+        })
     })?;
     // Never include provider-controlled bytes in errors or store metadata.
     let advertised = std::str::from_utf8(&head.stdout).context("invalid GitHub HEAD response")?;
@@ -184,25 +322,34 @@ pub fn acquire(root: &Path, path: &Path, location: &str) -> Result<&'static str>
         branch.starts_with("refs/heads/") && !branch.contains(char::is_whitespace),
         "invalid GitHub default branch"
     );
-    let (_, source_credentials) = attempt(|authenticated| {
-        let mut git = command(root, authenticated)?;
-        if path.exists() {
-            // Use the validated URL, never a repository-controlled origin URL.
-            git.arg("-C")
-                .arg(path)
-                .args(["fetch", "--no-tags", "--", &url, branch]);
-        } else {
-            git.args(["clone", "--no-checkout", "--"])
-                .arg(&url)
-                .arg(path);
-        }
-        Ok(git.output()?)
+    let remote = format!(
+        "refs/remotes/origin/{}",
+        branch.strip_prefix("refs/heads/").unwrap()
+    );
+    let refspec = format!("+{branch}:{remote}");
+    attempt(|authenticated| {
+        network(root, authenticated, |mut git| {
+            if path.exists() {
+                // Use the validated URL, never a repository-controlled origin URL.
+                git.arg("-C")
+                    .arg(path)
+                    .args(["fetch", "--no-tags", "--", &url, &refspec]);
+            } else {
+                git.args(["clone", "--no-checkout", "--"])
+                    .arg(&url)
+                    .arg(path);
+            }
+            Ok(git.output()?)
+        })
     })?;
-    Ok(if head_credentials || source_credentials {
-        "credential-helper"
-    } else {
-        "anonymous"
-    })
+    let status = crate::source::git(path)
+        .args(["symbolic-ref", "refs/remotes/origin/HEAD", &remote])
+        .output()?;
+    ensure!(
+        status.status.success(),
+        "GitHub default branch ref unavailable"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -285,7 +432,6 @@ mod tests {
                 location: "github.com/owner/private".into(),
                 observed_head: None,
                 observed_at: None,
-                access: None,
             })
             .unwrap();
         let snapshot = PersonalSnapshot {
@@ -301,6 +447,8 @@ mod tests {
         store.personal_begin("repo", "revoked").unwrap();
         store.personal_finish("revoked", Err(&error)).unwrap();
         let json = serde_json::json!({"error":error}).to_string();
+        std::fs::create_dir_all(dir.path().join("logs/jobs")).unwrap();
+        std::fs::write(dir.path().join("logs/jobs/failure.json"), &json).unwrap();
         store
             .insert_job(&JobRow {
                 job_id: "job".into(),
@@ -325,16 +473,26 @@ mod tests {
             .unwrap()
             .snapshot_json
             .contains(token));
-        for authenticated in [false, true] {
-            let cmd = command(dir.path(), authenticated).unwrap();
-            assert!(!format!("{:?}", cmd.get_args().collect::<Vec<_>>()).contains(token));
+        fn scan(path: &Path, token: &str) {
+            for entry in std::fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    scan(&path, token);
+                } else {
+                    let bytes = std::fs::read(&path).unwrap();
+                    assert!(
+                        !bytes
+                            .windows(token.len())
+                            .any(|window| window == token.as_bytes()),
+                        "{}",
+                        path.display()
+                    );
+                }
+            }
         }
+        assert!(db.with_file_name("db-wal").exists());
+        assert!(db.with_file_name("db-shm").exists());
+        scan(dir.path(), token);
         drop(store);
-        for entry in std::fs::read_dir(dir.path()).unwrap() {
-            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
-            assert!(!bytes
-                .windows(token.len())
-                .any(|window| window == token.as_bytes()));
-        }
     }
 }

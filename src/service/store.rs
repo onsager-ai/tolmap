@@ -173,7 +173,6 @@ const MIGRATIONS: &[&str] = &[
         finished_at TEXT
     );
     "#,
-    "ALTER TABLE repositories ADD COLUMN access TEXT CHECK(access IN ('anonymous', 'credential-helper'));",
 ];
 
 /// The two statuses a `jobs` row never leaves.

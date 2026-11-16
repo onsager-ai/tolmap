@@ -289,7 +289,6 @@ impl Library {
             location,
             observed_head: None,
             observed_at: None,
-            access: None,
         };
         self.store.register(&repo)?;
         drop(registry);
@@ -322,8 +321,7 @@ impl Library {
                 std::fs::remove_file(&path)?;
             }
         }
-        let access = crate::personal_github::acquire(&root, &path, &repo.location)?;
-        self.store.record_access(&repo.id, access)?;
+        crate::personal_github::acquire(&root, &path, &repo.location)?;
         Ok(path)
     }
     pub fn refresh(
@@ -357,11 +355,7 @@ impl Library {
             let mut checkout = self.acquire(repo, commit.is_none())?;
             ensure!(!control.is_some_and(|c| c.cancelled()), "cancelled");
             let revision = if repo.kind == "github" && commit.is_none() {
-                if checkout.join(".git/FETCH_HEAD").exists() {
-                    "FETCH_HEAD^{commit}"
-                } else {
-                    "refs/remotes/origin/HEAD^{commit}"
-                }
+                "refs/remotes/origin/HEAD^{commit}"
             } else {
                 "HEAD^{commit}"
             };
@@ -600,7 +594,6 @@ mod tests {
             location: path.into(),
             observed_head: None,
             observed_at: None,
-            access: None,
         }
     }
     #[test]

@@ -10,7 +10,6 @@ pub struct Repository {
     pub location: String,
     pub observed_head: Option<String>,
     pub observed_at: Option<String>,
-    pub access: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,7 +41,7 @@ impl Store {
     }
     pub fn repositories(&self) -> Result<Vec<Repository>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id,name,kind,location,observed_head,observed_at,access FROM repositories ORDER BY name,id")?;
+        let mut stmt = conn.prepare("SELECT id,name,kind,location,observed_head,observed_at FROM repositories ORDER BY name,id")?;
         let rows = stmt.query_map([], |r| {
             Ok(Repository {
                 id: r.get(0)?,
@@ -51,7 +50,6 @@ impl Store {
                 location: r.get(3)?,
                 observed_head: r.get(4)?,
                 observed_at: r.get(5)?,
-                access: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -69,14 +67,6 @@ impl Store {
         self.conn.lock().unwrap().execute(
             "UPDATE repositories SET location=?2 WHERE id=?1",
             params![id, location],
-        )?;
-        Ok(())
-    }
-
-    pub fn record_access(&self, id: &str, access: &str) -> Result<()> {
-        self.conn.lock().unwrap().execute(
-            "UPDATE repositories SET access=?2 WHERE id=?1",
-            params![id, access],
         )?;
         Ok(())
     }
@@ -162,7 +152,6 @@ mod tests {
                 location: "/repo".into(),
                 observed_head: None,
                 observed_at: None,
-                access: None,
             })
             .unwrap();
         for id in ["first", "second"] {
