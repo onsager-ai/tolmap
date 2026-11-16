@@ -422,13 +422,14 @@ fn selected_sources(repo: &Path, args: &RefreshArgs) -> Result<Option<Vec<(Strin
 }
 
 fn refresh_snapshot(s: Arc<Local>, args: &RefreshArgs) -> Result<()> {
-    refresh_revision(s, args, "HEAD", None)
+    refresh_revision(s, args, "HEAD", None, None)
 }
 fn refresh_revision(
     s: Arc<Local>,
     args: &RefreshArgs,
     revision: &str,
     config: Option<&crate::service::config::ServeConfig>,
+    control: Option<&PersonalControl>,
 ) -> Result<()> {
     eprintln!("Preparing committed HEAD; dirty files are excluded; no upload");
     let commit = String::from_utf8(checked(command(
@@ -438,9 +439,11 @@ fn refresh_revision(
     .trim()
     .to_owned();
     let id = Uuid::new_v4();
-    let cancel = Arc::new(Probe {
-        stopped: AtomicBool::new(false),
-        pid: AtomicU32::new(0),
+    let cancel = control.map(|c| c.probe.clone()).unwrap_or_else(|| {
+        Arc::new(Probe {
+            stopped: AtomicBool::new(false),
+            pid: AtomicU32::new(0),
+        })
     });
     let mut attempt = crate::schema::SnapshotFreshness {
         indexed_commit: snapshots(&s)?.last().map(|p| p.commit.clone()),
@@ -490,6 +493,7 @@ fn refresh_revision(
             id,
             cancel,
             config,
+            control,
         )
     })();
     match &result {
@@ -623,6 +627,7 @@ pub(crate) fn personal_refresh(
     args: &RefreshArgs,
     revision: &str,
     config: &crate::service::config::ServeConfig,
+    control: Option<&PersonalControl>,
 ) -> Result<crate::service::store::PersonalSnapshot> {
     private(&data)?;
     private(&data.join("snapshots"))?;
@@ -641,7 +646,7 @@ pub(crate) fn personal_refresh(
         notice: Mutex::new(String::new()),
         attempt: Mutex::new(None),
     });
-    refresh_revision(s.clone(), args, revision, Some(config))?;
+    refresh_revision(s.clone(), args, revision, Some(config), control)?;
     let snapshot = snapshots(&s)?
         .pop()
         .context("indexing produced no complete snapshot")?;

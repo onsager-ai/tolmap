@@ -28,4 +28,5 @@ function readProfile(): HostProfile | undefined {
   return value;
 }
 
+export const personalWeb = document.querySelector('meta[name="tolmap-personal"]') !== null;
 export const hostProfile = readProfile();

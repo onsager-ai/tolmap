@@ -70,6 +70,55 @@ web slice replaces it; hosted worker/admission settings stay service concerns.
 Settings are read at invocation/startup. Repository intent remains in
 `.tolmap/config.toml`; it cannot relocate the application database.
 
+## Personal browser API (`tolmap web`)
+
+`tolmap web [--addr IP:PORT] [--data DIR]` uses the same application loader,
+registry and retained snapshots as the CLI. It binds to `127.0.0.1:8787` by
+default. `--addr` overrides configured bind and port. There is no authentication.
+An off-loopback bind prints once at startup:
+
+```text
+No authentication: anyone who can reach this address can read source and manage repositories.
+```
+
+Set `static_dir` / `TOLMAP_STATIC_DIR` to an existing production `web/dist`
+bundle (the default is `web/dist` relative to the launch directory). A missing
+bundle is a startup error. Web reuses the service's API-safe SPA/static handler
+and the existing React host composition; public admission/catalogue handlers
+are not mounted. `serve` and `local` remain separate until the retirement slice.
+No old stores are discovered or imported. Private GitHub acquisition is deferred.
+
+| Method and route | Personal behavior |
+| --- | --- |
+| `GET /api/maps` | One `CatalogueEntry` per registration, including repositories without snapshots; all repositories, newest indexed activity first. |
+| `GET /api/repositories/{id}/history` | Shared `RepositoryHistory`, newest snapshots first, with open/refresh/remove actions. |
+| `POST /api/repositories/{id}/refresh` | Refresh committed HEAD through the same library as CLI; returns `202` with `job_id`. |
+| `DELETE /api/repositories/{id}` | Remove registration and tolmap-owned history/source; preserve the original checkout. Busy repositories must finish/cancel first. |
+| `GET /api/personal/scan?path=...` | Sorted checkout roots without following symlinks or entering discovered checkouts, using `OfferedRepository` rows and registered markers. Local rows do not display provider visibility. |
+| `POST /api/personal/index` | Existing `BatchIndexRequest` (`provider_ids` are local paths or anonymous GitHub source strings); returns `BatchIndexResponse`. Sources register before jobs start. |
+| `GET /api/personal/batches/{id}` | Persisted `BatchProgress`; reloadable batch URL `/new/batches/{id}`. |
+| `GET /api/jobs/{id}` | Re-read durable `JobSnapshot`, including worker phase/progress and terminal errors. |
+| `POST /api/jobs/{id}/cancel` | Cancel queued work or stop its isolated indexer; completed maps remain available. |
+| `POST /api/jobs/{id}/retry` | Start a fresh attempt for that job's registered repository, returning a one-job batch. |
+| `GET /api/maps/snapshot/{snapshot_id}` | Exact saved map bytes and `x-tolmap-commit`. Browser URL is `/snapshot/{snapshot_id}`. |
+| `GET /api/maps/personal/{repository_id}` | Latest complete map, optionally selecting a retained `commit`. History always links exact snapshot IDs. |
+
+Both map paths support `/symbols?district=N`, `/provenance`, `/source?commit=SHA&path=...`,
+`/freshness`, `/debt`, `/lenses` and `/lenses/{name}` using retained artifacts/source.
+A snapshot URL never substitutes a different snapshot at the same commit. Source
+requires the snapshot's immutable commit and uses the existing bounded Git-blob
+reader. Missing source remains explicit. Comparison/organization APIs and individual
+snapshot deletion are not advertised by the personal adapter in this slice.
+
+Home/history and job views poll shared state every two seconds while visible.
+A CLI refresh can run while web serves the last complete snapshot; it appears
+without restarting web. Web jobs have a bounded in-process FIFO and acquire the
+same cross-process repository/slot locks as CLI refresh. Competing CLI writes
+return busy rather than being silently queued. Web process interruption leaves
+saved maps intact; reopening an interrupted web job explains how to retry.
+Cancellation during source acquisition takes effect before indexing starts;
+worker cancellation kills the current worker process group.
+
 ## Configuration
 
 Everything below is read once, at startup, from the environment; an unset

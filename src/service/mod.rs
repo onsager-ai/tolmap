@@ -15,6 +15,7 @@ pub mod executor;
 pub mod http;
 pub mod jobs;
 pub mod lens;
+pub mod personal_web;
 pub mod ratelimit;
 pub mod schedule;
 pub mod store;

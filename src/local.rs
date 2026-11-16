@@ -65,6 +65,50 @@ struct Local {
     notice: Mutex<String>,
     attempt: Mutex<Option<crate::schema::SnapshotFreshness>>,
 }
+type PersonalEvent = dyn Fn(&WorkerEvent) + Send + Sync;
+pub(crate) struct PersonalControl {
+    probe: Arc<Probe>,
+    pub event: Arc<PersonalEvent>,
+}
+impl PersonalControl {
+    pub fn new(event: impl Fn(&WorkerEvent) + Send + Sync + 'static) -> Self {
+        Self {
+            probe: Arc::new(Probe {
+                stopped: AtomicBool::new(false),
+                pid: AtomicU32::new(0),
+            }),
+            event: Arc::new(event),
+        }
+    }
+    pub fn stop(&self) {
+        self.probe.stop();
+    }
+    pub fn cancelled(&self) -> bool {
+        self.probe.is_cancelled()
+    }
+}
+struct PersonalSink<'a> {
+    local: Sink,
+    control: &'a PersonalControl,
+}
+impl EventSink for PersonalSink<'_> {
+    fn clone_started(&mut self) {
+        self.local.clone_started();
+    }
+    fn clone_finished(&mut self, elapsed: f64, cached: bool) {
+        self.local.clone_finished(elapsed, cached);
+    }
+    fn event(&mut self, event: WorkerEvent) {
+        (self.control.event)(&event);
+        self.local.event(event);
+    }
+    fn install_tick(&self) {
+        self.local.install_tick();
+    }
+    fn peak_rss(&mut self, peak: u64) {
+        self.local.peak_rss(peak);
+    }
+}
 struct Probe {
     stopped: AtomicBool,
     pid: AtomicU32,
@@ -299,6 +343,7 @@ fn run(
         id,
         cancel,
         None,
+        None,
     )
 }
 #[allow(clippy::too_many_arguments)]
@@ -312,6 +357,7 @@ fn run_configured(
     id: Uuid,
     cancel: Arc<Probe>,
     config: Option<&crate::service::config::ServeConfig>,
+    control: Option<&PersonalControl>,
 ) -> Result<()> {
     let source = s
         .data
@@ -369,35 +415,23 @@ fn run_configured(
         worker_gid: 10001,
         allow_openrouter_key: false,
     };
-    let result = if let Some(sources) = local_sources {
-        executor::execute_local_sources(
-            &env,
-            id,
-            &spec,
-            &inputs,
-            &mut Sink(s.clone()),
-            cancel.as_ref(),
-            &sources,
-        )
-    } else if let Some(scope) = confirmed_scope {
-        executor::execute_confirmed_local(
-            &env,
-            id,
-            &spec,
-            &inputs,
-            &mut Sink(s.clone()),
-            cancel.as_ref(),
-            &scope,
-        )
+    let mut local_sink = Sink(s.clone());
+    let mut personal_sink;
+    let sink: &mut dyn EventSink = if let Some(control) = control {
+        personal_sink = PersonalSink {
+            local: Sink(s.clone()),
+            control,
+        };
+        &mut personal_sink
     } else {
-        executor::execute(
-            &env,
-            id,
-            &spec,
-            &inputs,
-            &mut Sink(s.clone()),
-            cancel.as_ref(),
-        )
+        &mut local_sink
+    };
+    let result = if let Some(sources) = local_sources {
+        executor::execute_local_sources(&env, id, &spec, &inputs, sink, cancel.as_ref(), &sources)
+    } else if let Some(scope) = confirmed_scope {
+        executor::execute_confirmed_local(&env, id, &spec, &inputs, sink, cancel.as_ref(), &scope)
+    } else {
+        executor::execute(&env, id, &spec, &inputs, sink, cancel.as_ref())
     }
     .map_err(|e| anyhow::anyhow!("local executor stopped: {}: {}", e.error, e.message))?;
     let work = result.job_dir.clone();

@@ -23,7 +23,7 @@ import {
   type PhaseView,
 } from "@/lib/indexPhases";
 import { classifyFailure, reportIssueUrl, type FailureAction, type FailureView } from "@/lib/jobFailure";
-import { hostProfile } from "@/host";
+import { hostProfile, personalWeb } from "@/host";
 
 // docs/UX.md §6: the indexing, queue and failure pages. The owner called the
 // page this replaces "quite poorly designed" (2026-09-27): 22 stage rows in
@@ -532,6 +532,13 @@ function FailurePage({ job, slug, narrow }: { job: JobSnapshot; slug: string | u
     setRetrying(true);
     setRetryError(null);
     try {
+      if (personalWeb) {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/retry`, { method: "POST" });
+        if (!response.ok) throw new Error("Refresh couldn't be started. Open the repository page to retry.");
+        const result = await response.json() as import("@bindings/BatchIndexResponse").BatchIndexResponse;
+        await navigate({ to: "/new", search: { job: result.jobs[0].job_id }, replace: true });
+        return;
+      }
       const res = await postIndexJob({ repo: target });
       if (res.status === "done") {
         const [owner, repo] = res.slug.split("/");

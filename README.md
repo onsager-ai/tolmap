@@ -83,6 +83,27 @@ data/           nine prebuilt maps — render these without indexing anything
 docs/           pipeline, findings, decisions
 ```
 
+## Personal repository library
+
+The Rust CLI and `tolmap web` share one personal database and configuration:
+
+```sh
+tolmap add /path/to/repository
+tolmap add owner/public-repository
+tolmap repos
+TOLMAP_STATIC_DIR=/path/to/tolmap/web/dist tolmap web
+```
+
+Use an existing production viewer bundle (or build `web/` with its declared pnpm
+workflow). Web defaults to `127.0.0.1:8787`; `--addr IP:PORT` overrides it. There
+is no authentication. Anyone reaching an off-loopback listener can read source
+and manage repositories. Home offers local paths, folder scan/multi-select and
+public GitHub; repository pages offer history, Refresh and removal. CLI refreshes
+appear without restarting web. Removal leaves the original checkout alone.
+See [the personal API and configuration](docs/API.md#personal-browser-api-tolmap-web).
+`local` and `serve` remain available for the later retirement slice; their old
+stores are never imported into the personal library.
+
 ## Self-hosting
 
 Build the `Dockerfile` and run `tolmap serve`. Configure it with the `TOLMAP_*` environment variables in `docs/API.md`'s configuration table, and persist `TOLMAP_CACHE_DIR` and `TOLMAP_DB_PATH` on a volume so the store and clone cache survive a restart.

@@ -80,6 +80,17 @@ last published row during indexing; abandoned attempts become failed when the
 next writer acquires the repository lock. Lock files live outside removable
 repository directories so removal cannot create two lock inodes for one ID.
 
+`tolmap web` loads the same library and configuration. Its personal service
+adapter reuses the service router's static/SPA handler and React's existing
+host-profile composition, catalogue, history, progress and source reader. Public
+catalogue/admission routes are not mounted. Management calls the CLI library;
+web-owned jobs use the existing durable jobs table for reloadable progress and
+batches, with a bounded FIFO before shared process locks. Browser snapshot URLs
+use `/snapshot/{id}` so repeated commits retain distinct map/source identities.
+Home, history and job reads poll shared state; the CLI never depends on a web
+process. Settings need restart, committed data changes do not. There is no auth;
+loopback is default and off-loopback startup prints the explicit exposure warning.
+
 ## Historical public MVP direction
 
 The first product is a website in the shape of DeepWiki — paste a repository, get a map, no install. The map of a repository lives at `/<owner>/<repo>`, with no forge prefix: `<host>/scrapy/scrapy`.

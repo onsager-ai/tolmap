@@ -23,6 +23,22 @@ pub struct PersonalSnapshot {
 }
 
 impl Store {
+    pub fn personal_snapshot(&self, id: &str) -> Result<Option<PersonalSnapshot>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT id,repository,commit_sha,map_path,source_path,indexed_at FROM personal_snapshots WHERE id=?1", [id], |r| Ok(PersonalSnapshot { id:r.get(0)?, repository:r.get(1)?, commit:r.get(2)?, map_path:PathBuf::from(r.get::<_,String>(3)?), source_path:PathBuf::from(r.get::<_,String>(4)?), indexed_at:r.get(5)? })).optional_context()
+    }
+    pub fn personal_repository_jobs(&self, repository: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT job_id FROM jobs WHERE slug LIKE 'personal-web/%' AND json_extract(spec_json, '$.repository_id')=?1 AND status NOT IN ('done','failed') ORDER BY rowid DESC")?;
+        let rows = stmt.query_map([repository], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub fn personal_web_jobs(&self, batch: &str) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT job_id FROM jobs WHERE slug=?1 ORDER BY rowid")?;
+        let rows = stmt.query_map([batch], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
     pub fn repositories(&self) -> Result<Vec<Repository>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id,name,kind,location,observed_head,observed_at FROM repositories ORDER BY name,id")?;

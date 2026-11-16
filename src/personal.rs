@@ -195,6 +195,11 @@ impl Library {
         Ok(matches.into_iter().next().unwrap())
     }
     pub fn add(&self, input: &str, name: Option<&str>, sources: &SourceArgs) -> Result<Repository> {
+        let repo = self.register(input, name)?;
+        self.refresh(&repo, None, sources)?;
+        Ok(repo)
+    }
+    pub(crate) fn register(&self, input: &str, name: Option<&str>) -> Result<Repository> {
         // Registration/name allocation needs a short global lock; indexing does not.
         let registry = lock(&self.locks().join("registry.lock"))?;
         let local = input.starts_with(['.', '/'])
@@ -229,7 +234,6 @@ impl Library {
             );
             let existing = existing.clone();
             drop(registry);
-            self.refresh(&existing, None, sources)?;
             return Ok(existing);
         }
         if let Some(existing) = name.and_then(|n| repos.iter().find(|r| r.name == n)) {
@@ -257,7 +261,6 @@ impl Library {
             repo.location = location;
             drop(_guard);
             drop(registry);
-            self.refresh(&repo, None, sources)?;
             return Ok(repo);
         }
         let default = if kind == "local" {
@@ -285,7 +288,6 @@ impl Library {
         };
         self.store.register(&repo)?;
         drop(registry);
-        self.refresh(&repo, None, sources)?;
         Ok(repo)
     }
     fn acquire(&self, repo: &Repository, fetch: bool) -> Result<PathBuf> {
@@ -372,6 +374,15 @@ impl Library {
         commit: Option<&str>,
         sources: &SourceArgs,
     ) -> Result<PersonalSnapshot> {
+        self.refresh_controlled(repo, commit, sources, None)
+    }
+    pub(crate) fn refresh_controlled(
+        &self,
+        repo: &Repository,
+        commit: Option<&str>,
+        sources: &SourceArgs,
+        control: Option<&crate::local::PersonalControl>,
+    ) -> Result<PersonalSnapshot> {
         let _guard = self.repo_lock(repo)?;
         let current = self
             .store
@@ -384,7 +395,9 @@ impl Library {
         let attempt = Uuid::new_v4().to_string();
         self.store.personal_begin(&repo.id, &attempt)?;
         let result = (|| {
+            ensure!(!control.is_some_and(|c| c.cancelled()), "cancelled");
             let mut checkout = self.acquire(repo, commit.is_none())?;
+            ensure!(!control.is_some_and(|c| c.cancelled()), "cancelled");
             let revision = if repo.kind == "github" && commit.is_none() {
                 if checkout.join(".git/FETCH_HEAD").exists() {
                     "FETCH_HEAD^{commit}"
@@ -447,6 +460,7 @@ impl Library {
                 &args,
                 &selected,
                 &self.config.service,
+                control,
             )?;
             crate::incremental::atomic_write(
                 &snapshot.map_path.with_file_name("selection.json"),
