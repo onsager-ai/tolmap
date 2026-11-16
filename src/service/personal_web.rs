@@ -850,6 +850,7 @@ mod tests {
             location: "/missing".into(),
             observed_head: None,
             observed_at: None,
+            access: None,
         };
         library.store.register(&repo).unwrap();
         let state = WebState::new(library);

@@ -40,3 +40,5 @@ pub mod worker;
 pub const SEED: u64 = 7;
 
 pub mod personal;
+
+pub mod personal_github;

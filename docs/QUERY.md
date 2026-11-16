@@ -246,8 +246,26 @@ tolmap rm engine
 XDG/HOME defaults choose the shared root. Local identity is canonical checkout
 root; identical origins never merge checkouts. Basename collisions receive a
 path hash suffix. GitHub URL/name spellings deduplicate case-insensitively.
-Remote acquisition is anonymous with helpers/prompts disabled; private GitHub
-support is a later slice. Failed adds remain registered and appear in `repos`.
+GitHub HEAD lookup, clone and fetch each try anonymous access first with
+helpers/prompts disabled. An authentication/not-found refusal retries with your
+existing Git credential helper, then `gh auth git-credential` if that helper
+has no credential. Configure a helper externally or run `gh auth login` before
+starting tolmap; no sign-in UI or interactive prompt is opened. Providers must
+work noninteractively in the session running tolmap (including any keyring
+session); each provider is limited to 15 seconds. The registration's `access`
+field records `anonymous` or `credential-helper` after successful acquisition.
+
+Credentials travel only through the helper protocol, never source URLs, command
+arguments, application config, logs, jobs or database rows. tolmap does not call
+helpers to store or erase credentials and does not modify global Git config.
+Network/provider diagnostics are replaced with fixed errors before persistence.
+Missing or revoked credentials leave prior maps/source available. Failed adds
+remain registered and appear in `repos`. Retained clones are full clones: no
+lazy network reads are needed when indexing or opening retained source.
+
+`tolmap web` uses credentials available to the process that started it. Binding
+outside loopback exposes private source and credential-backed repository
+management to anyone who can reach the listener; there is no authentication.
 
 A moved checkout can be relinked with `add NEW_PATH --name EXISTING` only when
 the old path is missing and the new checkout contains its last indexed commit.

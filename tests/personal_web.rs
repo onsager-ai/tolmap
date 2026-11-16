@@ -70,6 +70,7 @@ fn repo(store: &Store, location: &Path) -> Repository {
         location: location.to_string_lossy().into_owned(),
         observed_head: None,
         observed_at: None,
+        access: None,
     };
     store.register(&repo).unwrap();
     repo
@@ -437,6 +438,7 @@ async fn unreadable_maps_do_not_hide_catalogue_or_other_history() {
             location: dir.path().join("other").to_string_lossy().into_owned(),
             observed_head: None,
             observed_at: None,
+            access: None,
         })
         .unwrap();
     let broken = dir
