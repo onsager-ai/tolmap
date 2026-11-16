@@ -724,8 +724,12 @@ fn main() -> Result<()> {
                 .store
                 .repositories()?
                 .iter()
-                .map(|r| library.status(r))
-                .collect::<Result<Vec<_>>>()?;
+                .map(|r| {
+                    library.status(r).unwrap_or_else(
+                        |error| serde_json::json!({"repository":r,"error":format!("{error:#}")}),
+                    )
+                })
+                .collect::<Vec<_>>();
             println!("{}", serde_json::to_string(&rows)?);
             Ok(())
         }

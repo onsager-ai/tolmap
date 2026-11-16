@@ -20,7 +20,7 @@ pub struct AddArgs {
     #[command(flatten)]
     pub sources: SourceArgs,
 }
-#[derive(Clone, Debug, Default, Args)]
+#[derive(Clone, Debug, Default, Args, serde::Serialize)]
 pub struct SourceArgs {
     #[arg(long, conflicts_with_all=["pkg","lang"])]
     pub all_sources: bool,
@@ -54,7 +54,7 @@ pub struct Library {
 }
 
 pub(crate) fn private(path: &Path) -> Result<()> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -63,7 +63,6 @@ pub(crate) fn private(path: &Path) -> Result<()> {
         std::fs::symlink_metadata(path)?.is_dir(),
         "real storage directory required"
     );
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
     Ok(())
 }
 
@@ -183,7 +182,7 @@ impl Library {
             repo.name,
             repo.name
         );
-        if (commit.is_some() || snapshot_id.is_some()) && matches.len() > 1 {
+        if snapshot_id.is_some() && matches.len() > 1 {
             bail!(
                 "ambiguous snapshot: {}",
                 matches
@@ -198,7 +197,8 @@ impl Library {
     pub fn add(&self, input: &str, name: Option<&str>, sources: &SourceArgs) -> Result<Repository> {
         // Registration/name allocation needs a short global lock; indexing does not.
         let registry = lock(&self.locks().join("registry.lock"))?;
-        let local = Path::new(input).exists();
+        let local = input.starts_with(['.', '/'])
+            || (Path::new(input).is_dir() && checkout(Path::new(input)).is_ok());
         let (kind, location) = if local {
             (
                 "local",
@@ -243,19 +243,15 @@ impl Library {
                 existing.location,
                 location
             );
-            if let Some(last) = self.store.personal_history(&existing.id)?.first() {
-                ensure!(
-                    git(
-                        Path::new(&location),
-                        &["cat-file", "-e", &format!("{}^{{commit}}", last.commit)]
-                    )
-                    .is_ok(),
-                    "cannot relink {} to {}: new checkout lacks last indexed commit {}",
-                    existing.location,
-                    location,
-                    last.commit
-                );
-            }
+            let history = self.store.personal_history(&existing.id)?;
+            let last = history.first().with_context(|| {
+                format!(
+                    "cannot relink {} to {}: registration {} has no successful snapshot to verify",
+                    existing.location, location, existing.name
+                )
+            })?;
+            ensure!(git(Path::new(&location), &["merge-base","--is-ancestor",&last.commit,"HEAD"]).is_ok(),
+                "cannot relink {} to {}: last indexed commit {} is not an ancestor of new checkout HEAD",existing.location,location,last.commit);
             self.store.relink(&existing.id, &location)?;
             let mut repo = existing.clone();
             repo.location = location;
@@ -312,6 +308,13 @@ impl Library {
             );
             return Ok(path);
         }
+        if path.exists() && git(&path, &["rev-parse", "--git-dir"]).is_err() {
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)?;
+            } else {
+                std::fs::remove_file(&path)?;
+            }
+        }
         let url = format!("https://{}.git", repo.location);
         let mut observed = crate::source::git(&root);
         observed.args([
@@ -361,13 +364,6 @@ impl Library {
         }
         let output = command.output()?;
         ensure!(output.status.success(),"anonymous GitHub acquisition failed for {}; configure private GitHub access when that support is available",repo.location);
-        // Clone/fetch only the tolmap-owned checkout. User checkouts never move.
-        let head = if path.join(".git/FETCH_HEAD").exists() {
-            git(&path, &["rev-parse", "FETCH_HEAD^{commit}"])?
-        } else {
-            git(&path, &["rev-parse", "refs/remotes/origin/HEAD^{commit}"])?
-        };
-        git(&path, &["checkout", "--detach", &head])?;
         Ok(path)
     }
     pub fn refresh(
@@ -389,8 +385,19 @@ impl Library {
         self.store.personal_begin(&repo.id, &attempt)?;
         let result = (|| {
             let mut checkout = self.acquire(repo, commit.is_none())?;
-            let observed = git(&checkout, &["rev-parse", "HEAD^{commit}"])?;
-            self.store.observe(&repo.id, &observed)?;
+            let revision = if repo.kind == "github" && commit.is_none() {
+                if checkout.join(".git/FETCH_HEAD").exists() {
+                    "FETCH_HEAD^{commit}"
+                } else {
+                    "refs/remotes/origin/HEAD^{commit}"
+                }
+            } else {
+                "HEAD^{commit}"
+            };
+            let observed = git(&checkout, &["rev-parse", revision])?;
+            if commit.is_none() {
+                self.store.observe(&repo.id, &observed)?;
+            }
             let selected = if let Some(commit) = commit {
                 ensure!(
                     !commit.is_empty() && commit.bytes().all(|b| b.is_ascii_hexdigit()),
@@ -411,6 +418,21 @@ impl Library {
             } else {
                 observed
             };
+            let selection = serde_json::to_value(sources)?;
+            for snapshot in self.store.personal_history(&repo.id)? {
+                if snapshot.commit == selected
+                    && snapshot.map_path.is_file()
+                    && snapshot.source_path.is_dir()
+                {
+                    let path = snapshot.map_path.with_file_name("selection.json");
+                    if path.is_file()
+                        && serde_json::from_slice::<serde_json::Value>(&std::fs::read(path)?)?
+                            == selection
+                    {
+                        return Ok(snapshot);
+                    }
+                }
+            }
             let args = crate::local::cli::RefreshArgs {
                 repo: checkout.clone(),
                 data: None,
@@ -418,14 +440,19 @@ impl Library {
                 pkg: sources.pkg.clone(),
                 lang: sources.lang.clone(),
             };
-            crate::local::cli::personal_refresh(
+            let snapshot = crate::local::cli::personal_refresh(
                 checkout,
                 self.repo_dir(repo),
                 &repo.id,
                 &args,
                 &selected,
                 &self.config.service,
-            )
+            )?;
+            crate::incremental::atomic_write(
+                &snapshot.map_path.with_file_name("selection.json"),
+                &serde_json::to_vec(&selection)?,
+            )?;
+            Ok(snapshot)
         })();
         match &result {
             Ok(snapshot) => self.store.personal_finish(&attempt, Ok(snapshot))?,
@@ -461,13 +488,12 @@ impl Library {
         let (head, dirty) = if repo.kind == "local" && Path::new(&repo.location).exists() {
             (
                 git(Path::new(&repo.location), &["rev-parse", "HEAD^{commit}"]).ok(),
-                Some(
-                    !git(
-                        Path::new(&repo.location),
-                        &["status", "--porcelain=v1", "--untracked-files=all"],
-                    )?
-                    .is_empty(),
-                ),
+                git(
+                    Path::new(&repo.location),
+                    &["status", "--porcelain=v1", "--untracked-files=all"],
+                )
+                .ok()
+                .map(|s| !s.is_empty()),
             )
         } else {
             (repo.observed_head.clone(), None)
@@ -721,6 +747,7 @@ pub fn resolve_check(
 pub struct SourceView {
     pub path: PathBuf,
     source: PathBuf,
+    _guard: std::fs::File,
 }
 impl SourceView {
     pub fn resolve(
@@ -735,7 +762,15 @@ impl SourceView {
         ensure!(selected.source_path.is_dir(), "snapshot source is missing");
         let root = library.config.data.join("work");
         private(&root)?;
-        let path = root.join(Uuid::new_v4().to_string());
+        let path = root.join(&selected.id);
+        let guard = lock(&library.locks().join(format!("view-{}.lock", selected.id)))?;
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        git(
+            &selected.source_path,
+            &["worktree", "prune", "--expire", "now"],
+        )?;
         git(
             &selected.source_path,
             &[
@@ -749,6 +784,7 @@ impl SourceView {
         Ok(Self {
             path,
             source: selected.source_path,
+            _guard: guard,
         })
     }
 }

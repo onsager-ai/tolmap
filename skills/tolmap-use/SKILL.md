@@ -36,7 +36,7 @@ tolmap status
 Read `freshness`, `checkout_commit`, `snapshot.commit`, `snapshot.map_path`,
 `attempt` and `dirty`. From elsewhere use `--repo NAME`; `tolmap repos` lists
 names and last observed state. Reads never index or fetch. `--commit SHA`
-selects a unique retained revision; `--snapshot ID` selects repeated histories.
+selects the latest snapshot at a retained revision; `--snapshot ID` selects an exact history entry.
 `--map FILE` remains available and conflicts with database selectors. Freshness
 and dirty state are disclosed on stderr without changing compact query JSON.
 Dirty and untracked files are excluded from snapshots; `check` without `--head`

@@ -98,7 +98,7 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         if let Ok(snapshot) = result {
-            tx.execute("INSERT INTO personal_snapshots(id,repository,commit_sha,map_path,source_path) VALUES (?1,?2,?3,?4,?5)",params![snapshot.id,snapshot.repository,snapshot.commit,snapshot.map_path.to_string_lossy(),snapshot.source_path.to_string_lossy()])?;
+            tx.execute("INSERT INTO personal_snapshots(id,repository,commit_sha,map_path,source_path) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(id) DO NOTHING",params![snapshot.id,snapshot.repository,snapshot.commit,snapshot.map_path.to_string_lossy(),snapshot.source_path.to_string_lossy()])?;
         }
         tx.execute("UPDATE personal_attempts SET status=?2,error=?3,finished_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?1 AND status='running'",params![id,if result.is_ok() {"done"} else {"failed"},result.err()])?;
         tx.commit()?;

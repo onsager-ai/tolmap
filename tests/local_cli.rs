@@ -85,7 +85,14 @@ fn refresh_queries_history_failure_and_removal_share_one_store() {
     let data = root.path().join("data");
     let head = fixture(&repo);
     fs::write(repo.join("pkg/dirty.py"), "x=1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir(&data).unwrap();
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o750)).unwrap();
     let registration = add(root.path(), &data, &repo, Some("fixture"));
+    assert_eq!(
+        fs::metadata(&data).unwrap().permissions().mode() & 0o777,
+        0o750
+    );
     let first = response(cli(&repo, &data, &["status"]));
     assert_eq!(first["snapshot"]["commit"], head);
     assert_eq!(first["dirty"], true);
@@ -167,6 +174,34 @@ fn refresh_queries_history_failure_and_removal_share_one_store() {
         "{}",
         String::from_utf8_lossy(&suggest.stderr)
     );
+    let view =
+        tolmap::personal::SourceView::resolve(Some("fixture"), None, None, Some(&data)).unwrap();
+    let view_path = view.path.clone();
+    assert_eq!(view_path.file_name().unwrap(), first_id.as_str());
+    drop(view);
+    // Simulate a killed reader leaving its deterministic worktree behind.
+    git(
+        Path::new(&source),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            view_path.to_str().unwrap(),
+            &head,
+        ],
+    );
+    let view =
+        tolmap::personal::SourceView::resolve(Some("fixture"), None, None, Some(&data)).unwrap();
+    assert_eq!(view.path, view_path);
+    drop(view);
+    let index_file = repo.join(".git/index");
+    let saved_index = fs::read(&index_file).unwrap();
+    fs::write(&index_file, "broken index").unwrap();
+    let unknown = response(cli(&repo, &data, &["status"]));
+    assert!(unknown["dirty"].is_null());
+    response(cli(&repo, &data, &["overview"]));
+    response(cli(&repo, &data, &["repos"]));
+    fs::write(&index_file, saved_index).unwrap();
     let historical = cli(
         root.path(),
         &data,
@@ -175,25 +210,49 @@ fn refresh_queries_history_failure_and_removal_share_one_store() {
         ],
     );
     response(historical);
+    let observed = response(cli(&repo, &data, &["status"]));
+    assert_eq!(
+        observed["repository"]["observed_at"],
+        first["repository"]["observed_at"]
+    );
     let second = response(cli(
         &repo,
         &data,
         &["refresh", "fixture", "--pkg", "pkg", "--lang", "py"],
     ));
-    assert_ne!(second["snapshot"]["id"], first_id);
+    assert_eq!(second["snapshot"]["id"], first_id);
     let second_path = second["snapshot"]["map_path"].as_str().unwrap().to_owned();
     let index: Value = serde_json::from_slice(
         &fs::read(Path::new(&second_path).with_file_name("index.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(index["extraction"][0]["parsed"], 0);
-    assert_eq!(index["extraction"][0]["reused"], 8);
-    assert!(
-        !cli(&repo, &data, &["overview", "--commit", &head])
-            .status
-            .success(),
-        "same-commit histories require snapshot selector"
+    assert_eq!(index["extraction"][0]["parsed"], 8);
+    let by_commit = response(cli(&repo, &data, &["overview", "--commit", &head]));
+    assert_eq!(by_commit["map"]["commit"], head);
+    let library = tolmap::personal::Library::open(Some(&data)).unwrap();
+    let registered = library.resolve(Some("fixture")).unwrap();
+    assert_eq!(
+        library
+            .store
+            .personal_history(&registered.id)
+            .unwrap()
+            .len(),
+        1
     );
+    // A different source request at the same commit creates another snapshot;
+    // commit selectors still choose its latest publication.
+    response(cli(
+        &repo,
+        &data,
+        &["refresh", "fixture", "--pkg", ".", "--lang", "py"],
+    ));
+    let latest = library.store.personal_history(&registered.id).unwrap();
+    assert_eq!(latest.len(), 2);
+    assert_eq!(
+        library.snapshot(&registered, Some(&head), None).unwrap().id,
+        latest[0].id
+    );
+    response(cli(&repo, &data, &["overview", "--commit", &head]));
     response(cli(&repo, &data, &["overview", "--snapshot", &first_id]));
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "next"]);
@@ -223,7 +282,7 @@ fn refresh_queries_history_failure_and_removal_share_one_store() {
     );
     assert!(!failed.status.success());
     let failed: Value = serde_json::from_slice(&failed.stdout).unwrap();
-    assert_eq!(failed["snapshot"], second["snapshot"]);
+    assert_eq!(failed["snapshot"]["id"], latest[0].id);
     assert_eq!(failed["attempt"][0], "failed");
     assert!(Path::new(&first_path).exists());
     assert!(
@@ -358,7 +417,7 @@ fn locks_coordinate_readers_refresh_remove_and_crash_recovery() {
         &data,
         &["refresh", "--pkg", "pkg", "--lang", "py"],
     ));
-    assert_eq!(store.personal_history(id).unwrap().len(), 2);
+    assert_eq!(store.personal_history(id).unwrap().len(), 1);
     let slot = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -402,4 +461,14 @@ fn failed_registration_remains_listed_and_scan_reports_each_result() {
     let rows = response(cli(root.path(), &data, &["repos"]));
     assert_eq!(rows.as_array().unwrap().len(), 2);
     assert!(rows[0]["snapshot"].is_null());
+    fs::rename(&repo, root.path().join("empty-moved")).unwrap();
+    let replacement = root.path().join("replacement");
+    fixture(&replacement);
+    let relink = cli(
+        root.path(),
+        &data,
+        &["add", replacement.to_str().unwrap(), "--name", "empty"],
+    );
+    assert!(!relink.status.success());
+    assert!(String::from_utf8_lossy(&relink.stderr).contains("no successful snapshot"));
 }

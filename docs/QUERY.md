@@ -19,8 +19,8 @@ All commands select a registered repository with `--repo NAME`, or infer the
 nearest registered checkout containing the current directory. Exact names win;
 unique short names are accepted, and ambiguity lists names and IDs. Reads use
 the latest successful publication, never index or fetch. `--commit SHA` selects
-a unique retained commit/prefix; repeated snapshots at that commit require
-`--snapshot ID`. `--map <file-or-directory>` remains an explicit input and
+a retained commit/prefix and uses its latest snapshot; `--snapshot ID` selects
+an exact retained snapshot. `--map <file-or-directory>` remains an explicit input and
 conflicts with repository/commit/snapshot selectors. All accept `--format json|text`
 (default `json`) and `--limit N` (zero requests totals alone). `overview`
 returns every district by default. `deps` defaults to 25 rows per direction;
@@ -253,8 +253,8 @@ A moved checkout can be relinked with `add NEW_PATH --name EXISTING` only when
 the old path is missing and the new checkout contains its last indexed commit.
 The registration ID and history survive. Otherwise the command names both paths
 and fails. `rm` removes tolmap-owned history/source, never the original checkout.
-Every successful refresh retains another immutable snapshot, including repeated
-commits. Source objects are independent of the original checkout and clone cache.
+Refresh reuses a complete snapshot for the same commit and source selection;
+changed source selections may retain repeated commits. Source objects are independent of the original checkout and clone cache.
 No existing stores are discovered or imported.
 
 Refresh excludes dirty and untracked content; check without `--head` compares
