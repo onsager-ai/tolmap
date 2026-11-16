@@ -172,10 +172,18 @@ fn only_gh_receives_environment_tokens_and_helper_path_is_absolute() {
         std::fs::read_to_string(dir.path().join("git-env")).unwrap(),
         "unset|unset|unset"
     );
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("helper-env")).unwrap(),
-        format!("unset|unset|unset|{}", dir.path().join("bin").display())
+    // Git prepends its own exec-path (e.g. /usr/lib/git-core) before running
+    // helpers, so check the filtered user entry and that every entry is absolute.
+    let helper = std::fs::read_to_string(dir.path().join("helper-env")).unwrap();
+    let (tokens, path) = helper.rsplit_once('|').unwrap();
+    assert_eq!(tokens, "unset|unset|unset");
+    assert!(
+        path.split(':').all(|entry| entry.starts_with('/')),
+        "{path}"
     );
+    assert!(path
+        .split(':')
+        .any(|entry| std::path::Path::new(entry) == dir.path().join("bin")));
     assert_eq!(
         std::fs::read_to_string(dir.path().join("gh-env")).unwrap(),
         format!("{TOKEN}|synthetic-github-token|github.com")
