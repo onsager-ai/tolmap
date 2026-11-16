@@ -25,7 +25,9 @@ enum DebtCommand {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Register and index committed local or public GitHub source.
+    #[command(hide = true)]
+    PersonalGithubCredential { operation: String },
+    /// Register and index committed local or GitHub source.
     Add(tolmap::personal::AddArgs),
     /// List registrations and last observed freshness; never index or fetch.
     Repos,
@@ -701,6 +703,9 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let data = cli.data.as_deref();
     match cli.command {
+        Command::PersonalGithubCredential { operation } => {
+            tolmap::personal_github::credential(&operation)
+        }
         Command::Route(args) => std::process::exit(tolmap::query::run_with_data(
             &args.options,
             data,

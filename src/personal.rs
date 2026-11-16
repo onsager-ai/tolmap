@@ -321,55 +321,7 @@ impl Library {
                 std::fs::remove_file(&path)?;
             }
         }
-        let url = format!("https://{}.git", repo.location);
-        let mut observed = crate::source::git(&root);
-        observed.args([
-            "-c",
-            "credential.helper=",
-            "-c",
-            "core.askPass=",
-            "ls-remote",
-            "--symref",
-            "--",
-            &url,
-            "HEAD",
-        ]);
-        let observed = observed.output()?;
-        ensure!(
-            observed.status.success(),
-            "anonymous GitHub HEAD lookup failed for {}",
-            repo.location
-        );
-        let advertised = String::from_utf8(observed.stdout)?;
-        let branch = advertised
-            .lines()
-            .find_map(|line| {
-                line.strip_prefix("ref: ")
-                    .and_then(|s| s.strip_suffix("\tHEAD"))
-            })
-            .context("GitHub default branch is unavailable")?;
-        ensure!(
-            branch.starts_with("refs/heads/") && !branch.contains(char::is_whitespace),
-            "invalid GitHub default branch"
-        );
-        let mut command = crate::source::git(&root);
-        command.args(["-c", "credential.helper=", "-c", "core.askPass="]);
-        if path.exists() {
-            if !fetch {
-                return Ok(path);
-            }
-            command
-                .arg("-C")
-                .arg(&path)
-                .args(["fetch", "--no-tags", "origin", branch]);
-        } else {
-            command
-                .args(["clone", "--no-checkout", "--"])
-                .arg(&url)
-                .arg(&path);
-        }
-        let output = command.output()?;
-        ensure!(output.status.success(),"anonymous GitHub acquisition failed for {}; configure private GitHub access when that support is available",repo.location);
+        crate::personal_github::acquire(&root, &path, &repo.location)?;
         Ok(path)
     }
     pub fn refresh(
@@ -403,11 +355,7 @@ impl Library {
             let mut checkout = self.acquire(repo, commit.is_none())?;
             ensure!(!control.is_some_and(|c| c.cancelled()), "cancelled");
             let revision = if repo.kind == "github" && commit.is_none() {
-                if checkout.join(".git/FETCH_HEAD").exists() {
-                    "FETCH_HEAD^{commit}"
-                } else {
-                    "refs/remotes/origin/HEAD^{commit}"
-                }
+                "refs/remotes/origin/HEAD^{commit}"
             } else {
                 "HEAD^{commit}"
             };

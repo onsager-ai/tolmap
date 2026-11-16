@@ -89,7 +89,10 @@ bundle (the default is `web/dist` relative to the launch directory). A missing
 bundle is a startup error. Web reuses the service's API-safe SPA/static handler
 and the existing React host composition; public admission/catalogue handlers
 are not mounted. `serve` and `local` remain separate until the retirement slice.
-No old stores are discovered or imported. Private GitHub acquisition is deferred.
+No old stores are discovered or imported. GitHub acquisition uses the anonymous-first
+git/gh credential-helper flow described in [QUERY.md](QUERY.md); helpers never
+prompt, and credentials are never stored in jobs or the database. Off-loopback
+access includes private source and credential-backed management.
 
 | Method and route | Personal behavior |
 | --- | --- |
@@ -98,7 +101,7 @@ No old stores are discovered or imported. Private GitHub acquisition is deferred
 | `POST /api/repositories/{id}/refresh` | Refresh committed HEAD through the same library as CLI; returns `202` with `job_id`. |
 | `DELETE /api/repositories/{id}` | Remove registration and tolmap-owned history/source; preserve the original checkout. Busy repositories must finish/cancel first. |
 | `GET /api/personal/scan?path=...` | Sorted checkout roots without following symlinks or entering discovered checkouts, using `OfferedRepository` rows and registered markers. Local rows do not display provider visibility. |
-| `POST /api/personal/index` | Existing `BatchIndexRequest` (`provider_ids` are local paths or anonymous GitHub source strings); returns `BatchIndexResponse`. Sources register before jobs start. |
+| `POST /api/personal/index` | Existing `BatchIndexRequest` (`provider_ids` are local paths or GitHub source strings); returns `BatchIndexResponse`. Sources register before jobs start. |
 | `GET /api/personal/batches/{id}` | Persisted `BatchProgress`; reloadable batch URL `/new/batches/{id}`. |
 | `GET /api/jobs/{id}` | Re-read durable `JobSnapshot`, including worker phase/progress and terminal errors. |
 | `POST /api/jobs/{id}/cancel` | Cancel queued work or stop its isolated indexer; completed maps remain available. |

@@ -42,7 +42,7 @@ export function page(id: string): StoryObj<Args> {
         expect(sheet.getByRole('button', { name: 'Add and map' })).toBeDisabled();
         if (id === 'personal-add-github') {
           await userEvent.type(sheet.getByRole('textbox'), 'acme/public');
-          expect(sheet.getByText(/Public repositories are acquired anonymously/)).toBeVisible();
+          expect(sheet.getByText(/GitHub is tried anonymously first/)).toBeVisible();
           expect(sheet.getByRole('button', { name: 'Add and map' })).toBeEnabled();
         } else {
           await userEvent.type(sheet.getByRole('textbox'), '/home/me/projects');
