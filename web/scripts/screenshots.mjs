@@ -892,7 +892,6 @@ try {
       "worker_crashed",
       "busy",
       "server_stopping",
-      "rate_limited",
       "index_failed",
       "internal_error",
       "mystery_code",

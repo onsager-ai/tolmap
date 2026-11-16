@@ -43,12 +43,12 @@ if (platform !== 'linux' || arch !== 'x64' || !meetsGlibcFloor) {
 
 const binary = path.resolve(__dirname, '..', 'lib', 'tolmap');
 const args = process.argv.slice(2);
-if (args[0] === 'local' &&
-    !args.some((arg) => arg === '--static-dir' || arg.startsWith('--static-dir='))) {
-  args.push('--static-dir', path.resolve(__dirname, '..', 'web', 'dist'));
+const childEnv = { ...process.env };
+if (!childEnv.TOLMAP_STATIC_DIR) {
+  childEnv.TOLMAP_STATIC_DIR = path.resolve(__dirname, '..', 'web', 'dist');
 }
 
-const child = spawn(binary, args, { stdio: 'inherit' });
+const child = spawn(binary, args, { stdio: 'inherit', env: childEnv });
 const signals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 // Local workers have their own process groups. Forward to the whole descendant
 // tree as well as the server, so terminating npx cannot leave an engine behind.

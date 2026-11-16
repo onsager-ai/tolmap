@@ -6,7 +6,6 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use tolmap::lens::{Lens, LensList, LensReport, LensResponse};
 use tolmap::schema::{CheckReport, Comparison, DistrictSymbols, MapDocument, SymbolsDocument};
-use tolmap::service::http::HealthzResponse;
 use tolmap::service::jobs::JobSnapshot;
 use tolmap::worker::{WorkerEvent, WorkerSpec};
 use ts_rs::{Config, TS};
@@ -53,18 +52,12 @@ fn export_to(directory: &Path) -> Result<()> {
     tolmap::catalogue::BatchIndexResponse::export_all(&Config::default().with_out_dir(directory))?;
     tolmap::catalogue::BatchProgress::export_all(&Config::default().with_out_dir(directory))?;
     tolmap::query_contract::QueryResponse::export_all(&Config::default().with_out_dir(directory))?;
-    tolmap::local::cli::StatusResponse::export_all(&Config::default().with_out_dir(directory))?;
     MapDocument::export_all(&Config::default().with_out_dir(directory))?;
     SymbolsDocument::export_all(&Config::default().with_out_dir(directory))?;
     DistrictSymbols::export_all(&Config::default().with_out_dir(directory))?;
     WorkerSpec::export_all(&Config::default().with_out_dir(directory))?;
     WorkerEvent::export_all(&Config::default().with_out_dir(directory))?;
     JobSnapshot::export_all(&Config::default().with_out_dir(directory))?;
-    // §97 phase 3: `WorkerBuild` (its dependency) is exported for the first
-    // time here, reachable from `GET /api/healthz`'s body rather than the
-    // worker protocol -- the web client never opens that channel (`worker::
-    // WorkerMessage`'s own doc comment), but it can read this.
-    HealthzResponse::export_all(&Config::default().with_out_dir(directory))?;
     // Issue #170: `tolmap check --format json`'s report, for the consumers
     // that gate on it (docs/CHECK.md).
     CheckReport::export_all(&Config::default().with_out_dir(directory))?;

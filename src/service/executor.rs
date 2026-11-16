@@ -1,4 +1,4 @@
-//! The executor (docs/WORKER_TIER.md §2): everything between "this job is
+//! The executor: everything between "this job is
 //! ready to run" and "the job child has exited". It materialises the clone
 //! in this host's own cache, copies it into a fresh job directory, hardens
 //! that directory, stages the inputs, spawns the job child with a v1
@@ -6,24 +6,9 @@
 //! local sandbox, kills the process group on cancel and reaps the child
 //! with `wait_with_peak`.
 //!
-//! **Why its inputs are what they are.** In local mode the master calls
-//! [`execute`] in-process, between `jobs::prepare` and `jobs::register`. In
-//! remote mode (#97 phase 1, later PRs) an agent on a worker host calls the
-//! same function, and a worker host never holds the database (§1, §5.2).
-//! So [`execute`] takes no `AppState`, no `Store` and no `ServeConfig`: a
-//! job description ([`JobSpec`]), the job's inputs ([`JobInputs`]: a names
-//! cache by value and previous-map files by path), this host's environment
-//! ([`ExecEnv`], every field named), and two narrow callbacks: an
-//! [`EventSink`] for what the child reports and a [`CancelProbe`] for
-//! whether to stop. Nothing reachable from those arguments can open the
-//! store, which is the compile-level guard: a change that needs the store
-//! in here has to change this signature first, and that is the review
-//! point. Store reads belong in `jobs::prepare`, store writes in
-//! `jobs::register`.
-//!
-//! The job child itself does not change (§2, "The executor moves; the job
-//! child does not change"): it gets the same `WorkerSpec` on stdin and
-//! writes the same v1 events on stdout as before this module existed.
+//! The personal snapshot engine supplies pinned job inputs, local directories and
+//! progress/cancellation callbacks. The executor never opens the database;
+//! application code owns admission and atomic snapshot publication.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -39,10 +24,7 @@ use crate::service::error::{ApiError, ErrorBody};
 use crate::service::worker_result;
 use crate::worker::{JobSpec, LocalInputs, PreviousMap, WorkerEvent, WorkerSpec};
 
-/// This host's side of a job: where its caches and job directories live,
-/// which binary is the job child and which uid it drops to. The master
-/// builds one from its `ServeConfig` (`jobs::exec_env`); an agent will
-/// build one from its own flags. None of it names the store.
+/// Executor directories, child binary and process isolation settings.
 pub struct ExecEnv {
     /// Root of this host's shared clone cache; clones live under
     /// `<clone_cache>/repos/<owner>/<repo>` (`clone::materialize_with_progress`).
@@ -77,7 +59,7 @@ pub struct PreviousMapInput {
     pub path: PathBuf,
 }
 
-/// What `jobs::prepare` read from the store for this job, handed over as
+/// What the application read from the store for this job, handed over as
 /// data rather than as a way to read more.
 pub struct JobInputs {
     /// The slug's district names (CLAUDE.md: never rename a district
@@ -88,7 +70,7 @@ pub struct JobInputs {
 }
 
 /// What the child reported and the executor observed, for
-/// `jobs::register`. `job_dir` still exists: the caller removes it once the
+/// the application. `job_dir` still exists: the caller removes it once the
 /// result is registered (or refused), because registration reads
 /// `output_dir` inside it.
 pub struct Executed {
@@ -102,7 +84,7 @@ pub struct Executed {
 }
 
 /// Where everything the child reports goes. The master implements it
-/// against the job's snapshot and the registry (`jobs::SnapshotSink`),
+/// against the job's snapshot and the registry (the personal progress sink),
 /// exactly as `process_worker_exe` updated them before the split; an agent
 /// will implement it by forwarding each event to the master.
 pub trait EventSink {
@@ -121,29 +103,15 @@ pub trait EventSink {
     /// The child's own peak RSS, from `wait_with_peak`, on every path that
     /// reaps it -- success, failure and cancel alike.
     fn peak_rss(&mut self, bytes: u64);
-    /// How the child ended, once reaped after its events (#97 phase 2,
-    /// step 4), and whether this executor itself had just sent its process
-    /// group SIGKILL (a cancel, or a stream it could not read). An agent
-    /// needs both to tell an out-of-memory kill from a kill of its own
-    /// (docs/WORKER_TIER.md §6 "job child OOM-killed"). Local mode keeps
-    /// the default, which ignores it: there an OOM fails the job as it
-    /// always has.
+    /// How the child ended, and whether cancellation killed its process group.
     fn child_exited(&mut self, _status: std::process::ExitStatus, _killed_here: bool) {}
-    /// The child finished its `write_map` stage and the map it wrote has
-    /// been read back and checked (`worker_result::read_early_map`) --
-    /// called just before that `stage_finished` event is delivered, so
-    /// whatever the sink does with the map happens before anyone watching
-    /// the job sees the stage end. docs/UX.md §12: local mode publishes it
-    /// at once (`jobs::SnapshotSink`); an agent uploads it to the master
-    /// ahead of forwarding the event (`agent::AgentSink`). The default
-    /// ignores it, and the job's result is unaffected either way.
+    /// Checked early map bytes, before the write-map stage event is delivered.
+    /// The default ignores early maps and waits for final artifact adoption.
     fn map_written(&mut self, _map: Bytes) {}
 }
 
-/// Whether to stop, and which process to kill when told to. In local mode
-/// the registry decides (`jobs::RegistryProbe`) and kills the child's
-/// process group itself on cancel; `child_started` must therefore kill at
-/// once if the job was cancelled before the child existed.
+/// Cancellation state and the child process group to kill. `child_started`
+/// must kill immediately if cancellation preceded the child's creation.
 pub trait CancelProbe {
     fn is_cancelled(&self) -> bool;
     fn child_started(&self, pid: u32);
@@ -154,19 +122,8 @@ pub trait CancelProbe {
 /// On `Err` the job directory has already been removed; on `Ok` the caller
 /// removes [`Executed::job_dir`] once it has registered the result.
 ///
-/// **The commit is pinned** (docs/WORKER_TIER.md §3.3, #97 phase 2): once
-/// the job's own copy exists (never the shared clone cache other jobs still
-/// read), it is checked out to `job.commit` -- the commit the master
-/// resolved and admitted the job against -- so a branch that moved between
-/// admission and this clone cannot silently change what gets built. Local
-/// mode and remote mode share this one executor, so both get it from the
-/// same call to [`pin_commit`] below; there is no separate "local mode
-/// behaviour" left to keep. A `JobSpec` with no admitted commit (not a git
-/// object id -- empty, in practice only a caller that bypassed admission)
-/// keeps the previous behaviour of building whatever HEAD the clone/copy
-/// resolved to: every job admitted through `POST /api/index` has one, for a
-/// `local/<name>` path exactly as for a remote URL (`clone::resolve_head`
-/// runs for both in `service::http::post_index`, before `jobs::spawn_job`).
+/// The job's own checkout is pinned to the requested immutable commit before
+/// indexing, so concurrent branch changes cannot change the indexed source.
 pub fn execute(
     env: &ExecEnv,
     job_id: Uuid,
@@ -176,32 +133,6 @@ pub fn execute(
     probe: &dyn CancelProbe,
 ) -> Result<Executed, ErrorBody> {
     execute_inner(env, job_id, job, inputs, sink, probe, None, None)
-}
-
-/// Only the loopback local UX may forward its pinned, owner-confirmed selection.
-/// This parent-owned value never crosses the public job/spec protocol.
-pub(crate) fn execute_confirmed_local(
-    env: &ExecEnv,
-    job_id: Uuid,
-    job: &JobSpec,
-    inputs: &JobInputs,
-    sink: &mut dyn EventSink,
-    probe: &dyn CancelProbe,
-    confirmed_scope: &str,
-) -> Result<Executed, ErrorBody> {
-    if !job.local || job.all_sources {
-        return Err(ApiError::internal("confirmed scope requires a single local source").body);
-    }
-    execute_inner(
-        env,
-        job_id,
-        job,
-        inputs,
-        sink,
-        probe,
-        Some(confirmed_scope),
-        None,
-    )
 }
 
 /// Headless local CLI source override; never accepted from the public job protocol.
@@ -284,10 +215,7 @@ fn execute_inner(
     // commit, keeping the branch name so the child still learns one. Runs
     // before `harden_job_dir` chowns the directory away from this process's
     // uid, and before anything below reads `checkout.commit` -- from here
-    // on it names what was actually built, which is what `jobs::register`
-    // (local mode) and `agent::JobContext::upload` (remote mode) both check
-    // the child's reported commit against, so neither had to change to gain
-    // that check.
+    // on it names the source the application checks against the child's result.
     if worker_result::is_object_id(&job.commit) {
         if let Err(error) = pin_commit(&job_repo_dir, &job.commit, checkout.branch.as_deref()) {
             return fail(error);
@@ -438,8 +366,7 @@ pub(crate) fn kill_worker_group(pid: u32) {
 /// Reaps the job child and returns its own peak RSS in bytes, alongside its
 /// exit status -- `run_child`'s replacement for a plain `child.wait()`.
 ///
-/// **Why not `getrusage(RUSAGE_CHILDREN)`**, which docs/WORKER_TIER.md #2.1
-/// and #8 said to use before #149: that call reports the maximum over
+/// **Why not `getrusage(RUSAGE_CHILDREN)`**: that call reports the maximum over
 /// *every* child this process has ever reaped, not this one. A small job
 /// reaped after a large one would report the large one's peak, and this
 /// process also reaps its own git clone/fetch children (`service::clone`)
@@ -521,7 +448,7 @@ fn wait_with_peak(
 /// regression -- it is exactly where that doc's own §4.1 puts "the clone is
 /// copied ... into it, so the shared clone cache is never writable from a
 /// jail," just without the jail (that's `local_clone_into`, next).
-/// `Progress::silent()`: see `jobs::mark_clone_running`'s comment on the
+/// `Progress::silent()`: see `EventSink::clone_started`'s comment on the
 /// resulting observability trade-off.
 ///
 /// Known gap, not fixed here: the git child processes spawned inside
@@ -537,7 +464,7 @@ fn wait_with_peak(
 /// suites) -- a real shape change to `clone.rs`'s git-invocation plumbing,
 /// not a small addition, and not verifiable without a local `cargo build`
 /// this repo's rules don't allow here. Left as a documented gap rather than
-/// forced through unverified (docs/WORKER_TIER.md §6 carries it over).
+/// forced through unverified.
 pub(crate) fn materialize_job_repo(
     cache_dir: &Path,
     repo_ref: &RepoRef,
@@ -587,7 +514,7 @@ pub(crate) fn materialize_job_repo(
 /// learns its branch from HEAD (`clone::current_branch` inside its own,
 /// now-instant "clone" of this already-checked-out directory), and that
 /// branch drives warm-start selection and the stored map row
-/// (docs/WORKER_TIER.md §3.3, "Keep the branch name"). A `None` branch --
+/// A `None` branch --
 /// the source itself was a detached checkout, which nothing in this
 /// codebase produces today but a hand-built fixture could -- detaches at
 /// `commit` instead, matching what was already true before the pin.
@@ -731,7 +658,7 @@ impl ServiceInstall {
 }
 
 /// A worker's `result` event. Its `branch` is not kept: the stored branch is
-/// the one the executor's own checkout resolved (`jobs::store_worker_result`).
+/// the one the executor's own checkout resolved (artifact adoption).
 pub struct WorkerOutput {
     pub map_path: String,
     pub symbols_path: String,
@@ -1063,7 +990,7 @@ pub(crate) fn run_child(
     // docs/UX.md §12: read back the map on the first successful write_map
     // event only. The child is untrusted and can repeat protocol events;
     // even a refused read must not be repeated. The owner is its effective
-    // uid, as jobs::worker_uid_in_effect works it out.
+    // uid, accounting for whether this parent can drop privilege.
     let child_uid = if is_root() {
         hardening.uid
     } else {
@@ -1293,7 +1220,7 @@ mod tests {
         (name != "HEAD" && !name.is_empty()).then_some(name)
     }
 
-    /// docs/WORKER_TIER.md §3.3 "The commit is pinned": a branch that moves
+    /// A branch that moves
     /// between admission and this clone must not change what gets built.
     /// `pin_commit` is exercised directly against a job's own local-clone
     /// copy, which is exactly what `execute` hands it (`materialize_job_repo`

@@ -33,7 +33,7 @@ for url, kind in parser.assets:
     with fetch(url) as res:
         assert res.status == 200 and kind in res.headers['Content-Type'], (url, res.headers)
         assert len(res.read()) > 10
-with fetch(base + '/artifact') as res: assert json.load(res)['F']
+with fetch(base) as res: assert json.load(res)['F']
 with fetch(base + '/source?path=' + meta['file'] + '&commit=' + meta['a']) as res:
     source = json.load(res)
 # The fixture captures committed bytes before dirty/untracked mutations. Its

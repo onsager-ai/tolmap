@@ -10,16 +10,19 @@ tolmap --help
 
 # Or run it without a global install.
 npx tolmap build /path/to/repository --name my-repository --out out
-npx tolmap local /path/to/private-repository \
-  --data "$HOME/.local/share/tolmap/private-repository" \
-  --port 8988
+npx tolmap add /path/to/private-repository --name engine
+npx tolmap web --addr 127.0.0.1:8988
 ```
 
-Run `tolmap local` as an ordinary non-root user, including inside containers. Root execution is unsupported for this local journey: private storage is owned by the launching user, while root-launched workers drop to a separate uid that cannot traverse that storage. Do not change private directory permissions to work around this.
+Run as an ordinary non-root user. The CLI and browser share one private library;
+global `--data ROOT` or `TOLMAP_DATA_DIR` selects its root, otherwise XDG/HOME
+defaults apply. The npm launcher sets its packaged production viewer as
+`TOLMAP_STATIC_DIR` unless that environment variable is already set. See
+[LOCAL.md](LOCAL.md) for registration, history, credentials and exposure.
 
-`tolmap local` requires `--data` to name private storage outside the checkout. When `--static-dir` is omitted, the npm launcher uses its packaged production web assets. You can pass `--static-dir /path/to/web/dist` to use another built viewer. The local server binds only to `127.0.0.1`; it reads committed `HEAD`, keeps storage outside the checkout, serves same-commit source, and does not upload the repository.
-
-Install the system runtimes `libstdc++6` and `libgcc-s1` on minimal Ubuntu images. Install `git` on `PATH` for builds from repositories and for `tolmap local`. The package itself needs Node.js 22.14.0 or newer to run its launcher. It does not require Rust, Cargo, CMake, a C/C++ compiler, igraph or libleidenalg on the consumer machine. Browser use requires a current browser on the local machine.
+Install `git` on PATH and the system runtimes `libstdc++6` and `libgcc-s1` on
+minimal Ubuntu images. The launcher requires Node.js 22.14.0 or newer. Consumer
+machines need no Rust, Cargo, CMake, compiler, igraph or libleidenalg installation.
 
 ## Supported platform
 

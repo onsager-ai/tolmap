@@ -1,7 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { Page } from "./Page";
-import { NativeLocal } from "./NativeLocal";
 import { cases } from "./catalogue.mjs";
 import { failedFreshness, installFixture, resolveRoute } from "./fixtures";
 import { setHost, setOnboardingFixture } from "./host";
@@ -19,9 +18,7 @@ export const meta = {
     const doc = await installFixture(item.fixture);
     return { route: resolveRoute(item.route, doc) };
   }],
-  render: (args, context) => context.loaded.route.startsWith('local:')
-    ? <NativeLocal key={`${args.visualCaseId}-${context.globals.theme}`} name={context.loaded.route.slice(6)} theme={context.globals.theme} />
-    : <Page key={`${args.visualCaseId}-${context.globals.host}-${context.globals.theme}`} route={context.loaded.route} freshness={args.visualCaseId === "map-freshness" ? failedFreshness : undefined} />,
+  render: (args, context) => <Page key={`${args.visualCaseId}-${context.globals.host}-${context.globals.theme}`} route={context.loaded.route} freshness={args.visualCaseId === "map-freshness" ? failedFreshness : undefined} />,
 } satisfies Meta<Args>;
 
 export function page(id: string): StoryObj<Args> {
@@ -151,10 +148,6 @@ export function page(id: string): StoryObj<Args> {
         await waitFor(() => expect(root.querySelector('[data-catalogue-error]')?.textContent).toContain("tolmap's index couldn't be reached."));
       } else if (id === 'job-missing') {
         await waitFor(() => expect(canvas.getByText('No mapping job to show.')).toBeVisible());
-      } else if (id.startsWith('local-')) {
-        const frame = await waitElement('iframe') as HTMLIFrameElement;
-        await waitFor(() => expect(frame.contentDocument?.documentElement.dataset.fixtureReady).toBe(id.slice(6)));
-        await frame.contentDocument!.fonts.ready;
       } else if (id.startsWith("organization-")) {
         if (id === "organization-loading") await waitElement("[data-organization-loading]");
         else if (id === "organization-error") await waitElement("[data-organization-error]");

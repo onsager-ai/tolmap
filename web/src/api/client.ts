@@ -44,8 +44,7 @@ export class ApiRequestError extends Error {
   status: number;
   code: string | null;
   tooLarge: boolean;
-  /** Seconds from a `Retry-After` header (docs/API.md: `busy` and
-   * `rate_limited` refusals may carry one), or null. docs/UX.md §6.5: the
+  /** Seconds from a `Retry-After` header, or null.
    * busy page's "Try again" waits this long. */
   retryAfterS: number | null;
   constructor(status: number, body: Partial<ApiError> | null, fallbackMessage: string, retryAfterS: number | null = null) {

@@ -96,7 +96,7 @@ Reducing execution is necessary but not sufficient. It removes the documented ex
 
 | control | mechanism | Fly |
 |---|---|---|
-| memory | cgroup memory limit on the jail, set **below machine RAM**, so the kernel OOM-kills the indexer and not `tolmap serve`. Set `NODE_OPTIONS=--max-old-space-size` inside it for scip-typescript. | cgroup v1 memory controller present (community report, **unverified**) |
+| memory | cgroup memory limit on the jail, set **below machine RAM**, so the kernel OOM-kills the indexer and not `tolmap web`. Set `NODE_OPTIONS=--max-old-space-size` inside it for scip-typescript. | cgroup v1 memory controller present (community report, **unverified**) |
 | pids | cgroup `pids.max` (fork bombs) | same |
 | time | nsjail `-t` on the install step only (see §4.3 on the no-caps ruling) | yes |
 | disk | fixed-size workspace per job: a sparse ext4 image, loop-mounted `nodev,nosuid`, on `/data`; ENOSPC ends the job at its budget. Alternative: a `tmpfs` with `size=`, which is charged to the job's memory cgroup (costs RAM). Fallback: the worker polls `du` and kills. | loop devices in a Fly Machine **unverified**; tmpfs certainly works |
@@ -134,7 +134,7 @@ The proxy could be tinyproxy or squid with a filter, but a small tokio CONNECT p
    - the mounts are: tmpfs root; read-only `/usr`, `/etc` (image copy, no secrets) and the toolchain prefix; read-write the job workspace only;
    - the environment is empty except explicit variables;
    - networking is a new net namespace. The install step gets the proxy bridge with the npm allowlist. Indexers get **no** egress at all: they need none.
-   - The memory cgroup is set to machine RAM minus a reserve for `tolmap serve` (about 2 GB on a 16 GB machine); pids.max is 4096.
+   - The memory cgroup is set to machine RAM minus a reserve for `tolmap web` (about 2 GB on a 16 GB machine); pids.max is 4096.
    - Each job gets its own workspace image under `/data/jobs/<id>`, deleted when the job ends. The clone is copied or `git worktree`-checked-out into it, so the shared clone cache is never writable from a jail.
 3. **Start-up self-test, fail closed.** At service start and before each install, run a trivial jail that checks four things: uid ≠ 0, `/data` not visible, direct egress fails, and proxied egress to a non-allowlisted host is refused. If the self-test fails, installs and SCIP indexers are disabled for the process's life. Jobs then run on the hand-written path, and the job's `coverage` says why.
 4. **Worker hygiene.** Spawn `tolmap worker` with `env_clear()` and an allowlist of variables. `OPENROUTER_API_KEY` goes only to the naming step, which runs outside the jail and never touches untrusted execution.

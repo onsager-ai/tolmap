@@ -51,15 +51,6 @@ enum Command {
     Status(tolmap::personal::StatusArgs),
     /// Explicitly refresh committed HEAD without a server or upload.
     Refresh(tolmap::personal::RefreshArgs),
-    /// Analyze a committed private checkout with a loopback-only viewer.
-    Local {
-        repo: PathBuf,
-        /// Existing production web/dist bundle.
-        #[arg(long)]
-        static_dir: PathBuf,
-        #[arg(long, default_value_t = 8988)]
-        port: u16,
-    },
     Build {
         // Exactly one of `repo` or `--graph` is required -- validated in
         // `main`, since clap's derive can't express "either, not both"
@@ -343,57 +334,8 @@ enum Command {
         #[arg(long, default_value_t = tolmap::pipeline::PruneVariant::NodeRelative)]
         prune_variant: tolmap::pipeline::PruneVariant,
     },
-    /// The job service (milestone 3, issue #5): clones/indexes repositories
-    /// on demand and serves the results over HTTP. Binds 127.0.0.1 only --
-    /// see docs/API.md and `service::config::ServeConfig`'s doc comment.
-    /// Not a tokio::main binary: only this subcommand needs a runtime, so
-    /// it builds one itself rather than paying async overhead on every
-    /// other `tolmap` invocation.
-    Serve,
-    /// One JSON job spec on stdin; versioned JSON events on stdout.
-    ///
-    /// With `--connect`, `--token-file` and `--cache-dir` instead: the
-    /// worker agent (docs/WORKER_TIER.md, #97 phases 1 and 3), a
-    /// long-lived process that dials the master's worker listener and runs
-    /// the jobs it is assigned, each as a plain `tolmap worker` child.
-    /// `tolmap serve` starts these itself under `TOLMAP_WORKERS=loopback:N`;
-    /// a remote worker host runs one against `TOLMAP_WORKERS=remote`.
-    Worker {
-        /// The master's channel URL: `wss://<host:port>/workers/connect`,
-        /// or `ws://` to a master on this host's loopback.
-        #[arg(long)]
-        connect: Option<String>,
-        /// A file holding this agent's bearer token, mode 0600.
-        #[arg(long)]
-        token_file: Option<PathBuf>,
-        /// The worker id the token was issued for (`tolmap worker-token
-        /// new --id <id>`); the master refuses a hello naming another.
-        /// Required unless `--loopback`.
-        #[arg(long)]
-        worker_id: Option<String>,
-        /// PEM certificates to verify a `wss://` master against, in place
-        /// of the public roots: the owner's private certificate or its CA.
-        #[arg(long)]
-        ca_file: Option<PathBuf>,
-        /// Set by `tolmap serve` on the agents it starts itself: exit once
-        /// that master is gone instead of redialling.
-        #[arg(long, hide = true)]
-        loopback: bool,
-        /// This agent's own clone cache and job directories.
-        #[arg(long)]
-        cache_dir: Option<PathBuf>,
-        /// The usable memory, in bytes, this agent advertises as its class
-        /// instead of its host's (#97 phase 2). `tolmap serve` passes it
-        /// from `TOLMAP_LOOPBACK_CLASSES`.
-        #[arg(long)]
-        class_memory: Option<u64>,
-    },
-    /// Worker tokens for `TOLMAP_WORKERS=remote` (docs/WORKER_TIER.md
-    /// §5.1).
-    WorkerToken {
-        #[command(subcommand)]
-        command: WorkerTokenCommand,
-    },
+    /// Run one isolated indexing job from JSON on stdin.
+    Worker,
     #[command(hide = true)]
     EtaReplay { timeline: PathBuf },
     /// Runs COMMAND inside the dependency-install sandbox (issue #110 P1c)
@@ -482,20 +424,6 @@ enum OrgCommand {
         /// Write the document here instead of stdout.
         #[arg(long)]
         out: Option<PathBuf>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum WorkerTokenCommand {
-    /// Prints a new random 256-bit token on the first line, for the worker
-    /// host's `--token-file`, and on the second the line to add to the
-    /// master's `TOLMAP_WORKER_TOKENS` file (`<sha256> <id>`). Nothing is
-    /// written or kept: the token is shown this once.
-    New {
-        /// The worker id the token is for: 1 to 64 ASCII letters, digits,
-        /// `.`, `_` or `-`.
-        #[arg(long)]
-        id: String,
     },
 }
 
@@ -765,16 +693,6 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&library.status(&repo)?)?);
             result.map(|_| ())
         }
-        Command::Local {
-            repo,
-            static_dir,
-            port,
-        } => tokio::runtime::Runtime::new()?.block_on(tolmap::local::serve(
-            repo,
-            data.context("local requires --data")?.to_owned(),
-            static_dir,
-            port,
-        )),
         Command::Build {
             checkout,
             repo,
@@ -1214,60 +1132,7 @@ fn main() -> Result<()> {
         }
         Command::Web { addr } => tokio::runtime::Runtime::new()?
             .block_on(tolmap::service::personal_web::serve(data, addr)),
-        Command::Serve => {
-            let config = tolmap::service::config::ServeConfig::from_env();
-            let runtime = tokio::runtime::Runtime::new().context("build tokio runtime")?;
-            runtime.block_on(tolmap::service::serve(config))
-        }
-        Command::Worker {
-            connect,
-            token_file,
-            worker_id,
-            ca_file,
-            loopback,
-            cache_dir,
-            class_memory,
-        } => match (connect, token_file, cache_dir) {
-            // Plain `tolmap worker`: the job child, unchanged.
-            (None, None, None)
-                if class_memory.is_none()
-                    && worker_id.is_none()
-                    && ca_file.is_none()
-                    && !loopback =>
-            {
-                tolmap::worker::run_stdio()
-            }
-            (Some(connect), Some(token_file), Some(cache_dir)) => tolmap::service::agent::run_with(
-                tolmap::service::agent::AgentConfig {
-                    connect,
-                    token_file,
-                    cache_dir,
-                    worker_exe: std::env::current_exe().context("locate this binary")?,
-                    class_memory,
-                    memory_events: None,
-                },
-                tolmap::service::agent::AgentOptions {
-                    loopback,
-                    ca_file,
-                    worker_id,
-                },
-            ),
-            _ => anyhow::bail!(
-                "--connect, --token-file and --cache-dir go together, and --worker-id, --ca-file \
-                 and --class-memory need them"
-            ),
-        },
-        Command::WorkerToken {
-            command: WorkerTokenCommand::New { id },
-        } => {
-            let (token, line) =
-                tolmap::service::workers::issue_worker_token(&id).map_err(anyhow::Error::msg)?;
-            // Exactly two lines on stdout and nothing else, so a script can
-            // take them apart; the token is never written to a file or a log.
-            println!("{token}");
-            println!("{line}");
-            Ok(())
-        }
+        Command::Worker => tolmap::worker::run_stdio(),
         Command::EtaReplay { timeline } => {
             let report = tolmap::service::eta::replay_timeline(&timeline)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1302,15 +1167,6 @@ mod tests {
             vec!["tolmap", "build", "--repo", "engine"],
             vec!["tolmap", "detect", "--repo", "engine"],
             vec!["tolmap", "lens", "suggest", "--repo", "engine"],
-            vec![
-                "tolmap",
-                "local",
-                "/repo",
-                "--data",
-                "/legacy",
-                "--static-dir",
-                "/static",
-            ],
         ] {
             Cli::try_parse_from(args).expect("valid personal selectors");
         }
@@ -1321,6 +1177,9 @@ mod tests {
             ],
             vec!["tolmap", "check", "--map", "map.json", "--commit", "abcdef"],
             vec!["tolmap", "add", "/repo", "--scan", "/projects"],
+            // Retired in #314 PR 4.
+            vec!["tolmap", "local", "/repo"],
+            vec!["tolmap", "serve"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }

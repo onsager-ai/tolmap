@@ -39,10 +39,9 @@ on:
       - "src/service/jobs.rs"
       - "src/service/executor.rs"
       - "src/service/worker_result.rs"
-      # #97 phase 1: the loopback step below runs the same job through a
-      # worker agent over the channel.
-      - "src/service/workers.rs"
-      - "src/service/agent.rs"
+      - "src/personal.rs"
+      - "src/personal_index.rs"
+      - "src/service/personal_web.rs"
       - ".github/workflows/scip-image-build.yml"
   workflow_dispatch:
     inputs:
@@ -98,7 +97,7 @@ jobs:
       - name: Build the full image (this ref, after)
         run: |
           set -euo pipefail
-          # #97 phase 3 (docs/WORKER_TIER.md §3.6): `.dockerignore` excludes
+          # #97 phase 3 (the executor contract): `.dockerignore` excludes
           # `.git/` from the build context, so `build.rs` cannot resolve this
           # itself in there -- this checkout (fetch-depth 0, above) is where
           # it comes from. Exported for the "Build identity" step below,
@@ -129,16 +128,10 @@ jobs:
           docker run -d --name tolmap-healthz -p 127.0.0.1:8789:8787 -e TOLMAP_BIND_ADDR=0.0.0.0 tolmap:after
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8789/api/healthz -o /tmp/healthz.json && break; sleep 1; done
           cat /tmp/healthz.json
-          python3 - "$COMMIT" <<'PY'
-          import json, sys
-          expected = sys.argv[1]
-          build = json.load(open("/tmp/healthz.json"))["build"]
-          assert build["commit"] == expected, (build, "expected", expected)
-          assert build["commit"] != "unknown", build
-          for name in ("scip-typescript", "scip-python", "scip-go"):
-              assert build["indexers"].get(name), (name, build)
-          print("build identity on GET /api/healthz:", build)
-          PY
+          # tolmap web's healthz is liveness only; build identity on healthz
+          # served the retired distributed-worker match. Indexer pins are
+          # asserted from indexers.json above.
+          python3 -c 'import json; assert json.load(open("/tmp/healthz.json")) == {"ok": True}'
           docker rm -f tolmap-healthz
 
       - name: Build main's image for comparison (before)
@@ -283,250 +276,76 @@ jobs:
             echo "the restricted-container fallback left node_modules behind"; exit 1
           fi
 
-      # The job service end to end: `tolmap serve` as root with TOLMAP_REFS=
-      # scip, its worker dropped to uid 10001, the worker asking the service
-      # for the install over the worker protocol, the service running it in
-      # nsjail. A local-path job (POST /api/index {"path"}) on the same
-      # fixture.
-      #
-      # Then a second commit of the same fixture and a second job (issue
-      # #141): the service's map store is root's and `0700`, the worker is
-      # uid 10001, and finding 4's warm start (88% district retention warm,
-      # 46% cold) reads the previous commit's map. The worker logs which
-      # start it made and how many cached names it had in hand; the service
-      # copies those lines into its own log, and this step asserts on them.
-      - name: "Install sandbox: a SCIP job through the service installs via its worker's request, and a second commit warm-starts"
+      # Shared personal CLI/web use the same executor and install sandbox.
+      - name: "Personal web: SCIP installs and second-commit warm start"
         run: |
           set -euo pipefail
-          rm -rf sandbox/service-fixture
           cp -r tests/fixtures/scip/ts-workspace sandbox/service-fixture
-          git -C sandbox/service-fixture init --quiet && git -C sandbox/service-fixture add -A
-          git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
           docker run -d --name tolmap-service --privileged -p 127.0.0.1:8787:8787 \
-            -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 -e TOLMAP_ALLOW_LOCAL_PATHS=1 -e TOLMAP_CACHE_DIR=/srv/cache \
-            -v "$PWD/sandbox/service-fixture:/srv/fixture:ro" \
-            --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap serve'
+            -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 \
+            -e TOLMAP_DATA_DIR=/srv/data \
+            --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap web'
           for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8787/api/healthz && break; sleep 1; done
-          # Runs one job on the fixture's current HEAD; sets $id, $status and
-          # $snapshot.
+          # Register via CLI; run both actual indexes through web so progress
+          # and the root-to-worker uid drop are observed for the same jobs.
+          # tolmap's git ignores global config (no safe.directory), so the
+          # checkout must be owned by the container user: copy it in and
+          # commit there rather than bind-mounting a runner-owned tree.
+          docker cp sandbox/service-fixture tolmap-service:/srv/fixture
+          # Assert ownership of both the copied worktree and its Git metadata;
+          # sanitised product Git intentionally ignores the global safe list.
+          docker exec tolmap-service sh -c 'chown -R 0:0 /srv/fixture; stat -c "%u:%g %n" /srv/fixture'
+          fixture_git() { docker exec tolmap-service git -C /srv/fixture -c user.name=ci -c user.email=ci@example.invalid "$@"; }
+          fixture_git init --quiet
+          fixture_git add -A
+          fixture_git commit --quiet -m fixture
+          # Match source::git exactly before calling the expected index failure.
+          # This synthetic fixture has no secrets; native stderr diagnoses any
+          # repository/runtime setup error instead of hiding it behind add.
+          docker exec tolmap-service env -i PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 /usr/bin/git --no-replace-objects --literal-pathspecs -C /srv/fixture rev-parse --show-toplevel
+          docker exec tolmap-service env -i PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 /usr/bin/git --no-replace-objects --literal-pathspecs -C /srv/fixture rev-parse 'HEAD^{commit}'
+          if docker exec tolmap-service /app/tolmap add /srv/fixture --name fixture --pkg missing --lang ts > sandbox/first-add.log 2>&1; then exit 1; fi
+          cat sandbox/first-add.log
+          grep -q 'source root does not exist' sandbox/first-add.log
+          repository=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["repository_id"])')
           run_job() {
-            job=$(curl -fsS -X POST -H 'content-type: application/json' \
-              -d '{"path":"/srv/fixture"}' http://127.0.0.1:8787/api/index)
-            echo "$job"
-            id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<<"$job")
+            job=$(curl -fsS -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:8787/api/repositories/$repository/refresh" | python3 -c 'import json,sys;print(json.load(sys.stdin)["job_id"])')
+            observed_worker=false
             for _ in $(seq 1 300); do
-              snapshot=$(curl -fsS "http://127.0.0.1:8787/api/jobs/$id")
-              status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$snapshot")
+              # Assert the actual indexing child uses the image's uid 10001.
+              if docker exec tolmap-service sh -c 'for p in /proc/[0-9]*; do [ -r "$p/comm" ] || continue; [ "$(cat "$p/comm")" = tolmap ] || continue; tr "\0" " " < "$p/cmdline" | grep -q "/app/tolmap worker" || continue; grep -q "^Uid:[[:space:]]*10001[[:space:]]*10001" "$p/status" && exit 0; done; exit 1'; then observed_worker=true; fi
+              snapshot=$(curl -fsS "http://127.0.0.1:8787/api/jobs/$job")
+              status=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])' <<<"$snapshot")
               [ "$status" = done ] || [ "$status" = failed ] && break
-              sleep 2
+              sleep 1
             done
-            echo "$snapshot" | python3 -m json.tool | head -80
-          }
-          run_job
-          first_id=$id
-          docker logs tolmap-service 2>&1 | tail -40
-          [ "$status" = done ]
-          python3 - "$snapshot" <<'PY'
-          import json, sys
-          stages = {row["id"]: row for row in json.loads(sys.argv[1])["stages"]}
-          install = stages["install"]
-          print("install stage:", install)
-          assert install["state"] == "done", install
-          PY
-          curl -fsS http://127.0.0.1:8787/api/maps/local/fixture -o sandbox/service-map.json
-          python3 eval/check_scip_references.py sandbox/service-map.json --expect-install ts=installed
-
-          # Issue #141: a second commit, a small real change -- one new file
-          # in `core` importing from it -- so the two jobs index different
-          # commits of one repository.
-          first_commit=$(git -C sandbox/service-fixture rev-parse HEAD)
-          cat > sandbox/service-fixture/packages/core/src/extra.ts <<'TS'
-          import { add } from "./math";
-
-          export function twice(value: number): number {
-            return add(value, value);
-          }
-          TS
-          git -C sandbox/service-fixture add -A
-          git -C sandbox/service-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m "second commit"
-          run_job
-          second_id=$id
-          docker logs tolmap-service > sandbox/service.log 2>&1 || true
-          echo "--- first job's worker log lines ---"
-          grep -E "^job $first_id: (warm start|cold start|names cache)" sandbox/service.log || true
-          echo "--- second job's worker log lines ---"
-          grep -E "^job $second_id: (warm start|cold start|names cache)" sandbox/service.log || true
-          [ "$status" = done ]
-          curl -fsS http://127.0.0.1:8787/api/maps/local/fixture -o sandbox/service-map-2.json
-          python3 - sandbox/service-map.json sandbox/service-map-2.json <<'PY'
-          import json, sys
-          first, second = (json.load(open(path)) for path in sys.argv[1:])
-          print("first commit's district names: ", sorted(first["names"].values()))
-          print("second commit's district names:", sorted(second["names"].values()))
-          PY
-          # A first index has nothing to warm-start from.
-          grep -qx "job $first_id: cold start: no previous map" sandbox/service.log
-          # The second must have read the first commit's map ...
-          if ! grep -qx "job $second_id: warm start from $first_commit" sandbox/service.log; then
-            echo "::error::the second job did not warm-start from $first_commit (issue #141)"
-            exit 1
-          fi
-          # ... and had the first job's district names in hand.
-          if ! grep -qE "^job $second_id: names cache: [1-9][0-9]* entries in hand$" sandbox/service.log; then
-            echo "::error::the second job had no cached district names in hand (issue #141)"
-            exit 1
-          fi
-          # #97 phase 0: a plausible non-zero peak here, through the uid
-          # drop this service runs its worker under, is the proof `wait4`
-          # (not `RUSAGE_CHILDREN`) works end to end -- print it so it
-          # lands in this step's own log rather than only the discarded
-          # `sandbox/service.log`.
-          echo "--- peak memory log lines ---"
-          grep -E "peak memory|no peak memory measured" sandbox/service.log || true
-          docker rm -f tolmap-service
-
-      # #97 phase 1: the same two jobs with TOLMAP_WORKERS=loopback:1. The
-      # master starts one `tolmap worker --connect` agent on loopback; the
-      # agent (root, like the service above) clones, runs the job child as
-      # uid 10001, answers its install request with nsjail on its own host,
-      # and uploads the artifacts file by file. The master's log must carry
-      # the same warm-start, names-cache and peak-memory lines as local
-      # mode's, the peak now measured by the agent and sent over the
-      # channel.
-      - name: "Loopback worker agent: the same SCIP jobs through TOLMAP_WORKERS=loopback:1"
-        run: |
-          set -euo pipefail
-          rm -rf sandbox/loopback-fixture
-          cp -r tests/fixtures/scip/ts-workspace sandbox/loopback-fixture
-          git -C sandbox/loopback-fixture init --quiet && git -C sandbox/loopback-fixture add -A
-          git -C sandbox/loopback-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m fixture
-          docker run -d --name tolmap-loopback --privileged -p 127.0.0.1:8788:8787 \
-            -e TOLMAP_WORKERS=loopback:1 -e TOLMAP_WORKER_LEASE_TTL_S=10 -e TOLMAP_WORKER_HEARTBEAT_S=2 \
-            -e TOLMAP_REFS=scip -e TOLMAP_SCIP_INSTALL=sandbox -e TOLMAP_BIND_ADDR=0.0.0.0 -e TOLMAP_ALLOW_LOCAL_PATHS=1 -e TOLMAP_CACHE_DIR=/srv/cache \
-            -v "$PWD/sandbox/loopback-fixture:/srv/fixture:ro" \
-            --entrypoint sh tolmap:after -c 'git config --global --add safe.directory "*" && exec /app/tolmap serve'
-          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8788/api/healthz && break; sleep 1; done
-          run_job() {
-            job=$(curl -fsS -X POST -H 'content-type: application/json' \
-              -d '{"path":"/srv/fixture"}' http://127.0.0.1:8788/api/index)
-            echo "$job"
-            id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<<"$job")
-            for _ in $(seq 1 300); do
-              snapshot=$(curl -fsS "http://127.0.0.1:8788/api/jobs/$id")
-              status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$snapshot")
-              [ "$status" = done ] || [ "$status" = failed ] && break
-              sleep 2
-            done
-            echo "$snapshot" | python3 -m json.tool | head -80
-          }
-          run_job
-          first_id=$id
-          docker logs tolmap-loopback 2>&1 | tail -60
-          [ "$status" = done ]
-          python3 - "$snapshot" <<'PY'
-          import json, sys
-          stages = {row["id"]: row for row in json.loads(sys.argv[1])["stages"]}
-          for stage in ("clone", "install"):
-              print(stage, "stage:", stages[stage])
-              assert stages[stage]["state"] == "done", stages[stage]
-          PY
-          curl -fsS http://127.0.0.1:8788/api/maps/local/fixture -o sandbox/loopback-map.json
-          python3 eval/check_scip_references.py sandbox/loopback-map.json --expect-install ts=installed
-
-          first_commit=$(git -C sandbox/loopback-fixture rev-parse HEAD)
-          cat > sandbox/loopback-fixture/packages/core/src/extra.ts <<'TS'
-          import { add } from "./math";
-
-          export function twice(value: number): number {
-            return add(value, value);
-          }
-          TS
-          git -C sandbox/loopback-fixture add -A
-          git -C sandbox/loopback-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m "second commit"
-          run_job
-          second_id=$id
-          docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
-          echo "--- agent and assignment lines ---"
-          grep -E "worker agent|assigned to worker agent|worker listener" sandbox/loopback.log || true
-          echo "--- the jobs' worker log lines ---"
-          grep -E "^job ($first_id|$second_id): (warm start|cold start|names cache)" sandbox/loopback.log || true
-          echo "--- peak memory log lines ---"
-          grep -E "peak memory|no peak memory measured" sandbox/loopback.log || true
-          [ "$status" = done ]
-          grep -q "worker listener on http://127.0.0.1:" sandbox/loopback.log
-          grep -qE "^worker agent 0 \(agent-[0-9]+\) connected" sandbox/loopback.log
-          grep -qx "job $first_id: assigned to worker agent 0 (epoch 1)" sandbox/loopback.log
-          grep -qx "job $first_id: cold start: no previous map" sandbox/loopback.log
-          if ! grep -qx "job $second_id: warm start from $first_commit" sandbox/loopback.log; then
-            echo "::error::the loopback agent's job did not warm-start from $first_commit"
-            exit 1
-          fi
-          if ! grep -qE "^job $second_id: names cache: [1-9][0-9]* entries in hand$" sandbox/loopback.log; then
-            echo "::error::the loopback agent's job had no cached district names in hand"
-            exit 1
-          fi
-          # The agent reaps the job child with wait4 and sends the peak on
-          # the terminal event; the master logs it as in local mode.
-          for id in "$first_id" "$second_id"; do
-            if ! grep -qE "^job $id peak memory [0-9]+ MiB" sandbox/loopback.log; then
-              echo "::error::no peak memory line for loopback job $id"
+            if [ "$status" != done ] || [ "$observed_worker" != true ]; then
+              echo "job status=$status observed_worker=$observed_worker: $snapshot"
+              docker logs tolmap-service 2>&1 | tail -60
               exit 1
             fi
-          done
-          # SIGTERM: the master fails nothing (both jobs are done), tells the
-          # agent `shutdown now`, reaps it, and exits cleanly.
-          docker stop tolmap-loopback
-          docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
-          tail -20 sandbox/loopback.log
-          grep -q "tolmap serve: shut down cleanly" sandbox/loopback.log
-
-          # #97 phase 2: restart survival. The same container restarts on
-          # the same store and cache: a job that finished before the stop
-          # still answers GET, and a third job SIGKILLed with the whole
-          # container mid-run (clone, install or indexing) completes after
-          # the next start, its lease adopted for one TTL and then re-queued
-          # without counting an attempt.
-          wait_up() {
-            for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:8788/api/healthz >/dev/null 2>&1 && return 0; sleep 1; done
-            return 1
+            python3 -c 'import json,sys; stages={r["id"]:r for r in json.loads(sys.argv[1])["stages"]}; assert stages["install"]["state"]=="done", stages' "$snapshot"
+            docker exec tolmap-service sh -c '[ "$(stat -c "%u:%a" /srv/data)" = 0:700 ]'
           }
-          docker start tolmap-loopback
-          wait_up
-          before=$(curl -fsS "http://127.0.0.1:8788/api/jobs/$first_id")
-          python3 -c 'import json,sys; s=json.loads(sys.argv[1]); assert s["status"] == "done", s' "$before"
-          echo "export const third = 3;" > sandbox/loopback-fixture/packages/core/src/third.ts
-          git -C sandbox/loopback-fixture add -A
-          git -C sandbox/loopback-fixture -c user.name=ci -c user.email=ci@example.invalid commit --quiet -m "third commit"
-          job=$(curl -fsS -X POST -H 'content-type: application/json' \
-            -d '{"path":"/srv/fixture"}' http://127.0.0.1:8788/api/index)
-          third_id=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])' <<<"$job")
-          for _ in $(seq 1 240); do
-            status=$(curl -fsS "http://127.0.0.1:8788/api/jobs/$third_id" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')
-            case "$status" in cloning|detecting|indexing) break ;; esac
-            sleep 0.5
-          done
-          echo "killing the container while the third job is $status"
-          [ "$status" != done ] && [ "$status" != failed ]
-          docker kill -s KILL tolmap-loopback
-          docker start tolmap-loopback
-          wait_up
-          for _ in $(seq 1 300); do
-            snapshot=$(curl -fsS "http://127.0.0.1:8788/api/jobs/$third_id")
-            status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$snapshot")
-            [ "$status" = done ] || [ "$status" = failed ] && break
-            sleep 2
-          done
-          echo "$snapshot" | python3 -m json.tool | head -40
-          docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
-          echo "--- restart lines ---"
-          grep -E "restored|survived a restart|restarted; retrying|job $third_id: (assigned|the service)" sandbox/loopback.log || true
-          [ "$status" = done ]
-          grep -qE "^tolmap serve: restored 1 leased or running and 0 queued job\(s\) from the store$" sandbox/loopback.log
-          grep -qE "^job $third_id: assigned to worker agent 0 \(epoch 2\)$" sandbox/loopback.log
-          docker stop tolmap-loopback
-          docker logs tolmap-loopback > sandbox/loopback.log 2>&1 || true
-          [ "$(grep -c 'tolmap serve: shut down cleanly' sandbox/loopback.log)" -ge 2 ]
-          docker rm -f tolmap-loopback
+          run_job
+          first_snapshot=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["latest_snapshot_id"])')
+          curl -fsS "http://127.0.0.1:8787/api/maps/snapshot/$first_snapshot" -o sandbox/service-map.json
+          python3 eval/check_scip_references.py sandbox/service-map.json --expect-install ts=installed
+          first_commit=$(fixture_git rev-parse HEAD)
+          docker exec tolmap-service sh -c "echo 'export const third = 3;' > /srv/fixture/packages/core/src/extra.ts"
+          fixture_git add -A
+          fixture_git commit --quiet -m second
+          run_job
+          second_snapshot=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["latest_snapshot_id"])')
+          [ "$first_snapshot" != "$second_snapshot" ]
+          curl -fsS "http://127.0.0.1:8787/api/maps/snapshot/$second_snapshot" -o sandbox/service-map-2.json
+          python3 eval/check_scip_references.py sandbox/service-map-2.json --expect-install ts=installed
+          docker exec tolmap-service python3 -c 'import glob,json; rows=[json.load(open(p)) for p in glob.glob("/srv/data/repositories/*/snapshots/*/index.json")]; assert any(row["prior_snapshot"] for row in rows), rows'
+          docker logs tolmap-service > sandbox/service.log 2>&1
+          grep -qx 'cold start: no previous map' sandbox/service.log
+          grep -qx "warm start from $first_commit" sandbox/service.log
+          grep -qE '^names cache: [1-9][0-9]* entries in hand$' sandbox/service.log
+          docker rm -f tolmap-service
 
       - name: Size and time summary
         if: always()

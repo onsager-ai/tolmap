@@ -42,12 +42,12 @@ and dirty state are disclosed on stderr without changing compact query JSON.
 Dirty and untracked files are excluded from snapshots; `check` without `--head`
 compares working-tree changes separately. CLI refresh can coexist with readers.
 The shared root comes from `--data`, `TOLMAP_DATA_DIR`, application config or
-XDG/HOME defaults. No old `local`/`serve` stores are read or imported. Set
+XDG/HOME defaults. Existing data is never discovered or imported; re-add repositories to start new history. Set
 `MAP` from `snapshot.map_path` for the explicit-file examples below, or omit
 `--map "$MAP"` to use the registered checkout's latest published snapshot.
 
 For a CI-built map, verify its recorded commit/build provenance against the
-checkout instead; local status describes the local store, not arbitrary files.
+checkout instead; status describes the registered library, not arbitrary files.
 Ordinary `build` maps can have `map.commit: null`; don't infer freshness from it.
 
 ## Ask a small question, then inspect the source

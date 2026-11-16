@@ -101,7 +101,7 @@ COPY --from=native /opt/leiden /opt/leiden
 # resolve there later.
 ENV LEIDEN_PREFIX=/opt/leiden
 
-# #97 phase 3 (docs/WORKER_TIER.md §3.6): `.dockerignore` excludes `.git/`
+# #97 phase 3 : `.dockerignore` excludes `.git/`
 # from the build context (it is VCS metadata, large, and no other stage
 # needs it), so `build.rs` cannot `git rev-parse HEAD` in here -- the caller
 # passes the commit it already has from its own checkout instead. Empty
@@ -123,7 +123,7 @@ COPY . .
 RUN cargo build --release --bin tolmap
 
 # ---------------------------------------------------------------------------
-# Stage 3: web -- build the React/TS bundle `tolmap serve` will host.
+# Stage 3: web -- build the React/TS bundle `tolmap web` will host.
 # ---------------------------------------------------------------------------
 # Pinned to an explicit patch version -- confirmed present in
 # docker.io/library/node's tag list on 2026-09-20. Node 24 is the current
@@ -236,11 +236,11 @@ ARG SCIP_GO_VERSION=v0.2.7
 ENV GOPATH=/opt/gopath
 RUN go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"
 
-# --- Indexer versions file (#97 phase 3, docs/WORKER_TIER.md §3.6): what
+# --- Indexer versions file: what
 # this image pins, recorded once here rather than asked of each indexer at
 # agent start -- that would be slow, and it would run indexer binaries
 # before a worker even holds a job. `runtime` copies this to
-# `TOLMAP_INDEXER_VERSIONS`'s default path; `service::workers::own_build`
+# `TOLMAP_INDEXER_VERSIONS`'s default path; `the indexing build`
 # reads it once at startup as `hello.build.indexers`. Written from the
 # exact ARG values pinned above, not by parsing each binary's own
 # `--version` output (every one has a different format, and none of that
@@ -346,10 +346,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         socat \
     && rm -rf /var/lib/apt/lists/*
 
-# Worker hardening (src/service/jobs.rs::process_worker_exe, docs/SCIP_SANDBOX.md
+# Worker hardening (src/service/executor.rs, docs/SCIP_SANDBOX.md
 # #4.1 point 4): a dedicated, unprivileged system user the `tolmap worker`
 # child is dropped to, distinct from the service process itself. No `USER`
-# directive follows this -- the service (`tolmap serve`, this image's `CMD`)
+# directive follows this -- the service (`tolmap web`, this image's `CMD`)
 # deliberately keeps running as root, which is what lets it drop the worker
 # child's privilege (`CommandExt::uid()/gid()`) and `chown` each job's
 # directory to this uid before handing it to the child in the first place;
@@ -396,7 +396,7 @@ COPY --from=scip-tools /opt/gopath/bin/scip-go /usr/local/bin/scip-go
 ENV PATH="/opt/go/bin:/opt/node/bin:${PATH}" \
     GOTOOLCHAIN=local
 
-# #97 phase 3 (docs/WORKER_TIER.md §3.6): the indexer versions this image
+# #97 phase 3 : the indexer versions this image
 # pins, written in `scip-tools` above from the same ARGs that installed
 # them. `TOLMAP_INDEXER_VERSIONS` defaults to this exact path.
 COPY --from=scip-tools /usr/local/share/tolmap/indexers.json /usr/local/share/tolmap/indexers.json
@@ -424,16 +424,13 @@ WORKDIR /app
 COPY --from=rust-builder /app/target/release/tolmap /app/tolmap
 COPY --from=web-builder /app/web/dist /app/web/dist
 
-# Opt-in static serving (src/service/http.rs, docs/API.md): this is an
-# image-layout constant -- the built bundle always lands at this exact
-# path inside this image -- not a deployment-tunable value, so it is baked
-# in here rather than left to a deploy-time env config. TOLMAP_BIND_ADDR,
-# TOLMAP_DB_PATH, TOLMAP_CACHE_DIR and the TOLMAP_MAX_*/TOLMAP_RATE_LIMIT_*
-# limits *are* deployment-tunable (they depend on the volume and the host's
-# shape) and are set at deploy time instead, not here -- see docs/API.md's
-# configuration table for what each one does.
-ENV TOLMAP_STATIC_DIR=/app/web/dist
+# The bundled viewer and published port are the image defaults. Binding all
+# interfaces exposes source and management without authentication; web prints
+# that warning at startup. Publish the container port on host loopback for
+# host-only access, and persist TOLMAP_DATA_DIR for the complete library.
+ENV TOLMAP_STATIC_DIR=/app/web/dist \
+    TOLMAP_BIND_ADDR=0.0.0.0:8787
 
 EXPOSE 8787
 
-CMD ["/app/tolmap", "serve"]
+CMD ["/app/tolmap", "web"]

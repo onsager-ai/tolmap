@@ -44,7 +44,7 @@ try {
  for(const file of ['shop/perf.py','shop/perf_long.py']) {
   await page.goto(`http://127.0.0.1:8988/snapshot/${fixture.snapshotA}?file=${file}`);
   await page.getByRole('button',{name:'Read selected source'}).waitFor();
-  const source=await (await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}/source?path=${file}`)).json();
+  const source=await (await page.request.get(`http://127.0.0.1:8988/api/maps/snapshot/${fixture.snapshotA}/source?path=${file}&commit=${fixture.a}`)).json();
   assert(source.status==='ready'&&source.bytes>800000&&source.bytes<=1048576);
   await settle();const baselineHeap=await heap();
   for(let iteration=0;iteration<cycles;iteration++) {

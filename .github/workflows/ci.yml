@@ -486,7 +486,7 @@ jobs:
           if-no-files-found: error
 
   reader:
-    name: local snapshot + production CM6 journey
+    name: personal library + production CM6 journey
     needs: [gate, web]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -512,8 +512,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y strace
       - name: Public dependency boundary
         run: python3 scripts/check-public-boundary.py
-      - name: Real local API, process and private export
-        run: TOLMAP_TEST_NETWORK_TRACE="$PWD/.local-reader/network.log" TOLMAP_BINARY=bin/tolmap python3 scripts/local-reader-fixture.py
+      - name: Personal API, process and private export
+        run: TOLMAP_TEST_NETWORK_TRACE="$PWD/.local-reader/network.log" TOLMAP_BINARY=bin/tolmap python3 scripts/personal-reader-fixture.py
       - name: Production reader behavior and candidate captures
         run: cd web && node scripts/check-source-reader.mjs
       - name: Measured large-file and long-line costs, 14 settled lifecycle cycles

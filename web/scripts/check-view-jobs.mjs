@@ -1,6 +1,6 @@
 // docs/UX.md §6 and §12 (phase 4): the indexing, queue and failure pages, and
 // the early handover to the map, driven against scripts/mock-api-server.mjs
-// (viewer-check.yml starts it before Vite; there is no Rust `tolmap serve` in
+// (viewer-check.yml starts it before Vite; there is no Rust `tolmap web` in
 // that job). Called from check-view-stability.mjs's main() with its own
 // `report`, so the counts land in one total.
 //
@@ -185,7 +185,6 @@ const FAILURE_ROWS = [
   ["worker_crashed", "The mapping job stopped during Read", ["retry"]],
   ["busy", "tolmap is busy right now", ["retry"]],
   ["server_stopping", "tolmap is busy right now", ["retry"]],
-  ["rate_limited", "tolmap is busy right now", ["retry"]],
   ["index_failed", "Something went wrong while mapping", ["retry", "report"]],
   ["internal_error", "Something went wrong while mapping", ["retry", "report"]],
   ["mystery_code", "Something went wrong while mapping", ["retry", "report"]],

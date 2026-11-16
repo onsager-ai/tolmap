@@ -84,11 +84,20 @@ fn lock(path: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = crate::source::git(repo).args(args).output()?;
+    // Only the operation name is diagnostic; arguments and stderr may contain
+    // repository data or network/helper secrets and must not enter job errors.
+    let operation = args.first().copied().unwrap_or("unknown");
+    let out = crate::source::git(repo)
+        .args(args)
+        .output()
+        .with_context(|| format!("could not execute Git {operation} in {}", repo.display()))?;
     ensure!(
         out.status.success(),
-        "Git operation failed in {}",
-        repo.display()
+        "Git {operation} failed in {} (exit {})",
+        repo.display(),
+        out.status
+            .code()
+            .map_or_else(|| "signal".into(), |code| code.to_string())
     );
     Ok(String::from_utf8(out.stdout)?.trim().into())
 }
@@ -337,7 +346,7 @@ impl Library {
         repo: &Repository,
         commit: Option<&str>,
         sources: &SourceArgs,
-        control: Option<&crate::local::PersonalControl>,
+        control: Option<&crate::personal_index::PersonalControl>,
     ) -> Result<PersonalSnapshot> {
         let _guard = self.repo_lock(repo)?;
         let current = self
@@ -398,14 +407,12 @@ impl Library {
                     }
                 }
             }
-            let args = crate::local::cli::RefreshArgs {
-                repo: checkout.clone(),
-                data: None,
+            let args = crate::personal_index::RefreshArgs {
                 all_sources: sources.all_sources,
                 pkg: sources.pkg.clone(),
                 lang: sources.lang.clone(),
             };
-            let snapshot = crate::local::cli::personal_refresh(
+            let snapshot = crate::personal_index::personal_refresh(
                 checkout,
                 self.repo_dir(repo),
                 &repo.id,
@@ -596,6 +603,67 @@ mod tests {
             observed_at: None,
         }
     }
+    #[test]
+    fn failed_first_index_keeps_local_registration() {
+        let root = tempfile::tempdir().unwrap();
+        let checkout = root.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec![
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "initial",
+            ],
+        ] {
+            assert!(crate::source::git(&checkout)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        let data = root.path().join("data");
+        let library = Library::open(Some(&data)).unwrap();
+        let sources = SourceArgs {
+            pkg: vec!["missing".into()],
+            lang: vec!["ts".into()],
+            ..SourceArgs::default()
+        };
+        assert!(library
+            .add(checkout.to_str().unwrap(), Some("fixture"), &sources)
+            .is_err());
+        let registered = library.resolve(Some("fixture")).unwrap();
+        assert_eq!(registered.location, checkout.to_string_lossy());
+        assert!(library
+            .store
+            .personal_history(&registered.id)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            library
+                .store
+                .personal_attempt(&registered.id)
+                .unwrap()
+                .unwrap()
+                .0,
+            "failed"
+        );
+    }
+
+    #[test]
+    fn git_errors_name_the_operation_without_stderr() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = git(directory.path(), &["rev-parse", "--show-toplevel"]).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("Git rev-parse failed"), "{message}");
+        assert!(!message.contains("fatal:"), "{message}");
+    }
+
     #[test]
     fn github_spellings_and_credentials() {
         for spelling in [

@@ -29,18 +29,14 @@ Only use this on a host whose local policy permits browser/rendering work.
 | Home | Catalogue, empty, loading, unavailable; grouped repositories with indexing/failed/reconnect status (27 snapshots across 3 repos) | UX §4.9; compact OSS controls and hosted shell intentionally change existing Home captures |
 | Hosted onboarding | Home list, empty/connect, empty/add; add sheet list, selected two, mapped, loading, empty, search miss, unavailable, expired; batch progress | UX §4.9 and HOST_PROFILE.md; candidates, hub captures only |
 | Repository | History, running job, empty, no capabilities, delete-snapshot confirmation | UX §4.9 and HOST_PROFILE.md; candidates only |
-| Local checkout | Detect, scope/all-source confirmation, indexing/cancel, detection/index failure, saved history/export | LOCAL.md and production native template; preserve |
+| Personal library | Add local source, scan, GitHub and input failure | LOCAL.md and production React components |
 | Indexing | No job, queue, Fetch/Read/Map/Detail, every failure class | UX §6; preserve |
 | Map | Overview, district/file/symbol/folder, four layers, early detail, loading/error | UX §§3–5, 7, 9; preserve |
 | Overlays | Search/results/empty, layers, repository menu, quality, keyboard, path picking, lenses loaded/unresolved/empty/error, lens comparison commits/overlap/loading/stale/error | UX §§4–5; preserve |
 | Source | Read-only, loading, access error, missing/expired/binary/large/unsupported, long-line fallback, find/miss | UX §13; preserve |
 | Reserved routes | Every reserved route except the separately covered `/new` | Existing placeholder implementation; preserve |
 
-The local native template is compiled by a tiny std-only Rust exporter, without
-building the engine, reading a checkout or starting a service. Its production
-forms are retained; preview submissions and auto-refresh are contained. The
-source fixture explicitly identifies synthetic contents. The map/symbol
-geometry comes from the committed Rust acceptance fixture, not synthetic layout.
+Personal library pages use the production React components and synthetic repository fixtures. Map/symbol geometry comes from the committed Rust acceptance fixture.
 MSW handles only preview API/data requests, including SSE, and never contacts a
 provider. Each story owns a new router/query cache. The private preview uses only
 synthetic account labels and cannot confer source access. Native Hub pages remain
@@ -53,8 +49,7 @@ shrinking together. Production `RESERVED_NAMES` must match the reserved-route
 stories; the route-tree contract is checked and each reserved story waits for
 the preview router's actual path plus the production generic reserved
 placeholder copy and back link. The production placeholder does not print the
-reserved name; the preview assertion does not invent route-specific UI. OSS captures include
-local checkout and reserved routes. The synthetic Hub host explicitly omits
+reserved name; the preview assertion does not invent route-specific UI. OSS captures include personal-library and reserved routes. The synthetic Hub host explicitly omits
 those host-owned routes, and phone/landscape keyboard-dialog captures are
 excluded by the shared `captureApplies` matrix function.
 
@@ -174,7 +169,7 @@ restored from `?lens=overview&path=request-flow&step=<n>`) are candidates
 awaiting owner review; the Flask browser lane uploads stepped captures under
 `lens-walkthrough-samples-desktop` and `lens-walkthrough-samples-phone`.
 Source-reader responses in that browser lane are explicitly synthetic; the
-native local/hosted service tests own git-object pinning evidence.
+personal-library process tests own git-object pinning evidence.
 
 Repository candidates are `home-repositories`, `repository-history`,
 `repository-running`, `repository-empty`, `repository-no-capabilities` and

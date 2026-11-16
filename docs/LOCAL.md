@@ -1,66 +1,47 @@
-# Private checkout reading
+# Personal repository library
 
-`tolmap local /path/to/checkout --data /private/tolmap-store --static-dir /path/to/web/dist`
+Register committed local source or a GitHub repository, then browse the same library:
 
-Build/install the Rust binary and production web bundle using the repository's
-normal documented build prerequisites. The local command only binds 127.0.0.1;
-open the printed URL on the same computer. It does not open a browser. Choose
-**Detect committed source**, inspect the commit, source root, language, file count
-and confidence, then confirm the detected source or all candidates above the
-existing detection floor. Unsupported detection retains the page and retry.
-Indexing uses the production process executor with stage updates and cancellation.
-Refresh explicitly captures checkout HEAD again; history links retain old snapshots.
+```sh
+tolmap add /path/to/checkout --name engine --all-sources
+tolmap add owner/name
+tolmap add --scan /path/to/projects
+tolmap repos
+tolmap status --repo engine
+tolmap refresh engine
+tolmap web
+# Remove tolmap-owned history/source; preserve the original checkout.
+tolmap rm engine
+```
 
-This command is separate from the public catalogue service. No Hub, account,
-subscription, provider OAuth or upload is involved. HTTP never accepts a local
-path or arbitrary repository URL. The original checkout is read only. Dirty and
-untracked content is excluded, with an explicit disclosure; commit it first.
-`tolmap build` continues its existing working-tree behavior and does not gain a
-commit/source claim from this command.
+The CLI and browser share one SQLite database under `$XDG_DATA_HOME/tolmap`
+or `$HOME/.local/share/tolmap`. Global `--data ROOT`, `TOLMAP_DATA_DIR` or
+application configuration chooses a different shared root. Keep it outside
+mapped checkouts. Application configuration is `$XDG_CONFIG_HOME/tolmap/config.toml`
+or `$HOME/.config/tolmap/config.toml`; [API.md](API.md) describes precedence.
+Existing data is never discovered, imported or read automatically. Re-add
+repositories to begin new history. Existing files elsewhere are left alone.
 
-The explicitly selected storage directory (outside the checkout) contains private
-Git object copies, derived maps, symbol files and provenance. Parent directories
-should belong to the user. Do not put it under web/public, data, a cloud-synced
-public folder or a static web root. Source is retained until the user removes
-that local store. A store is bound to one repository identity and canonical
-checkout. Independent Git objects retain A even after the checkout moves to B or
-GC runs. Removing storage makes that snapshot unavailable; no branch fallback.
+Run as an ordinary user. The npm package provides its production viewer;
+source builds need an existing `web/dist` or `TOLMAP_STATIC_DIR` pointing to a
+built bundle. Bind defaults to `127.0.0.1:8787`; `--addr HOST:PORT` overrides it.
+There is no authentication. An explicit off-loopback bind exposes private maps,
+source, host filesystem management and credential-backed acquisition to anyone
+who can reach the listener.
 
-Map JSON downloads disclose file paths, names and structure but **no source
-text**. They are private artifacts even without source. The local router has no
-catalogue publishing path and serves neither raw Git objects nor source trees.
-Source is fetched lazily as inert text using version 1 provenance
-`repository + immutable commit + relative path`. Map-only exports cannot reopen
-source without the originating local store. Localhost links are not share links
-and cannot be opened from another phone/computer. The optional hosted Hub has its
-own explicit connection, audience and access controls.
+Only committed source is indexed. Dirty and untracked files are excluded;
+commit first, then refresh explicitly. CLI refresh works while the browser runs.
+Reads retain the last complete map during indexing. Same-repository writes
+return busy; failed or cancelled attempts preserve saved maps. History uses
+snapshot IDs, including repeated commits. Git objects are copied independently,
+so saved source survives checkout moves, deletion and GC. Missing retained source
+is explicit and never substituted with another revision.
 
-Source accepts UTF-8 regular Git blobs up to 1 MiB. Symlinks and submodules are
-refused; invalid/traversal paths are rejected before Git. Binary, missing,
-expired and oversized results are explicit. Lines above 20,000 bytes use plain
-text without language parsing. Mainstream language descriptions are lazy-loaded
-from CodeMirror's language-data package; unsupported names and load failures use
-plain text. Language highlighting does not extend indexing coverage.
+GitHub acquisition tries anonymously, then uses existing Git/gh helpers. Configure
+them externally; credentials are never written into the library or passed to the
+indexing worker. Local checkout indexing makes no upload. Source stays behind
+same-commit Git-relative reads. Maps contain structure and symbol names and
+should be treated as private. Localhost links work on this computer only.
 
-Validation runs in CI under host thermal restrictions. Browser emulation and
-unreviewed screenshot candidates are distinct from image review and physical
-Safari/iPhone acceptance. No baseline is recorded or approved by CI.
-
-## Headless agent workflow
-
-Use `tolmap status --repo /path/to/checkout` to inspect the latest committed map,
-then explicitly `tolmap refresh --repo /path/to/checkout --all-sources` when a new
-map is needed. There is no automatic indexing on commits. Both commands default
-to a private per-checkout store under `$XDG_DATA_HOME/tolmap/local` (or
-`~/.local/share/tolmap/local`). Pass `--data /private/tolmap-store` to share the
-viewer command's existing store. Stop the local server before CLI refresh of
-that store; status can read during indexing.
-
-Refresh runs the same production worker, extraction reuse, previous-map warm
-start, validation and atomic publication without a browser, running server or
-prepared selection ID. It prints progress to stderr and status JSON to stdout.
-`--pkg`/`--lang` and `--all-sources` select committed source as with build. Dirty
-and untracked changes are disclosed separately and excluded from the snapshot.
-The status `map_path` can be passed directly to compact queries. See
-[QUERY.md](QUERY.md#local-status-and-explicit-refresh-303) for fields, freshness,
-exit codes and examples.
+[QUERY.md](QUERY.md) covers `--repo`, retained commits and explicit map inputs.
+[CHECK.md](CHECK.md) covers advisory working-tree diff checks.

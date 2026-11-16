@@ -67,7 +67,7 @@ fn invalid(message: impl Into<String>) -> Refused {
 
 /// Just enough of the map document's own shape to check a worker's reported
 /// `files`/`districts` counts against what the map it shipped actually
-/// contains (docs/WORKER_TIER.md §5.4) -- not the full `MapDocument`
+/// contains (the executor contract) -- not the full `MapDocument`
 /// (`schema.rs`), so a field added there never has to touch this check, and
 /// reading two array/object lengths stays cheap on the corpus's largest
 /// maps. `#[serde(deny_unknown_fields)]` is deliberately not set: this type
@@ -81,7 +81,7 @@ struct MapCounts {
 
 /// Refuses a result whose reported `files`/`districts` disagree with the
 /// map document it just shipped -- the second half of "Checking results"
-/// (docs/WORKER_TIER.md §5.4), next to the commit check `adopt`'s caller
+/// (the executor contract), next to the commit check `adopt`'s caller
 /// already made. `path` is the map already moved into staging, so this
 /// reads the service's own copy, never anything still under the worker's
 /// uid.
@@ -316,7 +316,7 @@ fn open_early_map_file(
 
 /// The paths and counts a worker reports in its `result` event. `files` and
 /// `districts` are checked against the map document's own `F` and
-/// `districts` once it is in staging (docs/WORKER_TIER.md §5.4, "Checking
+/// `districts` once it is in staging (the executor contract, "Checking
 /// results") -- a result whose counts disagree with the document it shipped
 /// is refused rather than stored under numbers nothing produced.
 pub struct Reported<'a> {

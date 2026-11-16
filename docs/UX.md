@@ -608,90 +608,26 @@ Settled by the owner on 2026-09-28 (same session):
 
 ## 13. Snapshot source reading and local checkouts
 
-The `tolmap local` journey is described in [LOCAL.md](LOCAL.md). The native local
-page confirms detected scope before using the real process executor. It retains
-commit history, stages/cancel, storage/export disclosure and recovery. It never
-asks for an account, subscription, upload or provider OAuth.
+The personal library journey is described in [LOCAL.md](LOCAL.md). `tolmap web`
+uses the React repository list, add/scan sheet, history and management over the
+same state as the CLI. Source opens at a retained snapshot and immutable commit.
+Dirty/untracked content is excluded from indexing; failure or cancellation
+preserves the last complete map. Missing retained source is disclosed, never
+replaced by checkout HEAD. Source is plain inert text with bounded file/line
+handling and no repository-initiated scripts or network.
 
-A selected file or symbol exposes **Read selected source**. The one production
-CodeMirror 6 reader is read only, with selectable/copyable text, line numbers,
-Find in file (including no results), recorded symbol ranges and lazy language
-highlighting/plain-text fallback. Loading/access errors and missing/expired,
-binary, symlink/submodule and large-file refusals are explicit. Long lines skip
-language parsing. Source text is inert; no repository HTML is injected.
+### 13.1 Personal journey and recovery
 
-Desktop keeps the mounted map beside the reader overlay. Phone uses a full
-reading state with its own text scroller and a Return to map control. Source
-state is URL-addressable (`read=true`, `file`, `line`, `end`, optional immutable
-`commit`); a snapshot route itself is immutable. Browser Back closes reading
-before the selected map. Closing restores focus; reading does not unmount the
-map or move its camera. Search/highlighting remain within the reader component,
-so typing cannot rebuild the map. Existing geometry and 40/110 px gates retain
-their original verification. Physical iPhone gestures remain #177 acceptance.
+Register source through `tolmap add` or the browser add sheet. Home lists each
+registration, including those with no map. Repository history opens exact saved
+snapshot IDs and offers refresh/remove. CLI changes appear without restarting
+web. Refresh works while a saved map/source reader is open. Failed attempts show
+an actionable retry without replacing history. Explicit off-loopback binding
+exposes all source and management to anyone who can reach the listener.
 
-### 13.1 Local journey and recovery
-
-Open a checkout by starting `tolmap local <checkout> --data <private-store>` on
-that computer, then open its printed loopback URL. A browser or hosted URL cannot
-open a directory on the visitor's computer. **Detect committed source** captures
-HEAD, then **Confirm analysis scope** shows the commit, root, language, file count
-and confidence. Confirm the detected source or all listed candidates above the
-existing detection floor; this is a scope choice, not a claim of complete
-reference extraction. Indexing shows real stages and **Cancel indexing**.
-**Saved snapshots** opens map → selected file/symbol → **Read selected source**.
-**Refresh from checkout HEAD** prepares a new snapshot; saved links switch back
-to earlier snapshots without changing their source. To switch repositories, start
-a separate local command with a separate private store.
-
-Only committed HEAD is included. Dirty/untracked changes are excluded, never
-labeled as committed source; commit changes before refreshing. Processing and
-Git objects/maps/symbols/provenance remain in the explicitly chosen private data
-directory, outside the checkout and web assets. Storage is retained until the
-user removes the local store. Map JSON exports include paths, symbol names and
-structure, with no source text; treat them as private. A localhost link reaches
-only the same computer. A map export alone cannot retrieve source. Hub is an
-optional, separately explicit connection/audience choice; local analysis requires
-no login or upload and does not transition to Hub automatically.
-The native page states these reach limits in visible text: processing and
-storage stay on this computer; the page opens only the started checkout, and a
-browser or hosted tolmap URL cannot open a folder on the visitor's computer;
-nothing is sent to Hub from it; localhost links work only on this computer;
-exports carry structure and symbol names but no source and are private.
-
-| State | Recovery and retained context |
-| --- | --- |
-| First run / missing bundle | Install/build the binary and web assets using LOCAL.md, restart with the same checkout/store; use the printed URL. |
-| No supported source / detection failed | Keep checkout/store selected; inspect committed contents and retry **Detect committed source** after committing supported files. No arbitrary hosted filesystem path is accepted. |
-| Uncertain or wrong root | Inspect root, evidence and confidence before confirming; choose the listed all-source option where appropriate, or correct the checkout/config and refresh. Do not silently treat uncertainty as full coverage. |
-| Indexing failure | Native page retains prepared scope and saved history; retry that scope or refresh after repairing the checkout. Existing snapshots remain readable. |
-| Cancel | Stops the engine child and prevents snapshot publication. Prepared scope and saved snapshots remain; retry explicitly. |
-| Checkout advanced / snapshot stale | Existing map/source still represent their saved commit. Refresh and index to create a new entry; switch via history. There is no automatic substitution of the current branch. |
-| Checkout moved / unavailable | Already saved independent Git objects remain readable. Restore the configured checkout for new detection/indexing; old history remains selected. |
-| Reader network/access failure | **Retry source** preserves repository, snapshot, path and line range; restore the local service/access first. Return to map preserves selection/camera. |
-| Missing / expired source | Restore the same private store/snapshot if available, or explicitly select a different saved snapshot. No public/default-branch fallback. |
-| Binary, symlink/submodule, over 1 MiB | Explicit refusal keeps selected map context. Inspect locally outside this reader; no truncated content is represented as complete. |
-
-CI exercises these recovery promises in `scripts/local-reader-fixture.py`: a
-dirty tracked edit and untracked file remain present through indexing but do
-not enter committed snapshot A; a
-detection failure leaves the prior prepared scope available; a low-confidence
-root is shown with its evidence before confirmation; and a failed indexing
-attempt keeps the prepared scope available for retry. The production browser
-journey in `web/scripts/check-source-reader.mjs` drives the native pages through
-detect → confirm → index → map → file search → read, then separately checks
-history navigation and browser Back. This is fixture evidence for local mode,
-not hosted custody or physical Safari acceptance. The same fixture also moves
-the checkout, then hides one snapshot's private objects, its snapshot directory
-and the whole store in turn: each answers with an actionable message that keeps
-the saved-snapshot list and never returns another commit's or snapshot's source;
-it asserts the #233 `failed` and `stale` freshness states, an exact key allowlist
-for the export and symbols responses, and no host path or source text in the
-provenance and symbols responses. The browser check asserts the visible
-disclosure text above and the private export link on every viewport. A hosted
-`repo` naming a bare path or `file://` URL is rejected by
-`tests/hosted_repo_requests.rs`.
-| Long line / grammar load failure | Readable plain text, selection/copy/search remain; grammar failure does not block source retrieval. |
-| Search miss | **No results** leaves source and range intact; change query or close Find, then return to map. |
+The production browser fixture covers CLI add, HTTP refresh and cancel, A/B
+history, dirty/untracked exclusion, checkout GC/moves and missing retained source.
+Phone and desktop source-reader checks use the same production bundle and API.
 
 ### 13.2 Reader controls and qualification
 

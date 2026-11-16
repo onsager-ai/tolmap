@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 pub struct ApplicationConfig {
     pub data: PathBuf,
     pub service: ServeConfig,
-    /// None retains every personal snapshot (the public service keeps its policy).
+    /// None retains every personal snapshot.
     pub retain_commits_per_repo: Option<usize>,
 }
 
@@ -85,7 +85,6 @@ impl ApplicationConfig {
         let mut service = ServeConfig::from_env();
         service.bind = "127.0.0.1:8787".parse().unwrap();
         service.static_dir = None;
-        service.organization_dir = None;
         service.prune_variant = crate::pipeline::PruneVariant::default();
         service.namer = crate::naming::NamerKind::Idf;
         service.namer_model = crate::naming::DEFAULT_MODEL.into();
@@ -96,16 +95,17 @@ impl ApplicationConfig {
         service.db_path = individual("db_path", data.join("tolmap.sqlite3"));
         service.cache_dir = individual("cache_dir", data.join("cache"));
         if let Some(v) = setting("bind_addr") {
-            service.bind.set_ip(v.parse().context("bind_addr")?);
+            if let Ok(address) = v.parse::<std::net::SocketAddr>() {
+                service.bind = address;
+            } else {
+                service.bind.set_ip(v.parse().context("bind_addr")?);
+            }
         }
         if let Some(v) = setting("port") {
             service.bind.set_port(v.parse().context("port")?);
         }
         if let Some(v) = setting("static_dir") {
             service.static_dir = Some(v.into());
-        }
-        if let Some(v) = setting("organizations_dir") {
-            service.organization_dir = Some(v.into());
         }
         if let Some(v) = setting("prune_variant") {
             service.prune_variant = v.parse().map_err(anyhow::Error::msg)?;
@@ -153,6 +153,30 @@ impl ApplicationConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bind_accepts_socket_address_and_explicit_port_wins() {
+        let file: toml::Table = toml::from_str("bind_addr='0.0.0.0:8988'").unwrap();
+        let config = ApplicationConfig::from_settings(
+            None,
+            &file,
+            |_| None,
+            Some(Path::new("/home/fixture")),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.service.bind, "0.0.0.0:8988".parse().unwrap());
+        let env = |key: &str| (key == "TOLMAP_PORT").then(|| "9000".into());
+        let config = ApplicationConfig::from_settings(
+            None,
+            &file,
+            env,
+            Some(Path::new("/home/fixture")),
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.service.bind, "0.0.0.0:9000".parse().unwrap());
+    }
+
     #[test]
     fn root_and_individual_priority_and_personal_retention() {
         let file: toml::Table = toml::from_str(

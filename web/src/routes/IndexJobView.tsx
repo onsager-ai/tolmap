@@ -550,7 +550,7 @@ function FailurePage({ job, slug, narrow }: { job: JobSnapshot; slug: string | u
       // §6.5: "Try again (after Retry-After when present)".
       if (err instanceof ApiRequestError && err.retryAfterS != null) setWaitUntil(Date.now() + err.retryAfterS * 1000);
       setRetryError(
-        err instanceof ApiRequestError && (err.code === "busy" || err.code === "rate_limited")
+        err instanceof ApiRequestError && err.code === "busy"
           ? "tolmap is still busy."
           : err instanceof Error
             ? err.message

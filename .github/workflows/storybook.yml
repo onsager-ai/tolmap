@@ -1,7 +1,7 @@
 name: Storybook visual candidates
 on:
   pull_request:
-    paths: ['web/**', 'web/storybook/baselines/**', 'bindings/**', 'src/local_pages.rs', 'web/scripts/export-local-storybook.rs', 'docs/STORYBOOK.md', '.github/workflows/storybook.yml']
+    paths: ['web/**', 'web/storybook/baselines/**', 'bindings/**', 'docs/STORYBOOK.md', '.github/workflows/storybook.yml']
   workflow_dispatch:
 concurrency:
   group: storybook-${{ github.event.pull_request.number || github.ref }}
@@ -17,11 +17,6 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: Native template formatting
-        run: rustfmt --edition 2021 --check ../src/local_pages.rs scripts/export-local-storybook.rs
       - uses: actions/setup-node@v4
         with:
           node-version: '24.21.0'
