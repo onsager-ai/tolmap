@@ -7087,7 +7087,8 @@ fn is_commit_marker(line: &[u8]) -> bool {
 }
 
 /// Splits a coloured diff line into its first SGR colour code (empty when
-/// uncoloured) and the text after any leading escape sequences.
+/// uncoloured) and the text between its leading escape sequences and the
+/// trailing reset git appends to every coloured line (`\x1b[m`).
 fn split_color(line: &[u8]) -> (&[u8], &[u8]) {
     let mut rest = line;
     let mut color: &[u8] = b"";
@@ -7100,6 +7101,17 @@ fn split_color(line: &[u8]) -> (&[u8], &[u8]) {
             color = code;
         }
         rest = &rest[end + 1..];
+    }
+    while let Some(start) = rest.windows(2).rposition(|pair| pair == b"\x1b[") {
+        let tail = &rest[start + 2..];
+        if tail.last() != Some(&b'm')
+            || !tail[..tail.len() - 1]
+                .iter()
+                .all(|b| b.is_ascii_digit() || *b == b';')
+        {
+            break;
+        }
+        rest = &rest[..start];
     }
     (color, rest)
 }
@@ -7466,6 +7478,16 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    #[test]
+    fn split_color_strips_the_trailing_reset_of_a_coloured_header() {
+        let (color, text) = split_color(b"\x1b[1mdiff --git a/x.rs b/x.rs\x1b[m");
+        assert_eq!(color, b"1");
+        assert_eq!(diff_header_path(text), Some(&b"x.rs"[..]));
+        let (color, text) = split_color(b"\x1b[36m+moved\x1b[m");
+        assert_eq!((color, text), (&b"36"[..], &b"+moved"[..]));
+        assert_eq!(split_color(b"plain"), (&b""[..], &b"plain"[..]));
     }
 
     /// Issue #176: co-change read from a named commit, not HEAD, with a
