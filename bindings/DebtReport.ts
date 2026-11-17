@@ -8,10 +8,11 @@ import type { GodFile } from "./GodFile";
 import type { HiddenCoupling } from "./HiddenCoupling";
 import type { Hotspot } from "./Hotspot";
 import type { MisplacedFile } from "./MisplacedFile";
+import type { PinnedBase } from "./PinnedBase";
 import type { UndeclaredRustFile } from "./UndeclaredRustFile";
 import type { UnreachedFile } from "./UnreachedFile";
 
-export type DebtReport = { version: number, cycle_evidence: CycleEvidence, repo: string, 
+export type DebtReport = { version: number, cycle_evidence: CycleEvidence, repo: string, pinned?: PinnedBase | null, 
 /**
  * Counts before the selected CLI filters are applied.
  */
