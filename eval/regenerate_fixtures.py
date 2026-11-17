@@ -22,6 +22,11 @@ def run(*args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=Path("fixture-record"))
+    parser.add_argument(
+        "--extraction-change", action="store_true",
+        help="the branch changes extraction, so F, E, S, U, q, partition and names may "
+             "move: gate on parity's placement and modularity thresholds only and record "
+             "what moved for review (AGENTS.md: 95%% placement, modularity within 0.02)")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     clones = Path("full-clones")
@@ -49,18 +54,26 @@ def main():
             capture_output=True, text=True)
         print(parity.stdout, flush=True)
         print(parity.stderr, flush=True)
-        parity.check_returncode()
         before = json.loads(Path(f"data/{name}.json").read_text())
         after = json.loads((built / f"{name}.json").read_text())
-        # Entry selection must not affect extraction or partition inputs.
-        # Record every landmark row, including rank changes, for PR review.
-        for key in ("F", "E", "S", "U", "q"):
-            if before[key] != after[key]:
-                raise SystemExit(f"{name}: non-landmark {key} changed")
-        if [row[0] for row in before["N"]] != [row[0] for row in after["N"]]:
-            raise SystemExit(f"{name}: partition changed")
-        if before["names"] != after["names"]:
-            raise SystemExit(f"{name}: district names changed: {before['names']} -> {after['names']}")
+        moved = [key for key in ("F", "E", "S", "U", "q", "names") if before[key] != after[key]]
+        if args.extraction_change:
+            # The field checks in `tolmap parity` fail by design when F or E
+            # moves; the district gates are the acceptance thresholds.
+            for gate in ("district placement", "modularity"):
+                if f"PASS {gate}:" not in parity.stdout:
+                    raise SystemExit(f"{name}: parity {gate} gate failed")
+        else:
+            parity.check_returncode()
+            # Entry selection must not affect extraction or partition inputs.
+            # Record every landmark row, including rank changes, for PR review.
+            for key in ("F", "E", "S", "U", "q"):
+                if before[key] != after[key]:
+                    raise SystemExit(f"{name}: non-landmark {key} changed")
+            if [row[0] for row in before["N"]] != [row[0] for row in after["N"]]:
+                raise SystemExit(f"{name}: partition changed")
+            if before["names"] != after["names"]:
+                raise SystemExit(f"{name}: district names changed: {before['names']} -> {after['names']}")
         if "D" not in after:
             raise SystemExit(f"{name}: missing D sidecar")
         evidence.append({"fixture": name, "generator": spec["generator"],
@@ -73,6 +86,11 @@ def main():
                          "after_landmarks": [
                              {"file": after["F"][row[0]], "kind": row[1],
                               "detail": row[2], "rank": row[3]} for row in after["L"]],
+                         "moved": moved,
+                         "files_removed": sorted(set(before["F"]) - set(after["F"])),
+                         "files_added": sorted(set(after["F"]) - set(before["F"])),
+                         "before_coverage": before.get("coverage"),
+                         "after_coverage": after.get("coverage"),
                          "parity": parity.stdout,
                          "parity_exit": parity.returncode})
         shutil.copyfile(built / f"{name}.json", args.out / f"{name}.json")

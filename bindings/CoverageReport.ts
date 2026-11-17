@@ -32,4 +32,17 @@ build_output_mirror?: number,
  * omitted rather than written as `0`, so every such map stays
  * byte-identical.
  */
-python_cross_project?: number, };
+python_cross_project?: number, 
+/**
+ * Issue #335: ts-rs bindings merged into the Rust file that generates
+ * them. Each is absent from `files`; the imports that named it name
+ * its generator instead. Omitted when zero, so a map without one stays
+ * byte-identical.
+ */
+generated_collapsed?: number, 
+/**
+ * Issue #335: files with a generated header left out of the map with
+ * the edges that named them: ts-rs bindings without a unique
+ * generator, and every other generated file. Omitted when zero.
+ */
+generated_excluded?: number, };

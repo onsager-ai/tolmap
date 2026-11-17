@@ -150,6 +150,17 @@ pub struct CoverageReport {
     /// byte-identical.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub python_cross_project: usize,
+    /// Issue #335: ts-rs bindings merged into the Rust file that generates
+    /// them. Each is absent from `files`; the imports that named it name
+    /// its generator instead. Omitted when zero, so a map without one stays
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generated_collapsed: usize,
+    /// Issue #335: files with a generated header left out of the map with
+    /// the edges that named them: ts-rs bindings without a unique
+    /// generator, and every other generated file. Omitted when zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generated_excluded: usize,
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -703,8 +714,10 @@ pub struct GraphData {
     /// means a relevant config could not be read statically; `Some(empty)`
     /// means configs were measured and named no mapped source file.
     pub build_entries: Option<BTreeSet<FileId>>,
-    /// Generated source files found from their headers. This stays out of
-    /// graph JSON and every map-building input, then becomes debt evidence.
+    /// Generated source files found from their headers that are still
+    /// nodes. Extraction takes every generated file out of the graph
+    /// (issue #335), so a built graph carries `Some(empty)`; the field stays
+    /// for the debt sidecar's measured/unmeasured distinction.
     pub generated: Option<Vec<GeneratedFile>>,
     /// Package manifest roots found with the organization manifest reader.
     /// Like the other sidecar inputs, this never affects graph construction.
@@ -731,6 +744,11 @@ pub struct GraphData {
     /// Serialized only when nonzero, so every graph dumped before this
     /// field existed, or without such an import, stays byte-identical.
     pub python_cross_project: usize,
+    /// Issue #335: the counts `coverage.generated_collapsed` and
+    /// `coverage.generated_excluded` carry, made by
+    /// `extract::collapse_generated`. Serialized only when nonzero.
+    pub generated_collapsed: usize,
+    pub generated_excluded: usize,
 }
 
 #[derive(Deserialize)]
@@ -754,6 +772,10 @@ struct GraphDataWire {
     build_output_mirror: usize,
     #[serde(default)]
     python_cross_project: usize,
+    #[serde(default)]
+    generated_collapsed: usize,
+    #[serde(default)]
+    generated_excluded: usize,
 }
 
 struct GraphImports<'a>(&'a GraphData);
@@ -801,6 +823,8 @@ impl Serialize for GraphData {
             + if self.references.is_some() { 1 } else { 0 }
             + if self.build_output_mirror != 0 { 1 } else { 0 }
             + usize::from(self.python_cross_project != 0)
+            + usize::from(self.generated_collapsed != 0)
+            + usize::from(self.generated_excluded != 0)
             + usize::from(!self.entry_points.is_empty());
         let mut state = serializer.serialize_struct("GraphData", fields)?;
         state.serialize_field("repo", &self.repo)?;
@@ -821,6 +845,12 @@ impl Serialize for GraphData {
         }
         if self.python_cross_project != 0 {
             state.serialize_field("python_cross_project", &self.python_cross_project)?;
+        }
+        if self.generated_collapsed != 0 {
+            state.serialize_field("generated_collapsed", &self.generated_collapsed)?;
+        }
+        if self.generated_excluded != 0 {
+            state.serialize_field("generated_excluded", &self.generated_excluded)?;
         }
         if !self.entry_points.is_empty() {
             state.serialize_field("entry_points", &self.entry_points)?;
@@ -893,6 +923,8 @@ impl<'de> Deserialize<'de> for GraphData {
             references: wire.references,
             build_output_mirror: wire.build_output_mirror,
             python_cross_project: wire.python_cross_project,
+            generated_collapsed: wire.generated_collapsed,
+            generated_excluded: wire.generated_excluded,
         })
     }
 }
@@ -972,6 +1004,8 @@ mod tests {
             references: None,
             build_output_mirror: 0,
             python_cross_project: 0,
+            generated_collapsed: 0,
+            generated_excluded: 0,
         };
 
         let bytes = serde_json::to_vec(&data).unwrap();
@@ -1030,6 +1064,8 @@ mod tests {
             references: None,
             build_output_mirror: 3,
             python_cross_project: 0,
+            generated_collapsed: 0,
+            generated_excluded: 0,
         };
 
         let value: serde_json::Value =
@@ -1065,6 +1101,8 @@ mod tests {
             references: None,
             build_output_mirror: 0,
             python_cross_project: 3,
+            generated_collapsed: 0,
+            generated_excluded: 0,
         };
         let value: serde_json::Value =
             serde_json::from_slice(&serde_json::to_vec(&data).unwrap()).unwrap();
@@ -1080,6 +1118,8 @@ mod tests {
             references: None,
             build_output_mirror: 0,
             python_cross_project: count,
+            generated_collapsed: 0,
+            generated_excluded: 0,
         };
         assert!(serde_json::to_value(coverage(0))
             .unwrap()

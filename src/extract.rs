@@ -704,6 +704,24 @@ pub(crate) fn build_scoped_snapshot_graph(
     for (_, language) in sources {
         selected.entry(language.as_str().into()).or_default();
     }
+    // Issue #335: a map leaves generated files out of `F`, but a ts-rs
+    // binding still has to be read for its importers to collapse onto its
+    // generator, so the snapshot reads every generated file of its sources
+    // again. `collapse_generated` takes them out of the graph once more.
+    for (pkg, language) in sources {
+        if !repo.join(pkg).is_dir() {
+            continue;
+        }
+        let list = selected.entry(language.as_str().into()).or_default();
+        for file in source_files(repo, pkg, *language)? {
+            let source = fs::read(repo.join(&file)).with_context(|| format!("read {file}"))?;
+            if generated_headers(&source).0 {
+                list.push(file);
+            }
+        }
+        list.sort();
+        list.dedup();
+    }
     Ok(build_selected_sources(
         repo,
         sources,
@@ -887,6 +905,7 @@ fn build_selected_sources(
         }
     };
     let graph_started = Instant::now();
+    collapse_generated(&mut merged)?;
     let mut graph = finish_graph(repo, merged, history, progress)?;
     graph.references = references;
     progress.log(format!("index_work {}", serde_json::json!({"files":graph.nodes.len(), "graph_edges":graph.edges.len(), "resolved_import_pairs":graph.imports.len()})));
@@ -1417,6 +1436,14 @@ struct MergedSources {
     /// Sum of every source's [`SourceIntermediate::python_cross_project`];
     /// `GraphData.python_cross_project`.
     python_cross_project: usize,
+    /// Index into `sources` of the source that owns each file, by
+    /// `FileId`, so [`collapse_generated`] can choose the dominant source
+    /// again from the files that survive it.
+    file_source: Vec<u32>,
+    /// Issue #335: generated files [`collapse_generated`] merged into their
+    /// generator, and generated files it left out of the map.
+    generated_collapsed: usize,
+    generated_excluded: usize,
 }
 
 fn file_ids(
@@ -1479,6 +1506,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             generated.sort_by_key(|file| file.file);
             generated
         });
+        let file_source = vec![0; files.len()];
         return Ok(MergedSources {
             parsed,
             files,
@@ -1497,6 +1525,9 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             dominant_lang: language,
             build_output_mirror,
             python_cross_project,
+            file_source,
+            generated_collapsed: 0,
+            generated_excluded: 0,
         });
     }
 
@@ -1666,6 +1697,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
     }
 
     let (_, dominant_pkg, dominant_lang) = dominant.expect("at least one source");
+    let file_source = files.iter().map(|file| owner_index[file] as u32).collect();
     let generated = generated_measured.then(|| {
         let mut generated = generated_files
             .into_iter()
@@ -1698,7 +1730,152 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         dominant_lang,
         build_output_mirror,
         python_cross_project,
+        file_source,
+        generated_collapsed: 0,
+        generated_excluded: 0,
     })
+}
+
+/// Issue #335 (owner decision: merge into the Rust source): takes generated
+/// files out of the graph before the blend. A ts-rs binding whose generator
+/// is known (`GeneratedFile::generator`, one exactly matching derived type)
+/// is collapsed onto that Rust file: every static edge, directed import and
+/// use that names the binding names the generator instead, so a web file
+/// importing `bindings/WorkerSpec.ts` links to the Rust file that generates
+/// it. A ts-rs binding without a unique generator, and every other file with
+/// a generated header, is left out together with the edges that name it.
+/// Neither kind stays a node, so neither has a district, footprint or
+/// co-change pair of its own.
+///
+/// A pair that collapses onto one file (a binding and its own generator, or
+/// two bindings of one generator) is dropped with its mass, the self-pair
+/// rule of finding 52; nothing is renormalised. Collapsed masses add, as
+/// every other static signal does, so the blend still scales the summed
+/// mass. Kept files keep their lexical order, so the new ids stay sorted
+/// and the output is as deterministic as the input.
+///
+/// Runs after `--refs scip` replaced a language's static edges, so a SCIP
+/// edge into a binding is collapsed the same way.
+fn collapse_generated(merged: &mut MergedSources) -> Result<()> {
+    let generated = match merged.generated.as_mut() {
+        Some(generated) if !generated.is_empty() => std::mem::take(generated),
+        _ => return Ok(()),
+    };
+    let removed = generated
+        .iter()
+        .map(|file| file.file)
+        .collect::<BTreeSet<_>>();
+    let mut new_id = vec![None; merged.files.len()];
+    let mut files = Vec::with_capacity(merged.files.len() - removed.len());
+    let mut file_source = Vec::with_capacity(files.capacity());
+    for (old, file) in std::mem::take(&mut merged.files).into_iter().enumerate() {
+        if removed.contains(&(old as FileId)) {
+            merged.parsed.remove(&file);
+            merged.file_language.remove(&file);
+            merged.module_for.remove(&file);
+            continue;
+        }
+        new_id[old] = Some(files.len() as FileId);
+        files.push(file);
+        file_source.push(merged.file_source[old]);
+    }
+    // Where each old file's edges now land: itself, its generator, or
+    // nowhere. A generator that is itself generated is not in the map, so
+    // its binding is left out too.
+    let mut target = new_id.clone();
+    for file in &generated {
+        target[file.file as usize] = file
+            .generator
+            .and_then(|generator| new_id[generator as usize]);
+    }
+    let collapsed = generated
+        .iter()
+        .filter(|file| target[file.file as usize].is_some())
+        .count();
+    let remap = |a: FileId, b: FileId| {
+        let (a, b) = (target[a as usize]?, target[b as usize]?);
+        (a != b).then_some((a, b))
+    };
+
+    let mut static_edges = BTreeMap::new();
+    for ((a, b), value) in std::mem::take(&mut merged.static_edges) {
+        if let Some((a, b)) = remap(a, b) {
+            *static_edges.entry(ordered_file_pair(a, b)).or_insert(0.0) += value;
+        }
+    }
+    // Fan-in is the sum of a file's directed imports. Only files whose
+    // incoming imports moved are summed again; every other value is carried
+    // over unchanged, so its bytes do not move.
+    let mut moved = BTreeSet::new();
+    let mut directed = BTreeMap::new();
+    for ((a, b), value) in std::mem::take(&mut merged.directed) {
+        if removed.contains(&a) || removed.contains(&b) {
+            moved.extend(target[b as usize]);
+        }
+        if let Some(pair) = remap(a, b) {
+            *directed.entry(pair).or_insert(0.0) += value;
+        }
+    }
+    let mut fanin = BTreeMap::new();
+    for (file, value) in std::mem::take(&mut merged.fanin) {
+        if let Some(file) = new_id[file as usize].filter(|file| !moved.contains(file)) {
+            fanin.insert(file, value);
+        }
+    }
+    for (&(_, b), &value) in &directed {
+        if moved.contains(&b) {
+            *fanin.entry(b).or_insert(0.0) += value;
+        }
+    }
+    merged.uses = std::mem::take(&mut merged.uses)
+        .into_iter()
+        .filter_map(|(a, b, name)| remap(a, b).map(|(a, b)| (a, b, name)))
+        .collect();
+    if let Some(tree) = merged.rust_mod.as_mut() {
+        tree.roots = tree
+            .roots
+            .iter()
+            .filter_map(|&root| new_id[root as usize])
+            .collect();
+        tree.pairs = tree
+            .pairs
+            .iter()
+            .filter_map(|&(parent, child)| {
+                Some((new_id[parent as usize]?, new_id[child as usize]?))
+            })
+            .collect();
+    }
+    if let Some(entries) = merged.build_entries.as_mut() {
+        *entries = entries
+            .iter()
+            .filter_map(|&file| new_id[file as usize])
+            .collect();
+    }
+
+    // The dominant source is the one with the most surviving files, the
+    // earliest in sorted order on a tie, as in `union_sources`.
+    let mut kept = vec![0usize; merged.sources.len()];
+    for &source in &file_source {
+        kept[source as usize] += 1;
+    }
+    let mut dominant = 0;
+    for (source, &count) in kept.iter().enumerate() {
+        if count > kept[dominant] {
+            dominant = source;
+        }
+    }
+    let (pkg, lang) = &merged.sources[dominant];
+    merged.dominant_pkg = pkg.clone();
+    merged.dominant_lang = LanguageKind::parse(lang)?;
+
+    merged.generated_collapsed = collapsed;
+    merged.generated_excluded = generated.len() - collapsed;
+    merged.files = files;
+    merged.file_source = file_source;
+    merged.static_edges = static_edges;
+    merged.directed = directed;
+    merged.fanin = fanin;
+    Ok(())
 }
 
 /// Removes a temporary index directory on every exit path. Go's module
@@ -6655,6 +6832,9 @@ fn finish_graph(
         generated,
         build_entries,
         package_roots,
+        file_source: _,
+        generated_collapsed,
+        generated_excluded,
     } = merged;
 
     let history_stage = progress.stage(crate::progress::StageId::History, None);
@@ -6756,8 +6936,11 @@ fn finish_graph(
     // static edge. A static edge is always intra-language by construction
     // (resolution only looks a target up in its own source's known-file
     // set -- see `union_sources`), so `file_language[&a]` and
-    // `file_language[&b]` always agree for a real static edge and this
-    // lookup is unambiguous. For a single-source graph this reduces to
+    // `file_language[&b]` agree for a resolved static edge. The one
+    // exception is an edge `collapse_generated` moved from a ts-rs binding
+    // onto its Rust generator: its mass came from TypeScript resolution, so
+    // it takes TypeScript's bucket (`static_edge_language`). For a
+    // single-source graph this reduces to
     // exactly the old single global max (one language, one bucket) -- see
     // `single_language_static_max_matches_the_old_global_max` in the tests
     // below.
@@ -6771,7 +6954,7 @@ fn finish_graph(
     for (a_id, b_id) in candidates {
         let a = &files[a_id as usize];
         let b = &files[b_id as usize];
-        let static_max = static_max_by_language[&languages[a_id as usize]];
+        let static_max = static_max_by_language[&static_edge_language(a_id, b_id, &languages)];
         let static_signal = static_edges.get(&(a_id, b_id)).copied().unwrap_or(0.0) / static_max;
         let cochange = cochange
             .get(&(a_id, b_id))
@@ -6846,8 +7029,8 @@ fn finish_graph(
         imports: directed
             .into_iter()
             .map(|((a, b), value)| {
-                // Always intra-language (see the static_max comment above);
-                // `file_language[&a]` alone decides the rounding.
+                // The importer's language decides the rounding. A collapsed
+                // binding edge is never Python's, so it rounds as before.
                 let value = if languages[a as usize] == LanguageKind::Python {
                     value
                 } else {
@@ -6869,7 +7052,21 @@ fn finish_graph(
         references: None,
         build_output_mirror,
         python_cross_project,
+        generated_collapsed,
+        generated_excluded,
     })
+}
+
+/// The language whose resolver produced a static edge's mass. Both ends
+/// agree for every resolved edge. A collapsed ts-rs binding's edge joins a
+/// TypeScript file (or another binding's generator) to a Rust generator,
+/// and its mass is TypeScript's, so a pair with one Rust end takes the
+/// other end's language.
+fn static_edge_language(a: FileId, b: FileId, file_language: &[LanguageKind]) -> LanguageKind {
+    match (file_language[a as usize], file_language[b as usize]) {
+        (LanguageKind::Rust, other) => other,
+        (language, _) => language,
+    }
 }
 
 /// The largest static edge value per language, floored at 1.0 -- see the
@@ -6881,8 +7078,8 @@ fn static_max_by_language(
     file_language: &[LanguageKind],
 ) -> BTreeMap<LanguageKind, f64> {
     let mut result = BTreeMap::<LanguageKind, f64>::new();
-    for ((a, _), &value) in static_edges {
-        let language = file_language[*a as usize];
+    for (&(a, b), &value) in static_edges {
+        let language = static_edge_language(a, b, file_language);
         let entry = result.entry(language).or_insert(0.0_f64);
         if value > *entry {
             *entry = value;
@@ -10116,6 +10313,108 @@ mod tests {
             None,
             "multiple derived types leave the generator unresolved"
         );
+    }
+
+    #[test]
+    fn generated_files_collapse_onto_their_generator_or_leave_the_graph() {
+        let source = |language: LanguageKind, files: &[&str]| SourceIntermediate {
+            pkg: ".".to_owned(),
+            language,
+            parsed: files
+                .iter()
+                .map(|file| ((*file).to_owned(), test_parsed_file(1, 0, &[])))
+                .collect(),
+            files: files.iter().map(|file| (*file).to_owned()).collect(),
+            static_edges: BTreeMap::new(),
+            directed: BTreeMap::new(),
+            fanin: BTreeMap::new(),
+            uses: BTreeSet::new(),
+            module_for: files
+                .iter()
+                .map(|file| ((*file).to_owned(), (*file).to_owned()))
+                .collect(),
+            rust_mod: None,
+            generated: Some(Vec::new()),
+            ts_types: None,
+            build_output_mirror: 0,
+            python_cross_project: 0,
+        };
+        let mut rust = source(LanguageKind::Rust, &["src/model.rs", "src/other.rs"]);
+        rust.static_edges = BTreeMap::from([((0, 1), 1.0)]);
+        rust.directed = BTreeMap::from([((1, 0), 1.0)]);
+        rust.fanin = BTreeMap::from([(0, 1.0)]);
+        rust.ts_types = Some(BTreeMap::from([
+            ("Part".to_owned(), vec![0]),
+            ("Thing".to_owned(), vec![0]),
+        ]));
+        // 0 Lost (no generator), 1 Part and 2 Thing (both src/model.rs),
+        // 3 web/a.ts, 4 web/b.ts and 5 web/gen.ts (`@generated`).
+        let mut typescript = source(
+            LanguageKind::TypeScript,
+            &[
+                "bindings/Lost.ts",
+                "bindings/Part.ts",
+                "bindings/Thing.ts",
+                "web/a.ts",
+                "web/b.ts",
+                "web/gen.ts",
+            ],
+        );
+        let imports = [(3, 2), (3, 1), (3, 0), (4, 5), (2, 1)];
+        for (a, b) in imports {
+            typescript.static_edges.insert(ordered_file_pair(a, b), 1.0);
+            typescript.directed.insert((a, b), 1.0);
+            *typescript.fanin.entry(b).or_default() += 1.0;
+        }
+        typescript.uses = BTreeSet::from([(3, 2, "Thing".to_owned())]);
+        typescript.generated = Some(vec![(0, true), (1, true), (2, true), (5, false)]);
+
+        let mut merged = union_sources(vec![rust, typescript]).unwrap();
+        assert_eq!(merged.dominant_lang, LanguageKind::TypeScript);
+        collapse_generated(&mut merged).unwrap();
+
+        assert_eq!(
+            merged.files,
+            ["src/model.rs", "src/other.rs", "web/a.ts", "web/b.ts"]
+        );
+        assert_eq!(
+            merged.parsed.keys().collect::<Vec<_>>(),
+            merged.files.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            (merged.generated_collapsed, merged.generated_excluded),
+            (2, 2)
+        );
+        assert_eq!(merged.generated.as_deref().map(<[_]>::len), Some(0));
+        // web/a.ts's two binding imports add onto src/model.rs; the
+        // binding-to-binding import of one generator is a self-pair and is
+        // dropped; imports of the unlinked binding and `@generated` file go.
+        assert_eq!(
+            merged.static_edges,
+            BTreeMap::from([((0, 1), 1.0), ((0, 2), 2.0)])
+        );
+        assert_eq!(
+            merged.directed,
+            BTreeMap::from([((1, 0), 1.0), ((2, 0), 2.0)])
+        );
+        assert_eq!(merged.fanin, BTreeMap::from([(0, 3.0)]));
+        assert_eq!(merged.uses, BTreeSet::from([(2, 0, "Thing".to_owned())]));
+        assert_eq!(
+            merged.dominant_lang,
+            LanguageKind::Rust,
+            "two files each; the earlier source wins the tie"
+        );
+        let languages = merged
+            .files
+            .iter()
+            .map(|file| merged.file_language[file])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            static_edge_language(0, 2, &languages),
+            LanguageKind::TypeScript,
+            "a collapsed edge keeps the importer's bucket"
+        );
+        assert_eq!(static_edge_language(0, 1, &languages), LanguageKind::Rust);
     }
 
     fn test_parsed_file(

@@ -9,6 +9,8 @@ Go imports name a *package*, so one import spreads 1/|D| weight across that dire
 
 The Rust product also reads Rust (`src/extract/rust.rs`, finding 57), which the reference never did. A crate's module tree is built from `Cargo.toml` and `mod` declarations, and each `use` or written-out path links the file that defines the name it uses. Each `use` declaration shares a mass of 1 among the files it reaches.
 
+Generated files are not places on the map (issue #335). A file is generated when one of its first five lines carries a ts-rs header, `@generated` or `DO NOT EDIT`. A ts-rs binding whose type is derived in exactly one Rust file is merged into that file before the blend: imports of the binding become imports of the generator, so a TypeScript file importing `bindings/WorkerSpec.ts` links to the Rust file that generates it. Collapsed masses add; a pair that collapses onto one file is dropped, as a self-import is. Every other generated file, including a binding without a unique generator, is left out with the edges that name it. `coverage.generated_collapsed` and `coverage.generated_excluded` count the two kinds. `tolmap check` snapshots read their sources' generated files again so the same collapse applies.
+
 ## 2 · weight
 ```
 w(a,b) = α·static + β·cochange + γ·proximity + δ·semantic     α .45 β .35 γ .08 δ .12

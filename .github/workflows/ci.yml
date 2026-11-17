@@ -82,6 +82,10 @@ on:
         description: "Also run the SCIP churn diagnosis (finding 47, about 30 minutes)"
         type: boolean
         default: false
+      extraction_change:
+        description: "full-fixtures: the branch changes extraction; gate on placement and modularity only and record what moved"
+        type: boolean
+        default: false
   schedule:
     # 03:17 UTC nightly -- off the hour to avoid the top-of-hour GitHub
     # Actions scheduling crush.
@@ -1472,7 +1476,9 @@ jobs:
         run: cargo build --release --bin tolmap
 
       - name: Regenerate pinned fixtures with seeded names and parity
-        run: python3 eval/regenerate_fixtures.py --out fixture-record
+        env:
+          EXTRACTION_CHANGE: ${{ inputs.extraction_change && '--extraction-change' || '' }}
+        run: python3 eval/regenerate_fixtures.py --out fixture-record $EXTRACTION_CHANGE
 
       - name: Upload regenerated maps, lenses and parity evidence
         uses: actions/upload-artifact@v4

@@ -65,7 +65,7 @@ build_entry_measurement: boolean, build_entry_files: number, hidden_coupling_mea
  */
 hidden_coupling_test_pairs_excluded: number, 
 /**
- * Pairs suppressed because a generated ts-rs binding is paired with its
- * generator or a file already statically linked to that generator.
+ * Pairs suppressed because one side is a generated file. Maps built
+ * since generated files left the map have none.
  */
 hidden_coupling_generated_pairs_suppressed: number, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };
