@@ -353,6 +353,9 @@ pub struct Neighbourhood {
 #[ts(export)]
 pub struct MapDocument {
     pub repo: String,
+    /// Absent on maps built before test-exclusion measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_tests: Option<usize>,
     pub q: f64,
     pub names: BTreeMap<String, String>,
     pub districts: BTreeMap<String, District>,
@@ -518,8 +521,21 @@ pub struct CheckReport {
     pub edges_removed: Vec<CheckEdge>,
     pub landmark_touches: Vec<CheckLandmark>,
     pub thresholds: CheckThresholds,
+    /// Advisory comparison; never changes the applied verdict or exit code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thresholds: Option<CheckDefaultThresholds>,
     pub verdict: CheckVerdict,
     pub lower_bound: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct CheckDefaultThresholds {
+    pub verdict: CheckVerdict,
+    pub max_districts: usize,
+    pub max_dq: f64,
+    /// Positive means over the limit, negative means remaining margin.
+    pub districts_over: i64,
+    pub dq_over: f64,
 }
 
 // A changed file absent from both graphs. `not_in_scope` includes files

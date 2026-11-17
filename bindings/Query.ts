@@ -3,4 +3,4 @@ import type { DepsDirections } from "./DepsDirections";
 import type { Direction } from "./Direction";
 import type { RouteKind } from "./RouteKind";
 
-export type Query = { "kind": "status", } | { "kind": "where", target: string, ambiguous: boolean, } | { "kind": "deps", path: string, direction: Direction, directions: DepsDirections, } | { "kind": "overview", files: number, imports: number, districts: number, language: string, } | { "kind": "route", from: string, to: string, edge_kind: RouteKind | null, };
+export type Query = { "kind": "status", } | { "kind": "where", target: string, ambiguous: boolean, missing_path?: string | null, suggestions?: Array<string>, } | { "kind": "deps", path: string, direction: Direction, directions: DepsDirections, } | { "kind": "overview", files: number, imports: number, districts: number, language: string, excluded_tests: number | null, test_exclusion_rule: string, } | { "kind": "route", from: string, to: string, edge_kind: RouteKind | null, };

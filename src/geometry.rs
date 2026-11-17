@@ -385,9 +385,11 @@ pub fn build_warm_with_progress(
         &features.install,
         progress,
     )?;
+    let excluded_tests = extract::excluded_tests(repo, &[(pkg.to_owned(), language)])?;
     let source_nodes = graph.nodes.clone();
-    let output = build_from_graph_warm_with_progress(
+    let output = build_from_graph_with_exclusions(
         graph,
+        Some(excluded_tests),
         map_name,
         out,
         resolution,
@@ -465,9 +467,11 @@ pub fn build_multi_warm_with_progress(
         &features.install,
         progress,
     )?;
+    let excluded_tests = extract::excluded_tests(repo, sources)?;
     let source_nodes = graph.nodes.clone();
-    let output = build_from_graph_warm_with_progress(
+    let output = build_from_graph_with_exclusions(
         graph,
+        Some(excluded_tests),
         map_name,
         out,
         resolution,
@@ -527,6 +531,28 @@ pub fn build_from_graph_warm(
 
 pub fn build_from_graph_warm_with_progress(
     graph: GraphData,
+    map_name: String,
+    out: &Path,
+    resolution: f64,
+    features: BuildFeatures,
+    previous_document: Option<&MapDocument>,
+    progress: &crate::progress::Progress,
+) -> Result<PathBuf> {
+    build_from_graph_with_exclusions(
+        graph,
+        None,
+        map_name,
+        out,
+        resolution,
+        features,
+        previous_document,
+        progress,
+    )
+}
+
+pub(crate) fn build_from_graph_with_exclusions(
+    graph: GraphData,
+    excluded_tests: Option<usize>,
     map_name: String,
     out: &Path,
     resolution: f64,
@@ -629,6 +655,7 @@ pub fn build_from_graph_warm_with_progress(
         }
     }
     let mut document = compact(map_name, layout, geometry, names, &classes);
+    document.excluded_tests = excluded_tests;
     if features.parcels {
         let footprints_stage = progress.stage(
             crate::progress::StageId::Footprints,
@@ -914,6 +941,7 @@ fn compact(
         .collect();
     MapDocument {
         repo: name,
+        excluded_tests: None,
         q: layout.modularity,
         names,
         districts,

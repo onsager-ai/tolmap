@@ -8,6 +8,12 @@ tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
              [--max-districts N] [--max-dq X | --report-only] [--format text|json]
 ```
 
+For a registered GitHub repository, `--repo OWNER/NAME` selects its stored snapshot
+and retained source, not the clone/worktree in the current directory. Supply
+`--head <retained-commit>` for that workflow. To check local changes from a clone
+or worktree, use `tolmap check . --base <commit> --report-only` and omit `--repo`;
+the missing-head error includes the selected snapshot's exact base commit.
+
 ## Flags
 
 | flag | meaning |
@@ -28,7 +34,7 @@ tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
 **With no threshold flag the check applies `--max-districts 4 --max-dq 0.0001`.** Both are absolute: neither scales with the size of the repository.
 
 - **Flags replace the defaults as a set.** Pass either threshold flag and only the flags you pass apply. `--max-dq 0.002` alone checks Δq and nothing else; no default mixes in.
-- **`--report-only` applies none.** That is the behaviour the check had before the defaults existed.
+- **`--report-only` applies none.** Its exit stays 0, but `default_thresholds` and one text line say what the defaults would conclude. `districts_over = districts_crossed - 4` and `dq_over = -delta_q - 0.0001`, rounded to six places: positive means over the limit, negative means remaining margin, zero passes. This advisory comparison does not change `verdict`.
 - **The report says which applied.** `thresholds.source` is `default`, `flags` or `report_only`.
 
 The defaults come from replaying 600 real commits through the check on GitHub Actions: the last 200 first-parent commits of django, prometheus and vuejs/core at their corpus pins (`remote-build.yml` `command=check-calibrate`). `--max-districts` is from docs/FINDINGS.md finding 60. `--max-dq` was recalibrated in finding 61, after co-change was held at the base (see "Co-change is the base's on both sides" below). On those commits the two together fail 10, 2 and 7 of the 200 (5%, 1% and 3.5%).
@@ -120,6 +126,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 | `edges_added`, `edges_removed` | `{source, target, source_district, target_district, weight, static_import, cause}[]` | `cause` is `code` or `prune`; heaviest first, then by path |
 | `landmark_touches` | `{file, kind, detail}[]` | `kind` is `hazard` or `bridge` |
 | `thresholds` | `{max_districts, max_dq, source}` | the thresholds applied, `null` where one was not applied. `source` is `default` (no threshold flag), `flags` (the flags given, and only those) or `report_only` (both `null`) |
+| `default_thresholds` | `{verdict, max_districts, max_dq, districts_over, dq_over}` | added in version 1; present under `--report-only`, compares the reported numbers against the defaults with signed margins; does not affect exit status |
 | `verdict` | `"pass" \| "fail"` | `fail` exactly when the exit code is 1 |
 | `lower_bound` | `true` | always |
 

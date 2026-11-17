@@ -56,6 +56,24 @@ pub struct RouteArgs {
     pub options: QueryOptions,
 }
 
+// Levenshtein distance over characters; path text breaks equal-distance ties.
+fn path_distance(a: &str, b: &str) -> usize {
+    let b: Vec<_> = b.chars().collect();
+    let mut row: Vec<_> = (0..=b.len()).collect();
+    for (i, left) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, right) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (row[j] + 1)
+                .min(above + 1)
+                .min(diagonal + usize::from(left != *right));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
 pub struct Snapshot {
     pub map: MapDocument,
     pub identity: MapIdentity,
@@ -187,6 +205,8 @@ impl Snapshot {
                 Query::Where {
                     target: target.into(),
                     ambiguous: false,
+                    missing_path: None,
+                    suggestions: Vec::new(),
                 },
                 limit,
                 vec![QueryResult::File {
@@ -276,6 +296,31 @@ impl Snapshot {
                 }
             }
         }
+        // A path-shaped target that names no file or symbol is reported as
+        // missing, with the nearest mapped paths.
+        if hits.is_empty()
+            && !target.contains("::")
+            && (target.contains('/') || Path::new(target).extension().is_some())
+        {
+            let mut nearest: Vec<_> = self
+                .map
+                .files
+                .iter()
+                .map(|path| (path_distance(target, path), path.clone()))
+                .collect();
+            nearest.sort();
+            return Ok(self.response(
+                Query::Where {
+                    target: target.into(),
+                    ambiguous: false,
+                    missing_path: Some(target.into()),
+                    suggestions: nearest.into_iter().take(3).map(|(_, path)| path).collect(),
+                },
+                limit,
+                Vec::new(),
+                None,
+            ));
+        }
         hits.sort_by(|(a, x), (b, y)| {
             self.map.files[*a]
                 .cmp(&self.map.files[*b])
@@ -296,6 +341,8 @@ impl Snapshot {
             Query::Where {
                 target: target.into(),
                 ambiguous,
+                missing_path: None,
+                suggestions: Vec::new(),
             },
             limit,
             results,
@@ -339,6 +386,8 @@ impl Snapshot {
                 imports: self.map.edges.len(),
                 districts: self.map.districts.len(),
                 language: self.map.lang.clone(),
+                excluded_tests: self.map.excluded_tests,
+                test_exclusion_rule: crate::extract::TEST_EXCLUSION_RULE.into(),
             },
             limit,
             results,
@@ -550,14 +599,38 @@ pub fn text(report: &QueryResponse) -> String {
     }
     match &report.query {
         Query::Status {} => {}
+        Query::Where {
+            missing_path: Some(path),
+            suggestions,
+            ..
+        } => {
+            out.push_str(&format!("path is not in the map: {path}\n"));
+            if !suggestions.is_empty() {
+                out.push_str("nearest mapped paths:\n");
+                for suggestion in suggestions {
+                    out.push_str(&format!("  {suggestion}\n"));
+                }
+            }
+        }
         Query::Overview {
             files,
             imports,
             districts,
             language,
-        } => out.push_str(&format!(
-            "{files} files, {imports} imports, {districts} districts, language {language}\n"
-        )),
+            excluded_tests,
+            test_exclusion_rule,
+        } => {
+            out.push_str(&format!(
+                "{files} files, {imports} imports, {districts} districts, language {language}\n"
+            ));
+            let count = excluded_tests.map_or_else(
+                || "unknown (not recorded by this map)".into(),
+                |n| n.to_string(),
+            );
+            out.push_str(&format!(
+                "excluded test files: {count}; rule: {test_exclusion_rule}\n"
+            ));
+        }
         Query::Route { edge_kind, .. } => out.push_str(&format!(
             "file import path ({edge_kind:?}); not a runtime call chain\n"
         )),

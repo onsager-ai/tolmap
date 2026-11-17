@@ -2,6 +2,12 @@
 
 `tolmap web` is the only HTTP entry point. CLI examples and resolution rules are in [QUERY.md](QUERY.md); setup is in [LOCAL.md](LOCAL.md).
 
+Source-built maps record optional `excluded_tests`: the count of source files
+omitted by the collector's test rules within the selected source roots. It is
+absent on older maps and graph-only builds, which means unknown, not zero.
+`overview` exposes it as `query.excluded_tests` (null when unknown) alongside
+`query.test_exclusion_rule`; see [QUERY.md](QUERY.md).
+
 ## Personal shared store and application configuration
 
 The CLI and browser share `service::store::Store`: a repository registry, durable attempts and UUID snapshots. History is retained until removal or an explicit retention setting. Existing data is never discovered or imported; re-add repositories to start new history. Files outside the selected personal root are left alone.

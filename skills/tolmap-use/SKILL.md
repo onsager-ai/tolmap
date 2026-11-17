@@ -65,8 +65,12 @@ tolmap where 'src/bin/generate_types.rs::main' --map "$MAP"
 tolmap route src/main.rs src/schema.rs --map "$MAP"
 ```
 
-`overview` lists districts, not entry landmarks; use manifests/source to discover
-entry paths. Paths are exact repository-relative paths, with `/`. JSON is the default;
+`overview` reports `query.excluded_tests` and `query.test_exclusion_rule`;
+a null count means unmeasured by this map, not zero. Counts cover selected source
+roots and exclude inline tests. It lists districts, not entry landmarks; use manifests/source to discover
+entry paths. Paths are exact repository-relative paths, with `/`. Missing path
+lookups report `query.missing_path` and nearest mapped `query.suggestions`;
+suggestions are not matches. JSON is the default;
 `--format text` is for people. `deps` is direct adjacency, not transitive impact.
 `route` is an **import path**, potentially reversed or undirected as its
 `edge_kind` reports, not a runtime call chain. An empty result is not evidence
@@ -99,6 +103,10 @@ Read changed files, districts, edges, `lower_bound` and `outside_graph` together
 an empty mapped impact does not make those changes safe or irrelevant.
 `--all-sources` uses detection's scope floor; explicit paired `--pkg`/`--lang`
 can select sources when needed. Keep pilot checks advisory (`--report-only`).
+Read `default_thresholds` for the default pass/fail comparison; positive
+`districts_over` / `dq_over` means over the limit, negative means remaining margin.
+For GitHub library entries, `--repo` uses retained source and requires `--head`;
+use `check . --base <commit>` without `--repo` for local clone/worktree changes.
 Exit 0 means a valid advisory report, not absence of risk; 2/3 mean input/internal
 failure. Compact queries also return 0 for no match, so read `total`.
 
