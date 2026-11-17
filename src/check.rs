@@ -54,9 +54,9 @@ use crate::geometry::{self, BuildFeatures};
 use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
 use crate::schema::{
-    CheckDistrict, CheckEdge, CheckEdgeCause, CheckFile, CheckFileStatus, CheckLandmark,
-    CheckOutsideGraph, CheckReport, CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData,
-    MapDocument, NodeRow,
+    CheckDefaultThresholds, CheckDistrict, CheckEdge, CheckEdgeCause, CheckFile, CheckFileStatus,
+    CheckLandmark, CheckOutsideGraph, CheckReport, CheckThresholdSource, CheckThresholds,
+    CheckVerdict, GraphData, MapDocument, NodeRow,
 };
 
 /// `CheckReport::version`. Bumped on any change to a field's meaning or
@@ -838,6 +838,8 @@ fn compare(
         edges_added,
         edges_removed,
         landmark_touches,
+        default_thresholds: (thresholds.source == CheckThresholdSource::ReportOnly)
+            .then(|| default_thresholds(districts_crossed, delta_q)),
         thresholds,
         verdict: if failed {
             CheckVerdict::Fail
@@ -971,6 +973,9 @@ pub fn render_text(report: &CheckReport) -> String {
         report.delta_q, report.modularity_base, report.modularity_head
     );
     let _ = writeln!(out, "verdict: {}", verdict_line(report));
+    if let Some(defaults) = &report.default_thresholds {
+        let _ = writeln!(out, "{}", default_thresholds_line(defaults));
+    }
 
     let _ = writeln!(
         out,
@@ -1050,6 +1055,33 @@ pub fn render_text(report: &CheckReport) -> String {
     }
     let _ = writeln!(out, "{LOWER_BOUND_NOTE}");
     out
+}
+
+fn default_thresholds(districts: usize, delta_q: f64) -> CheckDefaultThresholds {
+    let districts_over = districts as i64 - DEFAULT_MAX_DISTRICTS as i64;
+    let dq_over = round(-delta_q - DEFAULT_MAX_DQ);
+    CheckDefaultThresholds {
+        verdict: if districts_over > 0 || dq_over > 0.0 {
+            CheckVerdict::Fail
+        } else {
+            CheckVerdict::Pass
+        },
+        max_districts: DEFAULT_MAX_DISTRICTS,
+        max_dq: DEFAULT_MAX_DQ,
+        districts_over,
+        dq_over,
+    }
+}
+
+fn default_thresholds_line(defaults: &CheckDefaultThresholds) -> String {
+    let verdict = match defaults.verdict {
+        CheckVerdict::Pass => "pass",
+        CheckVerdict::Fail => "fail",
+    };
+    format!(
+        "default thresholds would {verdict}: districts {:+} relative to max {}; modularity drop {:+.6} relative to max {:.6} (positive = over, negative = remaining margin)",
+        defaults.districts_over, defaults.max_districts, defaults.dq_over, defaults.max_dq
+    )
 }
 
 fn verdict_line(report: &CheckReport) -> String {
@@ -1721,6 +1753,22 @@ mod tests {
             max_dq,
             report_only,
         }
+    }
+
+    #[test]
+    fn advisory_defaults_show_margin_and_strict_boundaries() {
+        let pass = default_thresholds(2, -0.000008);
+        assert_eq!(pass.verdict, CheckVerdict::Pass);
+        assert_eq!(pass.districts_over, -2);
+        assert_eq!(pass.dq_over, -0.000092);
+        let fail = default_thresholds(5, -0.006704);
+        assert_eq!(fail.verdict, CheckVerdict::Fail);
+        assert_eq!(fail.districts_over, 1);
+        assert_eq!(fail.dq_over, 0.006604);
+        assert!(default_thresholds_line(&fail).contains("would fail"));
+        assert_eq!(default_thresholds(4, -0.0001).verdict, CheckVerdict::Pass);
+        assert_eq!(default_thresholds(5, 0.1).verdict, CheckVerdict::Fail);
+        assert_eq!(default_thresholds(0, -0.000101).verdict, CheckVerdict::Fail);
     }
 
     #[test]
