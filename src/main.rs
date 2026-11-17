@@ -30,7 +30,7 @@ struct StatusCliArgs {
     #[arg(value_name = "REPO", conflicts_with = "repo_flag")]
     repo: Option<String>,
     /// Registered repository to inspect.
-    #[arg(long = "repo", conflicts_with = "repo")]
+    #[arg(long = "repo", value_name = "REPO", conflicts_with = "repo")]
     repo_flag: Option<String>,
     /// Output format: `json` (default) or pretty-printed JSON (`text`).
     #[arg(long, default_value = "json", value_parser = ["json", "text"])]
