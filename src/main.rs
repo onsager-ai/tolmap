@@ -52,15 +52,20 @@ enum Command {
     Status(tolmap::personal::StatusArgs),
     /// Explicitly refresh committed HEAD without a server or upload.
     Refresh(tolmap::personal::RefreshArgs),
+    /// Build a deterministic map from a repository or extracted graph.
     Build {
         // Exactly one of `repo` or `--graph` is required -- validated in
         // `main`, since clap's derive can't express "either, not both"
         // across a positional and a flag as cleanly as a manual check does.
+        /// Repository checkout to build.
         checkout: Option<PathBuf>,
+        /// Registered repository in the personal library.
         #[arg(long, conflicts_with_all=["checkout","graph"])]
         repo: Option<String>,
+        /// Commit to select from the registered repository.
         #[arg(long, conflicts_with_all=["checkout","graph"])]
         commit: Option<String>,
+        /// Snapshot id to select from the registered repository.
         #[arg(long, conflicts_with_all=["checkout","graph"])]
         snapshot: Option<String>,
         /// Source root inside the repository. Detected when omitted (see
@@ -86,12 +91,16 @@ enum Command {
         /// of building one language. Mutually exclusive with `--pkg`/`--lang`.
         #[arg(long)]
         all_sources: bool,
+        /// Name for the output map; required with `--graph`.
         #[arg(long)]
         name: Option<String>,
+        /// Output directory for maps (default `out`).
         #[arg(long, default_value = "out")]
         out: PathBuf,
+        /// Leiden resolution (default 1.1).
         #[arg(long, default_value_t = 1.1)]
         resolution: f64,
+        /// Omit neighbourhood parcels.
         #[arg(long)]
         no_parcels: bool,
         /// Blend/prune route to run. Defaults to `node-relative`; pass
@@ -107,10 +116,10 @@ enum Command {
         /// Omit for an uncached control; never place this inside the source tree.
         #[arg(long)]
         extraction_cache: Option<PathBuf>,
-        /// District namer. Model calls require an environment key and budget.
+        /// District namer (default `idf`); model calls need an environment key and budget.
         #[arg(long, default_value_t = tolmap::naming::NamerKind::Idf)]
         namer: tolmap::naming::NamerKind,
-        /// OpenRouter model id used when --namer model is selected.
+        /// OpenRouter model id when `--namer model` is selected.
         #[arg(long)]
         namer_model: Option<String>,
         /// A pre-extracted graph (from `dump-graph`) to run the pipeline on
@@ -142,17 +151,22 @@ enum Command {
         #[arg(long, default_value_t = tolmap::extract::InstallMode::Off)]
         install: tolmap::extract::InstallMode,
     },
+    /// Dump the weighted graph after blending and pruning.
     DumpBlend {
+        /// Repository checkout to extract.
         repo: PathBuf,
         /// Defaults to a single "." / "py" source when neither `--pkg`,
         /// `--lang` nor `--all-sources` is given. See `build`'s `--pkg` for
         /// the repeatable/paired multi-source form.
         #[arg(long)]
         pkg: Vec<String>,
+        /// Source language for each `--pkg` (default `py`).
         #[arg(long, value_parser = ["py", "go", "ts", "rs"])]
         lang: Vec<String>,
+        /// Include every source that clears the detection floor.
         #[arg(long)]
         all_sources: bool,
+        /// Output blend dump JSON file.
         #[arg(long)]
         out: PathBuf,
         /// Blend/prune route to report. Defaults to `node-relative`.
@@ -187,9 +201,13 @@ enum Command {
         #[arg(long, default_value_t = tolmap::extract::RefsMode::Hand)]
         refs: tolmap::extract::RefsMode,
     },
+    /// Compare district placement and modularity between two maps.
     Parity {
+        /// Reference map JSON file.
         reference: PathBuf,
+        /// Candidate map JSON file.
         candidate: PathBuf,
+        /// Optional IDF names file (accepted but currently unused).
         #[arg(long)]
         idf_names: Option<PathBuf>,
     },
