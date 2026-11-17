@@ -719,7 +719,7 @@ fn main() -> Result<()> {
                 .collect::<Vec<_>>();
             if format == "json" {
                 println!("{}", serde_json::to_string(&rows)?);
-            } else {
+            } else if !rows.is_empty() {
                 println!("{}", render_repos_text(&rows));
             }
             Ok(())
@@ -1274,6 +1274,11 @@ mod tests {
             render_repos_text(&rows),
             "engine\tlocal\tfresh\t0123456789ab\t2026-11-17T03:00:00Z"
         );
+    }
+
+    #[test]
+    fn repos_text_renders_nothing_for_an_empty_library() {
+        assert_eq!(render_repos_text(&[]), "");
     }
 
     fn build_refs(args: &[&str]) -> tolmap::extract::RefsMode {
