@@ -316,7 +316,11 @@ try {
     assert.equal(await page.locator('[data-lens-note]').count(),0,'overview hides debt file findings');
     // Issue #348: Debt recolours roads and draws no path until one is chosen.
     assert.equal(await page.locator('[data-lens-hop]').count(),0,'Debt draws no path until one is chosen');
-    if (debt.paths.some(path => path.name.startsWith('cycle-'))) assert.ok(await page.locator('[data-lens-cycle-road]').count()>0,'a district cycle recolours its roads');
+    if (debt.paths.some(path => path.name.startsWith('cycle-cut-'))) {
+      assert.ok(await page.locator('[data-lens-cut-road]').count()>0,'a suggested cut recolours its road');
+      const cutKey = await page.locator('[data-lens-cut-road]').first().getAttribute('data-lens-cut-road');
+      assert.match(await page.locator(`path.hit[data-k="${cutKey}"] title`).textContent(),/Suggested cut: .+ → .+, \d+ edges/,'a cut road names its cut direction and edge count');
+    }
     await shot('debt-overview');
     for (let i=0; i<10 && await page.locator('[data-lens-note]').count() === 0; i++) await zoomInSettled(page,1);
     assert.ok(await page.locator('[data-lens-note]').count()>0,'file findings appear past the 40 px gate');

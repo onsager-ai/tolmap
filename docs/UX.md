@@ -247,13 +247,17 @@ anchored to each file, carrying the measured values; and three kinds of path:
 
 Unlike a saved lens, Debt does not draw every path (owner decision,
 2026-11-17, issue #348). At every zoom it recolours the district roads
-instead: a road whose districts are joined by a computed hop of a district
-cycle or cycle cut path closes a district cycle and is drawn red, its width
-still growing with the pair's edge count, with one direction mark along those
-edges (the dominant import direction when they run both ways). A cycle pair
-outside the usual road selection still gets its road; a pair touching an
-island or unconnected district has none. Every other road is unchanged. Each
-path in the panel has **Show on map**: choosing one (or stepping through its
+instead, from the cycle cut paths: a road carrying a suggested cut is red,
+with one direction mark pointing along the cut (the edges the report suggests
+removing; the larger cut when both directions are cut), not the dominant
+import direction: 13 of semon's 15 cut pairs import both ways, and on some
+of them the cut is the larger direction. The red's strength grows with the cut's edge count
+on that pair (2 to 54 on semon), while the road's width still shows its
+traffic. Hover or tap names the cut direction and its edge count, a lower
+bound: a pair whose bundle is past the 20-path cap is not red. A cut pair
+outside the usual road selection still gets its ordinary road, drawn red; a
+pair touching an island or unconnected district has none. Every other road is
+unchanged. Each path in the panel has **Show on map**: choosing one (or stepping through its
 walkthrough) draws that path alone, through the same 40 px file and 110 px
 class-member gates; choosing it again, or another lens, draws none. Choosing
 never moves the camera; only a walkthrough step frames. Share the choice as

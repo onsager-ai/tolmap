@@ -29,23 +29,33 @@ export const DEBT_PATH_LABEL: Record<DebtPathKind, string> = {
   "hidden-coupling": "Hidden coupling: co-changed, no static edge",
 };
 
-/** Issue #348: the directed district pairs `[from, to]` that the debt lens's
- * cycle and cycle-cut paths cross on computed hops. Every such edge joins
- * two districts of one district cycle, so its road closes that cycle. Declared
- * hops claim no edge and contribute nothing. Sorted, without duplicates. */
-export function cycleRoads(paths: readonly ResolvedPath[], files: readonly string[], district: (file: number) => number): [number, number][] {
+/** Issue #348: one suggested cut on a district pair: the debt lens's
+ * cycle-cut paths' computed hops from district `from` to `to`, and how many
+ * edges they cross. */
+export interface CutRoad { from: number; to: number; edges: number }
+
+/** Issue #348: every directed district pair the cycle-cut paths cross on
+ * computed hops, with its edge count. `tolmap debt --format lens` emits one
+ * path per cut bundle (one directed pair, one computed hop per edge) for at
+ * most 20 bundles, so a pair past that cap is absent (a lower bound).
+ * Declared hops claim no edge and count for nothing. Sorted by pair. */
+export function cutRoads(paths: readonly ResolvedPath[], files: readonly string[], district: (file: number) => number): CutRoad[] {
   const index = new Map(files.map((file, i) => [file, i]));
-  const pairs = new Map<string, [number, number]>();
+  const pairs = new Map<string, CutRoad>();
   for (const path of paths) {
-    if (!debtPathKind(path.name)?.startsWith("cycle")) continue;
+    if (debtPathKind(path.name) !== "cycle-cut") continue;
     for (const hop of path.hops) {
       if (!hop.resolved || hop.source !== "computed") continue;
       const districts = hop.via.map(file => index.get(file)).filter((file): file is number => file != null).map(district);
       for (let i = 1; i < districts.length; i++) {
         const from = districts[i - 1], to = districts[i];
-        if (from !== to) pairs.set(`${from}-${to}`, [from, to]);
+        if (from === to) continue;
+        const key = `${from}-${to}`;
+        const road = pairs.get(key) ?? { from, to, edges: 0 };
+        road.edges++;
+        pairs.set(key, road);
       }
     }
   }
-  return [...pairs.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  return [...pairs.values()].sort((a, b) => a.from - b.from || a.to - b.to);
 }

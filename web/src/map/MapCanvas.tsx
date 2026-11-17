@@ -1,4 +1,5 @@
 import type { LensComparison } from "@bindings/LensComparison";
+import type { CutRoad } from "@/lens/debt";
 import type { LensReport } from "@bindings/LensReport";
 import type { LensTarget } from "@bindings/LensTarget";
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
@@ -41,7 +42,7 @@ export interface MapCanvasHandle {
 interface MapCanvasProps {
   doc: MapDocument;
   lens?: LensReport;
-  lensRoads?: readonly (readonly [number, number])[];
+  lensRoads?: readonly CutRoad[];
   lensComparison?: LensComparison;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];

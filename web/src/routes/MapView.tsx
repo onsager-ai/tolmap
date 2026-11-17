@@ -1,6 +1,6 @@
 import { LensComparisonPanel, useLensComparison } from "@/lens/LensComparisonPanel";
 import { LensPanel, useLenses } from "@/lens/LensPanel";
-import { cycleRoads, isDebtLens } from "@/lens/debt";
+import { cutRoads, isDebtLens } from "@/lens/debt";
 import { LensWalkthrough, walkthroughHop, walkthroughStep } from "@/lens/LensWalkthrough";
 import type { LensTarget } from "@bindings/LensTarget";
 import { ComparisonPanel, useComparison } from "@/comparison/ComparisonPanel";
@@ -80,12 +80,12 @@ export function MapView() {
   const lenses = useLenses(owner, repo, indexedCommit ?? search.base ?? search.commit ?? early.commit, search.lens, !!doc && !early.waiting);
   const lensComparison = useLensComparison(owner, repo, search, indexedCommit, mapSha256);
   // Issue #348: the debt lens draws only the finding chosen in the panel or
-  // walkthrough (`path`); its district cycles recolour the roads instead.
+  // walkthrough (`path`); its suggested cuts recolour the roads instead.
   // Saved lenses keep every path.
   const lensReport = search.lens_compare ? undefined : lenses.data?.report;
   const debtLens = !!lensReport && isDebtLens(search.lens);
   const shownLens = useMemo(() => lensReport && debtLens ? { ...lensReport, paths: lensReport.paths.filter(path => path.name === search.path) } : lensReport, [lensReport, debtLens, search.path]);
-  const lensRoads = useMemo(() => doc && lensReport && debtLens ? cycleRoads(lensReport.paths, doc.F, file => D_(doc, file)) : undefined, [doc, lensReport, debtLens]);
+  const lensRoads = useMemo(() => doc && lensReport && debtLens ? cutRoads(lensReport.paths, doc.F, file => D_(doc, file)) : undefined, [doc, lensReport, debtLens]);
   // Issue #248: walkthrough steps. `walkRef` is this render's step function
   // (set below, after the map is known); the keyboard and the one deep-link
   // restore call it, so neither moves the camera on lens selection alone.

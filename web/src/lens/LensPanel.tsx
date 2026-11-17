@@ -48,7 +48,7 @@ export function LensPanel({ lenses, name, select, pick, mode = "full", details, 
     {data && compare && <button onClick={compare}>Compare this lens</button>}
     {data && mode !== "picker" && isDebtLens(name) && !data.report.areas.length && <p data-lens-state="empty">No debt findings at this snapshot. Findings are lower bounds over the map's edges.</p>}
     {data && mode !== "picker" && !(isDebtLens(name) && !data.report.areas.length) && <div data-lens-state={data.report.unresolved.length ? "unresolved" : "loaded"}>
-      {isDebtLens(name) && <p className="lens-meta" data-debt-summary>Debt findings are lower bounds over the map's edges: district cycles, misplaced files, god files, hotspots and files with no inbound edge found. Measured values are in the notes. Red roads close a district cycle; choose Show on map for one path's routes.</p>}
+      {isDebtLens(name) && <p className="lens-meta" data-debt-summary>Debt findings are lower bounds over the map's edges: district cycles, misplaced files, god files, hotspots and files with no inbound edge found. Measured values are in the notes. Red roads carry a suggested cycle cut, stronger with more cut edges, with the mark pointing along the cut; choose Show on map for one path's routes.</p>}
       {data.report.paths.map(path => { const kind = isDebtLens(name) ? debtPathKind(path.name) : undefined; return <section key={path.name}><h3>{path.name}</h3>
         {kind && <p className="lens-meta" data-debt-path-kind={kind}>{DEBT_PATH_LABEL[kind]}</p>}
         {show && <button aria-pressed={focus === path.name} data-lens-focus={path.name} onClick={() => show(focus === path.name ? undefined : path.name)}>Show on map</button>}

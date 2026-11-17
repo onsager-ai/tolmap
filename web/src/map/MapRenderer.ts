@@ -1,6 +1,7 @@
 import type { LensComparison } from "@bindings/LensComparison";
 import type { LensReport } from "@bindings/LensReport";
 import type { LensTarget } from "@bindings/LensTarget";
+import type { CutRoad } from "@/lens/debt";
 // Imperative SVG renderer, ported from the <script> block of
 // viewer/template.html. This is the ONE piece of the app that is not React:
 // see docs/ARCHITECTURE.md, "Rendering: do not put nodes in the React tree".
@@ -172,10 +173,10 @@ function hollowTriangleGlyph(parent: [number, number], child: [number, number], 
 
 export interface MapRenderState {
   lens?: LensReport;
-  /** Issue #348: directed district pairs `[from, to]` whose road closes a
-   * district cycle (the debt lens's `cycleRoads`). drawRoads paints them red
-   * with one direction mark; nothing else about a road changes. */
-  lensRoads?: readonly (readonly [number, number])[];
+  /** Issue #348: the debt lens's suggested cuts by directed district pair
+   * (`cutRoads`). drawRoads paints those roads red, stronger with more cut
+   * edges, with one direction mark along the cut; width still shows traffic. */
+  lensRoads?: readonly CutRoad[];
   lensComparison?: LensComparison;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];
@@ -3039,15 +3040,15 @@ export class MapRenderer {
     const { doc, lensRoads } = this.state!;
     const toScreen = (p: [number, number]): [number, number] => [this.X(p[0]), this.Y(p[1])];
     // Issue #348: the debt lens recolours roads instead of drawing its paths.
-    // `cycle` maps an unordered pair to the directions its cycle edges take.
-    const cycle = new Map<string, Set<number>>();
-    for (const [from, to] of lensRoads ?? []) {
-      const key = `${Math.min(from, to)}-${Math.max(from, to)}`;
-      if (!cycle.has(key)) cycle.set(key, new Set());
-      cycle.get(key)!.add(from);
+    // `cuts` maps an unordered pair to its suggested cuts, larger first.
+    const cuts = new Map<string, CutRoad[]>();
+    for (const road of lensRoads ?? []) {
+      const key = `${Math.min(road.from, road.to)}-${Math.max(road.from, road.to)}`;
+      cuts.set(key, [...(cuts.get(key) ?? []), road].sort((x, y) => y.edges - x.edges || x.from - y.from));
     }
+    const maxCut = Math.max(1, ...(lensRoads ?? []).map((road) => road.edges));
     const plans = [...this.roadPlan];
-    for (const key of cycle.keys()) {
+    for (const key of cuts.keys()) {
       const flow = this.roadFlows.get(key);
       if (flow && !plans.some((plan) => plan.a === flow.a && plan.b === flow.b)) plans.push(planRoad(doc, flow));
     }
@@ -3057,11 +3058,12 @@ export class MapRenderer {
       const districtB = doc.districts[String(plan.b)];
       if (!districtA || !districtB) continue;
       // Dominant direction: the ribbon's single chevron (or the first of two)
-      // always points the way most imports actually flow. A cycle road's one
-      // chevron points along its cycle edges, or the dominant way when they
-      // run both ways.
-      const sources = cycle.get(`${plan.a}-${plan.b}`);
-      const forward = sources?.size === 1 ? sources.has(plan.a) : plan.ab >= plan.ba;
+      // always points the way most imports actually flow. A cut road's one
+      // chevron points along its suggested cut instead (the larger one if
+      // both directions are cut): 13 of semon's 15 cut pairs import both
+      // ways, so traffic direction says nothing about what to remove.
+      const cut = cuts.get(`${plan.a}-${plan.b}`)?.[0];
+      const forward = cut ? cut.from === plan.a : plan.ab >= plan.ba;
       const sourceDistrict = forward ? districtA : districtB;
       const targetDistrict = forward ? districtB : districtA;
       const raWorld = forward ? plan.raWorld : plan.rbWorld;
@@ -3071,8 +3073,8 @@ export class MapRenderer {
       // "When minor/major >= 0.35, draw two chevrons ... pointing opposite
       // ways" (spec) -- a near-balanced pair of directed counts reads as
       // effectively bidirectional traffic.
-      const both = !sources && major > 0 && minor / major >= 0.35;
-      const widthPx = (sources ? 2.5 : 1.5) + 6 * Math.sqrt(plan.total / this.roadMaxTotal);
+      const both = !cut && major > 0 && minor / major >= 0.35;
+      const widthPx = 1.5 + 6 * Math.sqrt(plan.total / this.roadMaxTotal);
       const geom = buildRoadGeom({
         a: sourceDistrict.c,
         b: targetDistrict.c,
@@ -3089,10 +3091,11 @@ export class MapRenderer {
       g.appendChild(
         el("path", {
           d: "M" + geom.polygon.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L") + "Z",
-          fill: sources ? "var(--lens-red)" : "var(--ink)",
-          "fill-opacity": sources ? 0.85 : 0.34,
+          fill: cut ? "var(--lens-red)" : "var(--ink)",
+          // A 2-edge cut stays a faint red, the map's largest cut near solid.
+          "fill-opacity": cut ? (0.3 + 0.65 * Math.sqrt(cut.edges / maxCut)).toFixed(3) : 0.34,
           "pointer-events": "none",
-          ...(sources ? { "data-lens-cycle-road": key } : {}),
+          ...(cut ? { "data-lens-cut-road": key, "data-lens-cut-edges": cut.edges } : {}),
           // Carries the SAME data-k as the invisible hit path below (the
           // multi-polygon-district pattern this file already uses -- see
           // paint()'s district loop, one path per polygon, same data-k) so
@@ -3135,7 +3138,7 @@ export class MapRenderer {
       const nameA = doc.names[String(plan.a)] ?? `district ${plan.a}`;
       const nameB = doc.names[String(plan.b)] ?? `district ${plan.b}`;
       const title = el("title", {});
-      title.textContent = `${nameA} → ${nameB}: ${plan.ab} imports\n${nameB} → ${nameA}: ${plan.ba} imports${sources ? "\nCloses a district cycle" : ""}`;
+      title.textContent = `${nameA} → ${nameB}: ${plan.ab} imports\n${nameB} → ${nameA}: ${plan.ba} imports${cut ? `\nSuggested cut: ${doc.names[String(cut.from)] ?? `district ${cut.from}`} → ${doc.names[String(cut.to)] ?? `district ${cut.to}`}, ${cut.edges} edges` : ""}`;
       hit.appendChild(title);
       g.appendChild(hit);
     }
@@ -4900,6 +4903,7 @@ export class MapRenderer {
       doc,
       lens,
       lensComparison,
+      lensRoads: this.state!.lensRoads,
       districtPaths,
       roadPlan: this.drawnRoads,
       streetCache: this.streetCache,
