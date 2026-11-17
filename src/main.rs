@@ -2,7 +2,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -681,6 +681,23 @@ fn wants_multi_source(pkg: &[String], lang: &[String], all_sources: bool) -> boo
     all_sources || pkg.len() > 1 || lang.len() > 1
 }
 
+fn build_name(checkout: &Path, explicit: Option<String>) -> Option<String> {
+    explicit.or_else(|| {
+        let canonical = checkout.canonicalize().ok()?;
+        let name = canonical.file_name()?.to_str()?;
+        (!name.is_empty() && name != ".").then(|| name.to_owned())
+    })
+}
+
+fn missing_build_name() -> ! {
+    Cli::command()
+        .error(
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "could not derive a usable output name from the checkout; pass --name",
+        )
+        .exit()
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let data = cli.data.as_deref();
@@ -819,12 +836,13 @@ fn main() -> Result<()> {
                 }
                 (None, None) => anyhow::bail!("pass a repository, or a pre-extracted --graph"),
                 (Some(repo), None) => {
+                    let name = build_name(&repo, name).unwrap_or_else(|| missing_build_name());
                     if wants_multi_source(&pkg, &lang, all_sources) {
                         let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
                         tolmap::geometry::build_multi_warm_with_progress(
                             &repo,
                             &sources,
-                            name.as_deref(),
+                            Some(&name),
                             &out,
                             resolution,
                             tolmap::geometry::BuildFeatures {
@@ -849,7 +867,7 @@ fn main() -> Result<()> {
                             &repo,
                             &pkg,
                             &lang,
-                            name.as_deref(),
+                            Some(&name),
                             &out,
                             resolution,
                             tolmap::geometry::BuildFeatures {
@@ -1311,5 +1329,33 @@ mod tests {
             build_refs(&["tolmap", "build", "repo", "--refs", "scip"]),
             RefsMode::Scip
         );
+    }
+
+    #[test]
+    fn build_name_uses_canonical_checkout_basename_for_dot_and_relative_paths() {
+        for checkout in [Path::new("."), Path::new("src")] {
+            let canonical = checkout.canonicalize().expect("checkout exists");
+            let expected = canonical
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("checkout has a UTF-8 basename");
+            assert_eq!(build_name(checkout, None).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn build_name_preserves_an_explicit_name() {
+        assert_eq!(
+            build_name(
+                Path::new("/path/that/does/not/exist"),
+                Some("chosen".into())
+            ),
+            Some("chosen".into())
+        );
+    }
+
+    #[test]
+    fn build_name_is_unavailable_for_a_canonical_root_path() {
+        assert_eq!(build_name(Path::new("/"), None), None);
     }
 }
