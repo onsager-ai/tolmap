@@ -317,6 +317,12 @@ enum Command {
         /// Include full cycle evidence bundles instead of compact summaries.
         #[arg(long, value_enum, default_value_t = tolmap::debt::CycleEvidence::Compact)]
         cycle_evidence: tolmap::debt::CycleEvidence,
+        /// Hold the district partition to this base map: files in both keep
+        /// the base district and name, new files are placed by their edges
+        /// (as `check` does) or counted unplaced. Compare such reports with
+        /// `debt diff` to see a change without repartitioning noise.
+        #[arg(long)]
+        partition_from: Option<PathBuf>,
     },
 
     /// Lenses (issue #241, docs/API.md): named overlays of areas, paths and
@@ -1000,6 +1006,7 @@ fn main() -> Result<()> {
             district,
             top,
             cycle_evidence,
+            partition_from,
         } => {
             let code = match command {
                 Some(DebtCommand::Diff { before, after }) => {
@@ -1020,6 +1027,7 @@ fn main() -> Result<()> {
                         district.as_deref(),
                         top,
                         cycle_evidence,
+                        partition_from.as_deref(),
                     ),
                     Err(error) => {
                         eprintln!("tolmap debt: {error:#}");

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 7;
+pub const DEBT_REPORT_VERSION: u32 = 8;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -291,12 +291,30 @@ pub enum CycleEvidence {
     Full,
 }
 
+// The base map a pinned report holds its partition to, and what happened to
+// the head's new files. `commit` is null when the base map does not record one.
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct PinnedBase {
+    pub map_sha256: String,
+    pub commit: Option<String>,
+    // Files absent from the base that took a base district by edge weight.
+    pub placed_new_files: usize,
+    // Files absent from the base with no edge to a placed file.
+    pub unplaced_new_files: usize,
+    // The unplaced paths, sorted. They count in file-level findings only.
+    pub unplaced_paths: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DebtReport {
     pub version: u32,
     pub cycle_evidence: CycleEvidence,
     pub repo: String,
+    // Present only when the report was computed against a base map's
+    // partition (`--partition-from`); absent for an ordinary report.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<PinnedBase>,
     /// Counts before the selected CLI filters are applied.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unfiltered_counts: Option<BTreeMap<String, usize>>,
@@ -608,7 +626,7 @@ fn has_cycle(graph: &BTreeMap<String, BTreeSet<String>>) -> bool {
         .any(|node| !visited.contains(node) && visit(node, graph, &mut visiting, &mut visited))
 }
 
-fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
+fn cycles(map: &MapDocument, unplaced: Option<usize>) -> Vec<DistrictCycle> {
     let package_roots = map.debt.as_ref().and_then(|debt| {
         debt.package_roots.as_ref().map(|roots| {
             roots
@@ -636,7 +654,9 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
             continue;
         }
         let (from_district, to_district) = (district(from), district(to));
-        if from_district == to_district {
+        if from_district == to_district
+            || unplaced.is_some_and(|u| from_district == u || to_district == u)
+        {
             continue;
         }
         graph.entry(from_district).or_default().insert(to_district);
@@ -761,6 +781,12 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
 }
 
 pub fn findings(map: &MapDocument) -> DebtReport {
+    findings_with_unplaced(map, None)
+}
+
+// `unplaced` is the district id that stands for files with no base district:
+// they take part in file-level findings but in no district cycle or tally.
+fn findings_with_unplaced(map: &MapDocument, unplaced: Option<usize>) -> DebtReport {
     let n = map.files.len();
     let district = |f: usize| map.nodes[f].district();
     let file_edges = map
@@ -809,14 +835,22 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     let mut inbound = vec![0usize; n];
     let mut outbound = vec![0usize; n];
     let mut by_district: Vec<BTreeMap<usize, usize>> = vec![BTreeMap::new(); n];
+    // An unplaced file (pinned reports) has no district, so an edge to or from
+    // one has no district side and feeds no tally.
+    let tally = |by_district: &mut Vec<BTreeMap<usize, usize>>, a: usize, b: usize| {
+        if unplaced.is_some_and(|u| district(a) == u || district(b) == u) {
+            return;
+        }
+        *by_district[a].entry(district(b)).or_default() += 1;
+        *by_district[b].entry(district(a)).or_default() += 1;
+    };
     for &[a, b] in &map.edges {
         if a == b {
             continue;
         }
         outbound[a] += 1;
         inbound[b] += 1;
-        *by_district[a].entry(district(b)).or_default() += 1;
-        *by_district[b].entry(district(a)).or_default() += 1;
+        tally(&mut by_district, a, b);
     }
     // A Rust `mod` declaration is not a graph edge: it names no item and must
     // remain outside extraction, blending, clustering and layout. For this
@@ -828,8 +862,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             if a == b || file_edges.contains(&(a.min(b), a.max(b))) {
                 continue;
             }
-            *by_district[a].entry(district(b)).or_default() += 1;
-            *by_district[b].entry(district(a)).or_default() += 1;
+            tally(&mut by_district, a, b);
         }
     }
 
@@ -1108,6 +1141,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
         version: DEBT_REPORT_VERSION,
         cycle_evidence: CycleEvidence::Full,
         repo: map.repo.clone(),
+        pinned: None,
         unfiltered_counts: None,
         filters: None,
         filtered_counts: None,
@@ -1139,7 +1173,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             entry_stem_suffixes: strings(ENTRY_STEM_SUFFIXES),
         },
         coverage: map.coverage.clone(),
-        cycles: cycles(map),
+        cycles: cycles(map, unplaced),
         misplaced,
         god_files,
         hotspots,
@@ -1572,6 +1606,16 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
         "debt findings for {} ({} files, {} edges); counts are lower bounds",
         report.repo, report.files, report.edges
     );
+    if let Some(pin) = &report.pinned {
+        let _ = writeln!(
+            out,
+            "pinned to base map sha256={} commit={}: {} new files placed, {} unplaced",
+            pin.map_sha256,
+            pin.commit.as_deref().unwrap_or("unknown"),
+            pin.placed_new_files,
+            pin.unplaced_new_files
+        );
+    }
     if report.cycle_evidence == CycleEvidence::Compact {
         out.push_str("cycle evidence: compact (use --cycle-evidence full for bundles)\n");
     }
@@ -1901,12 +1945,141 @@ fn apply_filters(
     }
 }
 
+// Display name for the id that marks files that are new in the head and have no
+// edge to a placed file. It is not a base district: district cycles and
+// misplaced tallies skip it, and only file-level findings show it.
+const UNPLACED_DISTRICT: &str = "(unplaced)";
+
+// The head map with the base's district membership and names, so the debt
+// computation measures the change and not a repartition. Files in both maps
+// (matched by path) keep the base district; a new file takes the base
+// district holding most of its edges to such files (`check::place`, ties to
+// the lowest id), else is unplaced. Edges in a map carry no weight,
+// so each counts once. Base-only files are absent, as in the head.
+fn relabel_to_base(
+    head: &MapDocument,
+    base: &MapDocument,
+) -> (MapDocument, usize, usize, Vec<String>) {
+    let base_district = base
+        .files
+        .iter()
+        .zip(&base.nodes)
+        .map(|(file, node)| (file.as_str(), node.district()))
+        .collect::<BTreeMap<_, _>>();
+    let inherited = head
+        .files
+        .iter()
+        .map(|file| base_district.get(file.as_str()).copied())
+        .collect::<Vec<_>>();
+    let mut weights = vec![BTreeMap::<usize, f64>::new(); head.files.len()];
+    for &[a, b] in &head.edges {
+        if a == b {
+            continue;
+        }
+        for (new, old) in [(a, b), (b, a)] {
+            if inherited[new].is_none() {
+                if let Some(district) = inherited[old] {
+                    *weights[new].entry(district).or_default() += 1.0;
+                }
+            }
+        }
+    }
+    let unplaced = base
+        .names
+        .keys()
+        .filter_map(|id| id.parse::<usize>().ok())
+        .chain(inherited.iter().flatten().copied())
+        .max()
+        .map_or(0, |max| max + 1);
+    let (mut placed, mut left) = (0, Vec::<String>::new());
+    let mut relabeled = head.clone();
+    for (file, node) in relabeled.nodes.iter_mut().enumerate() {
+        node.0 .0 = match inherited[file] {
+            Some(district) => district,
+            None => match crate::check::place(&weights[file]) {
+                Some(district) => {
+                    placed += 1;
+                    district
+                }
+                None => {
+                    left.push(head.files[file].clone());
+                    unplaced
+                }
+            },
+        };
+    }
+    relabeled.names = base.names.clone();
+    relabeled.districts = base.districts.clone();
+    left.sort();
+    if !left.is_empty() {
+        relabeled
+            .names
+            .insert(unplaced.to_string(), UNPLACED_DISTRICT.to_owned());
+    }
+    (relabeled, placed, unplaced, left)
+}
+
+// Findings for `head` held to `base`'s partition. `base_sha256` and
+// `base_commit` identify the base in the report.
+pub fn findings_pinned(
+    head: &MapDocument,
+    base: &MapDocument,
+    base_sha256: String,
+    base_commit: Option<String>,
+) -> (MapDocument, DebtReport) {
+    let (relabeled, placed, unplaced, left) = relabel_to_base(head, base);
+    let mut report = findings_with_unplaced(&relabeled, (!left.is_empty()).then_some(unplaced));
+    report.pinned = Some(PinnedBase {
+        map_sha256: base_sha256,
+        commit: base_commit,
+        placed_new_files: placed,
+        unplaced_new_files: left.len(),
+        unplaced_paths: left,
+    });
+    (relabeled, report)
+}
+
+// A base map, read from a map JSON or a service store file.
+fn read_base(path: &std::path::Path) -> Result<(MapDocument, String, Option<String>), String> {
+    #[derive(Deserialize)]
+    struct Stored {
+        #[serde(flatten)]
+        map: MapDocument,
+        #[serde(default)]
+        commit: Option<String>,
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let stored: Stored = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("{}: not a map document: {e}", path.display()))?;
+    if stored.map.files.len() != stored.map.nodes.len() {
+        return Err(format!(
+            "{}: the F and N arrays differ in length; it is not a tolmap map",
+            path.display()
+        ));
+    }
+    let sha256 = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(&bytes))
+    };
+    Ok((stored.map, sha256, stored.commit))
+}
+
 // `tolmap debt`. Findings are informational: 0 on success, 2 on an
 // unreadable map.
 pub fn run(map: &std::path::Path, format: &str) -> i32 {
-    run_filtered(map, format, &[], None, None, None, CycleEvidence::Compact)
+    run_filtered(
+        map,
+        format,
+        &[],
+        None,
+        None,
+        None,
+        CycleEvidence::Compact,
+        None,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_filtered(
     map: &std::path::Path,
     format: &str,
@@ -1915,6 +2088,7 @@ pub fn run_filtered(
     district: Option<&str>,
     top: Option<usize>,
     cycle_evidence: CycleEvidence,
+    partition_from: Option<&std::path::Path>,
 ) -> i32 {
     let bytes = match std::fs::read(map) {
         Ok(bytes) => bytes,
@@ -1930,7 +2104,19 @@ pub fn run_filtered(
             return 2;
         }
     };
-    let mut report = findings(&doc);
+    let (doc, mut report) = match partition_from {
+        None => {
+            let report = findings(&doc);
+            (doc, report)
+        }
+        Some(base) => match read_base(base) {
+            Ok((base, sha256, commit)) => findings_pinned(&doc, &base, sha256, commit),
+            Err(e) => {
+                eprintln!("tolmap debt: --partition-from {e}");
+                return 2;
+            }
+        },
+    };
     apply_filters(&mut report, &doc, kinds, path, district, top);
     if format != "lens" && cycle_evidence == CycleEvidence::Compact {
         compact_cycles(&mut report);
@@ -2049,6 +2235,24 @@ pub fn run_diff(before_path: &std::path::Path, after_path: &std::path::Path) -> 
             "tolmap debt diff: unsupported DebtReport version (expected {DEBT_REPORT_VERSION})"
         );
         return 2;
+    }
+    match (&before.pinned, &after.pinned) {
+        (None, None) => {}
+        (Some(a), Some(b)) if a.map_sha256 == b.map_sha256 => {}
+        (Some(_), Some(_)) => {
+            eprintln!(
+                "tolmap debt diff: the reports are pinned to different base maps; \
+                 rebuild both with the same --partition-from"
+            );
+            return 2;
+        }
+        _ => {
+            eprintln!(
+                "tolmap debt diff: one report is pinned to a base partition and the other is not; \
+                 compare reports computed the same way"
+            );
+            return 2;
+        }
     }
     if before.filters.is_some() || after.filters.is_some() {
         eprintln!(
