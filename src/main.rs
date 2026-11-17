@@ -94,13 +94,13 @@ enum Command {
         /// Name for the output map; required with `--graph`.
         #[arg(long)]
         name: Option<String>,
-        /// Output directory for maps (default `out`).
+        /// Output directory for maps.
         #[arg(long, default_value = "out")]
         out: PathBuf,
-        /// Leiden resolution (default 1.1).
+        /// Leiden resolution.
         #[arg(long, default_value_t = 1.1)]
         resolution: f64,
-        /// Omit neighbourhood parcels.
+        /// Skip drawing file footprints (`P`); partition and layout are unchanged.
         #[arg(long)]
         no_parcels: bool,
         /// Blend/prune route to run. Defaults to `node-relative`; pass
@@ -116,7 +116,7 @@ enum Command {
         /// Omit for an uncached control; never place this inside the source tree.
         #[arg(long)]
         extraction_cache: Option<PathBuf>,
-        /// District namer (default `idf`); model calls need an environment key and budget.
+        /// District namer; model calls need an environment key and budget.
         #[arg(long, default_value_t = tolmap::naming::NamerKind::Idf)]
         namer: tolmap::naming::NamerKind,
         /// OpenRouter model id when `--namer model` is selected.
