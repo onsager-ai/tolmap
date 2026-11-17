@@ -54,7 +54,13 @@ unreached_generated_files_excluded: number, unreached: Array<UnreachedFile>,
 /**
  * False for maps built before the Rust declaration sidecar existed.
  */
-rust_mod_reachability_measured: boolean, undeclared_rust: Array<UndeclaredRustFile>, 
+rust_mod_reachability_measured: boolean, 
+/**
+ * False when the map has no descendant fan-in sidecar: it predates the
+ * measurement, or no file imports its own `mod` ancestor. God-file
+ * fan-in is then the raw value.
+ */
+descendant_fanin_measured: boolean, undeclared_rust: Array<UndeclaredRustFile>, 
 /**
  * False for maps built before statically readable bundler entries were
  * retained in the debt sidecar.
