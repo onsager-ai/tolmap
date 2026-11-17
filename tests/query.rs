@@ -37,6 +37,27 @@ fn pinned_file_symbol_and_ambiguity() {
 }
 
 #[test]
+fn overview_discloses_measured_and_unknown_test_exclusions() {
+    let mut s = fixture("tolmap");
+    let old = s.overview(0);
+    assert!(serde_json::to_value(&old).unwrap()["query"]["excluded_tests"].is_null());
+    assert!(tolmap::query::text(&old).contains("excluded test files: unknown"));
+    for count in [0, 17] {
+        s.map.excluded_tests = Some(count);
+        let report = s.overview(0);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["query"]["excluded_tests"], count);
+        assert!(json["query"]["test_exclusion_rule"]
+            .as_str()
+            .unwrap()
+            .contains(".test."));
+        assert!(
+            tolmap::query::text(&report).contains(&format!("excluded test files: {count}; rule:"))
+        );
+    }
+}
+
+#[test]
 fn missing_paths_are_explicit_and_suggestions_have_stable_ties() {
     let mut s = fixture("tolmap");
     s.map.files = vec!["src/b.ts".into(), "src/a.ts".into(), "lib/z.ts".into()];

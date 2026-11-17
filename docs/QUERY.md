@@ -110,7 +110,13 @@ one trailing newline. Paths and district names replace all internal indices.
   `{"kind":"dependency","path":...,"district":...,"direction":"in|out"}`,
   sorted by path then direction (`in` first).
 - **overview**: `query` includes `files`, `imports` (map edge rows), `districts`,
-  and `language` (the map's language label). Rows are
+  and `language` (the map's language label), `excluded_tests` and
+  `test_exclusion_rule`. The excluded count is measured at source build time,
+  deduplicated across selected roots; null means an older map or graph-only build
+  did not record it. The rule excludes `test/` and `tests/`, plus `__tests__/`
+  for Go/TypeScript/Rust, Go `*_test.go`, and TypeScript `.test.`/`.spec.`
+  filenames. Other collection exclusions still apply; inline tests are not
+  counted. Text prints the count (or unknown) and this rule. Rows are
   `{"kind":"district","name":...,"files":N,"imports_in":N,"imports_out":N}`.
   Counts describe cross-district imports only; internal imports are excluded.
   Rows sort by descending file count, then name, with stored district order

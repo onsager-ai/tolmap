@@ -1969,16 +1969,33 @@ pub(crate) fn source_files(repo: &Path, pkg: &str, language: LanguageKind) -> Re
         root.display()
     );
     let mut result = Vec::new();
-    collect_source_files(repo, &root, language, &mut result)?;
+    collect_source_files(repo, &root, language, &mut result, false)?;
     result.sort();
     Ok(result)
 }
+
+/// Count only files omitted by the collector's test rules, within selected
+/// source roots. Other exclusions (vendor, generated, declarations) still apply.
+pub(crate) fn excluded_tests(repo: &Path, sources: &[(String, LanguageKind)]) -> Result<usize> {
+    let mut excluded = BTreeSet::new();
+    let mut included = BTreeSet::new();
+    for (pkg, language) in sources {
+        included.extend(source_files(repo, pkg, *language)?);
+        let mut candidates = Vec::new();
+        collect_source_files(repo, &repo.join(pkg), *language, &mut candidates, true)?;
+        excluded.extend(candidates);
+    }
+    Ok(excluded.difference(&included).count())
+}
+
+pub const TEST_EXCLUSION_RULE: &str = "within selected source roots: test/ and tests/ directories; also __tests__/ for Go, TypeScript and Rust; Go *_test.go; TypeScript .test. and .spec. filenames (.ts/.tsx). Other collection exclusions still apply; inline tests are not counted";
 
 fn collect_source_files(
     repo: &Path,
     directory: &Path,
     language: LanguageKind,
     result: &mut Vec<String>,
+    include_tests: bool,
 ) -> Result<()> {
     let mut entries = fs::read_dir(directory)
         .with_context(|| format!("read directory {}", directory.display()))?
@@ -1996,8 +2013,10 @@ fn collect_source_files(
                 }
                 LanguageKind::Rust => rust::skip_dir(&name),
             };
-            if !skip {
-                collect_source_files(repo, &path, language, result)?;
+            let test_directory = matches!(name.as_str(), "test" | "tests")
+                || (language != LanguageKind::Python && name == "__tests__");
+            if !skip || (include_tests && test_directory) {
+                collect_source_files(repo, &path, language, result, include_tests)?;
             }
             continue;
         }
@@ -2006,7 +2025,9 @@ fn collect_source_files(
         }
         let accepted = match language {
             LanguageKind::Python => name.ends_with(".py"),
-            LanguageKind::Go => name.ends_with(".go") && !name.ends_with("_test.go"),
+            LanguageKind::Go => {
+                name.ends_with(".go") && (include_tests || !name.ends_with("_test.go"))
+            }
             LanguageKind::Rust => name.ends_with(".rs"),
             LanguageKind::TypeScript => {
                 // `.tsx` alongside `.ts`: the import resolver
@@ -2019,8 +2040,7 @@ fn collect_source_files(
                 // exclusion is added for it.
                 (name.ends_with(".ts") || name.ends_with(".tsx"))
                     && !name.ends_with(".d.ts")
-                    && !name.contains(".test.")
-                    && !name.contains(".spec.")
+                    && (include_tests || (!name.contains(".test.") && !name.contains(".spec.")))
             }
         };
         if accepted {
@@ -9903,6 +9923,43 @@ mod tests {
         assert_eq!(
             files,
             vec!["src/Foo.tsx".to_owned(), "src/bar.ts".to_owned()]
+        );
+    }
+
+    #[test]
+    fn excluded_test_measurement_keeps_other_filters_and_deduplicates_roots() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for path in [
+            "src/main.ts",
+            "src/a.test.ts",
+            "src/b.spec.tsx",
+            "tests/unit.ts",
+            "src/__tests__/unit.ts",
+            "node_modules/tests/no.ts",
+            "tests/types.d.ts",
+            "src/a_test.go",
+            "src/main.go",
+            "tests/unit.py",
+            "tests/unit.rs",
+        ] {
+            write(dir.path(), path, "");
+        }
+        let ts = LanguageKind::TypeScript;
+        assert_eq!(
+            excluded_tests(dir.path(), &[(".".into(), ts), ("src".into(), ts)]).unwrap(),
+            4
+        );
+        assert_eq!(
+            excluded_tests(dir.path(), &[(".".into(), LanguageKind::Go)]).unwrap(),
+            1
+        );
+        assert_eq!(
+            excluded_tests(dir.path(), &[(".".into(), LanguageKind::Python)]).unwrap(),
+            1
+        );
+        assert_eq!(
+            excluded_tests(dir.path(), &[(".".into(), LanguageKind::Rust)]).unwrap(),
+            1
         );
     }
 

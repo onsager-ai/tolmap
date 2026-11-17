@@ -93,6 +93,10 @@ pub enum Query {
         imports: usize,
         districts: usize,
         language: String,
+        #[serde(default)]
+        excluded_tests: Option<usize>,
+        #[serde(default)]
+        test_exclusion_rule: String,
     },
     Route {
         from: String,

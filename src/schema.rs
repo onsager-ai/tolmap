@@ -353,6 +353,9 @@ pub struct Neighbourhood {
 #[ts(export)]
 pub struct MapDocument {
     pub repo: String,
+    /// Absent on maps built before test-exclusion measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_tests: Option<usize>,
     pub q: f64,
     pub names: BTreeMap<String, String>,
     pub districts: BTreeMap<String, District>,

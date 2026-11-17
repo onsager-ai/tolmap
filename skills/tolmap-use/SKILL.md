@@ -65,7 +65,9 @@ tolmap where 'src/bin/generate_types.rs::main' --map "$MAP"
 tolmap route src/main.rs src/schema.rs --map "$MAP"
 ```
 
-`overview` lists districts, not entry landmarks; use manifests/source to discover
+`overview` reports `query.excluded_tests` and `query.test_exclusion_rule`;
+a null count means unmeasured by this map, not zero. Counts cover selected source
+roots and exclude inline tests. It lists districts, not entry landmarks; use manifests/source to discover
 entry paths. Paths are exact repository-relative paths, with `/`. Missing path
 lookups report `query.missing_path` and nearest mapped `query.suggestions`;
 suggestions are not matches. JSON is the default;

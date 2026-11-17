@@ -383,6 +383,8 @@ impl Snapshot {
                 imports: self.map.edges.len(),
                 districts: self.map.districts.len(),
                 language: self.map.lang.clone(),
+                excluded_tests: self.map.excluded_tests,
+                test_exclusion_rule: crate::extract::TEST_EXCLUSION_RULE.into(),
             },
             limit,
             results,
@@ -612,9 +614,20 @@ pub fn text(report: &QueryResponse) -> String {
             imports,
             districts,
             language,
-        } => out.push_str(&format!(
-            "{files} files, {imports} imports, {districts} districts, language {language}\n"
-        )),
+            excluded_tests,
+            test_exclusion_rule,
+        } => {
+            out.push_str(&format!(
+                "{files} files, {imports} imports, {districts} districts, language {language}\n"
+            ));
+            let count = excluded_tests.map_or_else(
+                || "unknown (not recorded by this map)".into(),
+                |n| n.to_string(),
+            );
+            out.push_str(&format!(
+                "excluded test files: {count}; rule: {test_exclusion_rule}\n"
+            ));
+        }
         Query::Route { edge_kind, .. } => out.push_str(&format!(
             "file import path ({edge_kind:?}); not a runtime call chain\n"
         )),
