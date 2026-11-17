@@ -26,7 +26,7 @@ enum DebtCommand {
 
 #[derive(Debug, Args)]
 struct StatusCliArgs {
-    /// Registered repository to inspect.
+    /// Registered repository to inspect (same as --repo).
     #[arg(value_name = "REPO", conflicts_with = "repo_flag")]
     repo: Option<String>,
     /// Registered repository to inspect.
@@ -1228,6 +1228,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn version_flag_is_handled() {
