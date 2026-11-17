@@ -3107,7 +3107,26 @@ export class MapRenderer {
           "data-k": key,
         }),
       );
-      for (const chev of geom.chevrons) {
+      // Issue #348: the cut direction is the point of a cut road, and the
+      // ribbon's own notch was nearly invisible on its red at overview. One
+      // larger chevron, re-centred from the geometry's mid-road chevron:
+      // text-coloured over a canvas halo, wider than the ribbon, above it.
+      if (cut) {
+        const chev = geom.chevrons[0];
+        const mx = (chev.back1[0] + chev.back2[0]) / 2, my = (chev.back1[1] + chev.back2[1]) / 2;
+        const span = Math.hypot(chev.tip[0] - mx, chev.tip[1] - my) || 1;
+        const ux = (chev.tip[0] - mx) / span, uy = (chev.tip[1] - my) / span;
+        const cx = mx + ux * span * (0.5 / 1.1), cy = my + uy * span * (0.5 / 1.1);
+        const size = Math.max(widthPx * 2.2, 14);
+        const d = `M${(cx - ux * size * 0.45 - uy * size * 0.6).toFixed(1)} ${(cy - uy * size * 0.45 + ux * size * 0.6).toFixed(1)}`
+          + `L${(cx + ux * size * 0.45).toFixed(1)} ${(cy + uy * size * 0.45).toFixed(1)}`
+          + `L${(cx - ux * size * 0.45 + uy * size * 0.6).toFixed(1)} ${(cy - uy * size * 0.45 - ux * size * 0.6).toFixed(1)}`;
+        const stroke = Math.max(2.5, size * 0.16);
+        for (const [color, w] of [["var(--canvas)", stroke + 3], ["var(--on)", stroke]] as const) {
+          g.appendChild(el("path", { d, fill: "none", stroke: color, "stroke-width": w.toFixed(2), "stroke-linecap": "round", "stroke-linejoin": "round", "pointer-events": "none", ...(color === "var(--on)" ? { "data-lens-cut-direction": key } : {}) }));
+        }
+      }
+      for (const chev of cut ? [] : geom.chevrons) {
         g.appendChild(
           el("path", {
             d: `M${chev.back1[0].toFixed(1)} ${chev.back1[1].toFixed(1)}L${chev.tip[0].toFixed(1)} ${chev.tip[1].toFixed(1)}L${chev.back2[0].toFixed(1)} ${chev.back2[1].toFixed(1)}`,

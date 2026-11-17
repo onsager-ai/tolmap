@@ -318,6 +318,7 @@ try {
     assert.equal(await page.locator('[data-lens-hop]').count(),0,'Debt draws no path until one is chosen');
     if (debt.paths.some(path => path.name.startsWith('cycle-cut-'))) {
       assert.ok(await page.locator('[data-lens-cut-road]').count()>0,'a suggested cut recolours its road');
+      assert.equal(await page.locator('[data-lens-cut-direction]').count(),await page.locator('[data-lens-cut-road]').count(),'one direction mark per cut road');
       const cutKey = await page.locator('[data-lens-cut-road]').first().getAttribute('data-lens-cut-road');
       assert.match(await page.locator(`path.hit[data-k="${cutKey}"] title`).textContent(),/Suggested cut: .+ → .+, \d+ edges/,'a cut road names its cut direction and edge count');
     }

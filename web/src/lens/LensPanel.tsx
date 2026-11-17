@@ -51,8 +51,10 @@ export function LensPanel({ lenses, name, select, pick, mode = "full", details, 
       {isDebtLens(name) && <p className="lens-meta" data-debt-summary>Debt findings are lower bounds over the map's edges: district cycles, misplaced files, god files, hotspots and files with no inbound edge found. Measured values are in the notes. Red roads carry a suggested cycle cut, stronger with more cut edges, with the mark pointing along the cut; choose Show on map for one path's routes.</p>}
       {data.report.paths.map(path => { const kind = isDebtLens(name) ? debtPathKind(path.name) : undefined; return <section key={path.name}><h3>{path.name}</h3>
         {kind && <p className="lens-meta" data-debt-path-kind={kind}>{DEBT_PATH_LABEL[kind]}</p>}
-        {show && <button aria-pressed={focus === path.name} data-lens-focus={path.name} onClick={() => show(focus === path.name ? undefined : path.name)}>Show on map</button>}
-        {walk && path.stops.length > 0 && <button data-lens-walk-start={path.name} onClick={() => walk(path.name)}>Start walkthrough</button>}<ol>{path.stops.map((stop, index) => {
+        {(show || (walk && path.stops.length > 0)) && <div className="lens-path-actions">
+          {show && <button aria-pressed={focus === path.name} data-lens-focus={path.name} onClick={() => show(focus === path.name ? undefined : path.name)}>Show on map</button>}
+          {walk && path.stops.length > 0 && <button data-lens-walk-start={path.name} onClick={() => walk(path.name)}>Start walkthrough</button>}
+        </div>}<ol>{path.stops.map((stop, index) => {
         const hop = path.hops.find(item => item.to === index);
         return <li key={index} data-lens-stop-row={index}>
           {hop && <p className="lens-meta">{hop.resolved ? hop.source === "declared" ? "Declared" : `Computed · ${hop.edge_kind}` : "Unresolved hop"}{hop.reason ? ` — ${hop.reason}` : ""}</p>}
