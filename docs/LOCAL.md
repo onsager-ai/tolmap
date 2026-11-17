@@ -7,6 +7,7 @@ tolmap add /path/to/checkout --name engine --all-sources
 tolmap add owner/name
 tolmap add --scan /path/to/projects
 tolmap repos
+tolmap repos --format text
 tolmap status --repo engine
 tolmap refresh engine
 tolmap web
@@ -21,6 +22,11 @@ mapped checkouts. Application configuration is `$XDG_CONFIG_HOME/tolmap/config.t
 or `$HOME/.config/tolmap/config.toml`; [API.md](API.md) describes precedence.
 Existing data is never discovered, imported or read automatically. Re-add
 repositories to begin new history. Existing files elsewhere are left alone.
+
+`tolmap repos` prints JSON by default. Pass `--format text` for tab-separated
+rows with the repository name, kind, freshness, 12-character snapshot commit
+and `indexed_at`; missing values are shown as `-`. Listing repositories is
+read-only and never indexes or fetches them.
 
 Run as an ordinary user. The npm package provides its production viewer;
 source builds need an existing `web/dist` or `TOLMAP_STATIC_DIR` pointing to a
