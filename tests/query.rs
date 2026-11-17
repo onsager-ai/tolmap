@@ -61,6 +61,8 @@ fn overview_discloses_measured_and_unknown_test_exclusions() {
 fn missing_paths_are_explicit_and_suggestions_have_stable_ties() {
     let mut s = fixture("tolmap");
     s.map.files = vec!["src/b.ts".into(), "src/a.ts".into(), "lib/z.ts".into()];
+    // The fixture's symbols index the original file list.
+    s.map.symbols.clear();
     let response = s.where_is("src/c.ts", 0).unwrap();
     assert_eq!(response.total, 0);
     assert!(!response.truncated);
