@@ -232,10 +232,16 @@ fn prepare_revision(s: &SnapshotIndex, revision: &str) -> Result<()> {
     // checkout cannot substitute or expire source belonging to an old map.
     let preview = root.join("preview");
     let mut c = source::git(&root);
-    c.args(["clone", "--no-local", "--"])
+    c.args(["clone", "--no-local", "--no-checkout", "--"])
         .arg(&bare)
         .arg(&preview);
     checked(c)?;
+    // Clone copies branches only. A GitHub refresh selects origin/HEAD, which
+    // the checkout's local branch never follows, so fetch the pinned ref.
+    checked(command(
+        &preview,
+        &["fetch", "--no-tags", "origin", "refs/tolmap/snapshot"],
+    ))?;
     checked(command(&preview, &["checkout", "--detach", &commit]))?;
     *s.prepared.lock().unwrap() = Some(Prepared { id, commit });
     std::fs::remove_dir_all(preview)?;
@@ -619,4 +625,64 @@ pub(crate) fn personal_refresh(
             .join("source.git"),
         indexed_at: String::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    /// A GitHub refresh indexes origin/HEAD while the checkout's own branch
+    /// stays at the first indexed commit; preparing it must still succeed.
+    #[test]
+    fn prepares_a_commit_that_no_local_branch_points_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        git(&checkout, &["init", "-q"]);
+        std::fs::write(checkout.join("a.txt"), "one\n").unwrap();
+        git(&checkout, &["add", "a.txt"]);
+        git(&checkout, &["commit", "-qm", "one"]);
+        std::fs::write(checkout.join("a.txt"), "two\n").unwrap();
+        git(&checkout, &["commit", "-qam", "two"]);
+        let upstream = git(&checkout, &["rev-parse", "HEAD"]);
+        git(
+            &checkout,
+            &["update-ref", "refs/remotes/origin/main", &upstream],
+        );
+        git(&checkout, &["reset", "-q", "--hard", "HEAD~1"]);
+        let s = SnapshotIndex {
+            checkout,
+            data: dir.path().join("data"),
+            repository: "repo".into(),
+            prepared: Mutex::new(None),
+            job: Mutex::new(None),
+            attempt: Mutex::new(None),
+        };
+        prepare_revision(&s, &upstream).unwrap();
+        assert_eq!(
+            s.prepared.lock().unwrap().as_ref().unwrap().commit,
+            upstream
+        );
+    }
 }
