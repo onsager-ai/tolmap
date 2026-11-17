@@ -31,7 +31,11 @@ enum Command {
     /// Register and index committed local or GitHub source.
     Add(tolmap::personal::AddArgs),
     /// List registrations and last observed freshness; never index or fetch.
-    Repos,
+    Repos {
+        /// Output format: `json` (default) or tab-separated `text`.
+        #[arg(long, default_value = "json", value_parser = ["json", "text"])]
+        format: String,
+    },
     /// Browse and manage the shared personal repository library.
     Web {
         /// Override the configured listener (default 127.0.0.1:8787).
@@ -639,6 +643,31 @@ fn resolve_multi_source(
         .collect()
 }
 
+fn render_repos_text(rows: &[serde_json::Value]) -> String {
+    fn value<'a>(row: &'a serde_json::Value, path: &[&str]) -> &'a str {
+        path.iter()
+            .try_fold(row, |value, key| value.get(*key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-")
+    }
+
+    rows.iter()
+        .map(|row| {
+            let commit = value(row, &["snapshot", "commit"]);
+            let short_commit = commit.get(..12).unwrap_or(commit);
+            [
+                value(row, &["repository", "name"]),
+                value(row, &["repository", "kind"]),
+                value(row, &["freshness"]),
+                short_commit,
+                value(row, &["snapshot", "indexed_at"]),
+            ]
+            .join("\t")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// True when the caller's `--pkg`/`--lang`/`--all-sources` combination names
 /// more than one source -- the signal to take the multi-source path instead
 /// of the single-source, detect-on-omission one.
@@ -676,7 +705,7 @@ fn main() -> Result<()> {
             },
         )),
         Command::Add(args) => tolmap::personal::run_add(args, data),
-        Command::Repos => {
+        Command::Repos { format } => {
             let library = tolmap::personal::Library::open(data)?;
             let rows = library
                 .store
@@ -688,7 +717,11 @@ fn main() -> Result<()> {
                     )
                 })
                 .collect::<Vec<_>>();
-            println!("{}", serde_json::to_string(&rows)?);
+            if format == "json" {
+                println!("{}", serde_json::to_string(&rows)?);
+            } else if !rows.is_empty() {
+                println!("{}", render_repos_text(&rows));
+            }
             Ok(())
         }
         Command::Rm { name } => {
@@ -1208,6 +1241,44 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn repos_format_defaults_to_json_and_accepts_text() {
+        assert!(matches!(
+            Cli::try_parse_from(["tolmap", "repos"])
+                .expect("default format parses")
+                .command,
+            Command::Repos { format } if format == "json"
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["tolmap", "repos", "--format", "text"])
+                .expect("text format parses")
+                .command,
+            Command::Repos { format } if format == "text"
+        ));
+        assert!(Cli::try_parse_from(["tolmap", "repos", "--format", "yaml"]).is_err());
+    }
+
+    #[test]
+    fn repos_text_renders_a_fixture_row() {
+        let rows = [serde_json::json!({
+            "repository": { "name": "engine", "kind": "local" },
+            "freshness": "fresh",
+            "snapshot": {
+                "commit": "0123456789abcdef0123456789abcdef01234567",
+                "indexed_at": "2026-11-17T03:00:00Z"
+            }
+        })];
+        assert_eq!(
+            render_repos_text(&rows),
+            "engine\tlocal\tfresh\t0123456789ab\t2026-11-17T03:00:00Z"
+        );
+    }
+
+    #[test]
+    fn repos_text_renders_nothing_for_an_empty_library() {
+        assert_eq!(render_repos_text(&[]), "");
     }
 
     fn build_refs(args: &[&str]) -> tolmap::extract::RefsMode {
