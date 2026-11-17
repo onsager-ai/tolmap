@@ -21,11 +21,11 @@ def descendants(parent):
         try:
             # A process can exit while glob lazily scans its task directory.
             children_files=list(Path(f'/proc/{current}/task').glob('*/children'))
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue
         for children in children_files:
             try: ids=[int(x) for x in children.read_text().split()]
-            except FileNotFoundError: continue
+            except (FileNotFoundError, ProcessLookupError): continue
             for pid in ids:
                 if pid not in seen: seen.add(pid); pending.append(pid)
     return seen
