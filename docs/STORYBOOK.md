@@ -104,7 +104,9 @@ owner approved the 8 hub add-sheet reconnect captures and re-approved the 8 hub
 expired-session captures (now with Sign in) from run `43207280764` (source
 `db8c894`), also under `recaptures`. The owner re-approved 3 tablet walkthrough
 captures (walk-last light, walk-middle light/dark) after the open-panel framing fix
-for #295 from run `43207779191` (source `5fced30`), also under `recaptures`. A registry with
+for #295 from run `43207779191` (source `5fced30`), also under `recaptures`. The owner re-approved 10
+Debt lens captures (map-debt-loaded at every viewport, map-debt-compare on desktop, both themes) after
+the roads + focus change for #348 from run `44111141969` (source `3be5b33`), also under `recaptures`. A registry with
 `status: "pending-review"`, null source revision/review/provenance and an empty
 `images` array is the no-approval state; in it CI writes
 `visual-regression.json` with `status: "pending-review"` and explicitly says

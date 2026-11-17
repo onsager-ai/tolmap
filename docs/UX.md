@@ -153,7 +153,8 @@ require a visible symbol card, including the 110 px class-member gate. Notes use
 their district, file or symbol anchor after zooming beyond overview, with file
 and symbol notes sharing those gates. Selecting a lens never bypasses a gate.
 Solid blue paths are computed from available map edges (a lower bound); dashed
-paths are declared links. Tap or hover a hop for its provenance and declared
+paths are declared links. The built-in Debt lens draws one chosen path instead
+(below). Tap or hover a hop for its provenance and declared
 reason. On phones this explanation lives in the normal map sheet.
 
 The lens panel lists areas and their members, each path's stops in order, notes,
@@ -226,18 +227,45 @@ commit pinned. Physical-device and owner visual acceptance remain separate.
 from the repository's saved lenses (*Repository*). It is computed from the
 stored map, never read from `.tolmap/lenses/`, so a repository lens can never
 replace it; share it as `?lens=%40debt` (`@debt` is outside the repository lens
-name charset). It shows the five structural findings (docs/GLOSSARY.md) through
-the unchanged lens overlay: one tinted area per finding kind (district cycles
-red, misplaced files amber, god files purple, hotspots orange, files with no
-inbound edge found grey), so a district is tinted at most once per kind
-whatever its number of findings (owner decision, 2026-11-09); one path per
-district cycle; and notes, anchored to each file, carrying the measured
-values. Overview tints districts only; file findings follow the 40 px gate. A
-cycle's closing edges are solid computed hops; the dashed declared hops between
-them only join two files of one district and claim no edge. A snapshot with no
-findings shows an explicit empty state, never an empty overlay. Every count is
-a lower bound over the map's edges; a file with no inbound edge found is never
-called dead.
+name charset). It shows the structural findings (docs/GLOSSARY.md) through
+the lens overlay: one tinted area per finding kind (district cycles red,
+misplaced files amber, god files purple, hotspots orange, files with no inbound
+edge found grey, hidden coupling teal), so a district is tinted at most once per
+kind whatever its number of findings (owner decision, 2026-11-09); notes,
+anchored to each file, carrying the measured values; and three kinds of path:
+
+- a **district cycle** path walks the cycle's closing edges (solid computed
+  hops); its dashed declared hops only join two files of one district and
+  claim no edge;
+- a **cycle cut** path shows one bundle of the deterministic greedy small cut
+  (not a minimum): computed hops for the bundle's edges, joined by declared
+  hops that claim no edge. Removing every bundle makes the district graph
+  acyclic. At most 20 bundles are paths; a note gives the full count;
+- a **hidden coupling** path is one declared hop between two files that
+  co-changed without a static edge (`co-changed N times; no static edge
+  found`), for the first 20 pairs in report order.
+
+Unlike a saved lens, Debt does not draw every path (owner decision,
+2026-11-17, issue #348). At every zoom it recolours the district roads
+instead, from the cycle cut paths: a road carrying a suggested cut is red,
+with one direction mark pointing along the cut (the edges the report suggests
+removing; the larger cut when both directions are cut), not the dominant
+import direction: 13 of semon's 15 cut pairs import both ways, and on some
+of them the cut is the larger direction. The red's strength grows with the cut's edge count
+on that pair (2 to 54 on semon), while the road's width still shows its
+traffic. Hover or tap names the cut direction and its edge count, a lower
+bound: a pair whose bundle is past the 20-path cap is not red. A cut pair
+outside the usual road selection still gets its ordinary road, drawn red; a
+pair touching an island or unconnected district has none. Every other road is
+unchanged. Each path in the panel has **Show on map**: choosing one (or stepping through its
+walkthrough) draws that path alone, through the same 40 px file and 110 px
+class-member gates; choosing it again, or another lens, draws none. Choosing
+never moves the camera; only a walkthrough step frames. Share the choice as
+`?lens=%40debt&path=<path>` (no `step`; a saved lens ignores `path` without
+`step`). Hop bends are bounded, so a long cycle path (semon's has 108 stops)
+stays within about 70 px of each hop's chord. A snapshot with no findings shows
+an explicit empty state, never an empty overlay. Every count is a lower bound
+over the map's edges; a file with no inbound edge found is never called dead.
 
 **Compare this lens** on Debt compares the findings at two commits on the base
 map (`?lens=%40debt&lens_compare=true&compare=true&base=<sha>&head=<sha>`).

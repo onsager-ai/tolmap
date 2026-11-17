@@ -1,6 +1,7 @@
 import type { LensComparison } from "@bindings/LensComparison";
 import type { LensReport } from "@bindings/LensReport";
 import type { LensTarget } from "@bindings/LensTarget";
+import type { CutRoad } from "@/lens/debt";
 // Imperative SVG renderer, ported from the <script> block of
 // viewer/template.html. This is the ONE piece of the app that is not React:
 // see docs/ARCHITECTURE.md, "Rendering: do not put nodes in the React tree".
@@ -63,7 +64,7 @@ import { GestureRecognizer, PAN_DISMISS_PX, QUIET_AFTER_GESTURE_MS, type Gesture
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { RenderGate } from "./renderGate";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
-import { buildRoadGeom, buildRoadPlan, districtRadius, type RoadPlan } from "./roads";
+import { aggregateDistrictFlows, buildRoadGeom, buildRoadPlan, districtRadius, planRoad, type DistrictFlow, type RoadPlan } from "./roads";
 import { aggregateCrossDistrictFlows, aggregateIntraDistrictFlows, selectCrossDistrictPairs, selectStreetPairs, type CrossFlow, type StreetFlow } from "./streets";
 import { compactMap, hasDesktopMapLabels, layoutProfile } from "./layoutProfile";
 import {
@@ -172,6 +173,10 @@ function hollowTriangleGlyph(parent: [number, number], child: [number, number], 
 
 export interface MapRenderState {
   lens?: LensReport;
+  /** Issue #348: the debt lens's suggested cuts by directed district pair
+   * (`cutRoads`). drawRoads paints those roads red, stronger with more cut
+   * edges, with one direction mark along the cut; width still shows traffic. */
+  lensRoads?: readonly CutRoad[];
   lensComparison?: LensComparison;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];
@@ -291,6 +296,11 @@ export class MapRenderer {
   // once here rather than per road per paint.
   private roadPlan: RoadPlan[] = [];
   private roadMaxTotal = 1;
+  // Issue #348: every mainland pair's flow, so a debt-lens cycle pair the
+  // road selection left out still gets its road; `drawnRoads` is what the
+  // last paint drew, which the road hover card reads.
+  private roadFlows = new Map<string, DistrictFlow>();
+  private drawnRoads: RoadPlan[] = [];
   // A4 (hubs, issue #82): every file with fan-in >= HUB_FANIN_THRESHOLD,
   // ranked and named once per document -- see hubs.ts's computeHubs.
   private hubSet: HubSet = { hubs: [], maxFi: 1 };
@@ -671,7 +681,8 @@ export class MapRenderer {
       doc.districts[b].size - doc.districts[a].size || +a - +b);
     this.desktopLabelDistrictIds = [...this.drawableDistrictIds].sort((a, b) =>
       doc.districts[b].size - doc.districts[a].size || +a - +b);
-    this.roadPlan = buildRoadPlan(doc);
+    this.roadFlows = aggregateDistrictFlows(doc);
+    this.roadPlan = buildRoadPlan(doc, this.roadFlows);
     this.roadMaxTotal = Math.max(1, ...this.roadPlan.map((r) => r.total));
     this.hubSet = computeHubs(doc);
     // B4: footprint mode, and its neighbourhood shade/centroid caches --
@@ -1525,7 +1536,10 @@ export class MapRenderer {
               const previous = unique[index];
               const dx = point[0] - previous[0], dy = point[1] - previous[1];
               const length = Math.hypot(dx, dy);
-              const bend = (hop.source === "declared" ? 30 : 14) + (hopIndex + pathIndex) * 8;
+              // Issue #348: the extra bend cycles through six 8 px steps. When
+              // it grew with the index, semon's 108-stop debt cycle path bent
+              // its last hop 30 + 106 * 8 = 878 px off the chord.
+              const bend = (hop.source === "declared" ? 30 : 14) + ((hopIndex + pathIndex) % 6) * 8;
               return `Q${(previous[0] + point[0]) / 2 - dy / length * bend} ${(previous[1] + point[1]) / 2 + dx / length * bend} ${point.join(" ")}`;
             }).join("");
         const key = `lh:${pathIndex}:${hopIndex}`;
@@ -3023,15 +3037,33 @@ export class MapRenderer {
    * through to the district underneath") while a file dot or hub ring drawn
    * later still wins over it. */
   private drawRoads(g: SVGGElement) {
-    const { doc } = this.state!;
+    const { doc, lensRoads } = this.state!;
     const toScreen = (p: [number, number]): [number, number] => [this.X(p[0]), this.Y(p[1])];
-    for (const plan of this.roadPlan) {
+    // Issue #348: the debt lens recolours roads instead of drawing its paths.
+    // `cuts` maps an unordered pair to its suggested cuts, larger first.
+    const cuts = new Map<string, CutRoad[]>();
+    for (const road of lensRoads ?? []) {
+      const key = `${Math.min(road.from, road.to)}-${Math.max(road.from, road.to)}`;
+      cuts.set(key, [...(cuts.get(key) ?? []), road].sort((x, y) => y.edges - x.edges || x.from - y.from));
+    }
+    const maxCut = Math.max(1, ...(lensRoads ?? []).map((road) => road.edges));
+    const plans = [...this.roadPlan];
+    for (const key of cuts.keys()) {
+      const flow = this.roadFlows.get(key);
+      if (flow && !plans.some((plan) => plan.a === flow.a && plan.b === flow.b)) plans.push(planRoad(doc, flow));
+    }
+    this.drawnRoads = plans;
+    for (const plan of plans) {
       const districtA = doc.districts[String(plan.a)];
       const districtB = doc.districts[String(plan.b)];
       if (!districtA || !districtB) continue;
       // Dominant direction: the ribbon's single chevron (or the first of two)
-      // always points the way most imports actually flow.
-      const forward = plan.ab >= plan.ba;
+      // always points the way most imports actually flow. A cut road's one
+      // chevron points along its suggested cut instead (the larger one if
+      // both directions are cut): 13 of semon's 15 cut pairs import both
+      // ways, so traffic direction says nothing about what to remove.
+      const cut = cuts.get(`${plan.a}-${plan.b}`)?.[0];
+      const forward = cut ? cut.from === plan.a : plan.ab >= plan.ba;
       const sourceDistrict = forward ? districtA : districtB;
       const targetDistrict = forward ? districtB : districtA;
       const raWorld = forward ? plan.raWorld : plan.rbWorld;
@@ -3041,7 +3073,7 @@ export class MapRenderer {
       // "When minor/major >= 0.35, draw two chevrons ... pointing opposite
       // ways" (spec) -- a near-balanced pair of directed counts reads as
       // effectively bidirectional traffic.
-      const both = major > 0 && minor / major >= 0.35;
+      const both = !cut && major > 0 && minor / major >= 0.35;
       const widthPx = 1.5 + 6 * Math.sqrt(plan.total / this.roadMaxTotal);
       const geom = buildRoadGeom({
         a: sourceDistrict.c,
@@ -3059,9 +3091,11 @@ export class MapRenderer {
       g.appendChild(
         el("path", {
           d: "M" + geom.polygon.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L") + "Z",
-          fill: "var(--ink)",
-          "fill-opacity": 0.34,
+          fill: cut ? "var(--lens-red)" : "var(--ink)",
+          // A 2-edge cut stays a faint red, the map's largest cut near solid.
+          "fill-opacity": cut ? (0.3 + 0.65 * Math.sqrt(cut.edges / maxCut)).toFixed(3) : 0.34,
           "pointer-events": "none",
+          ...(cut ? { "data-lens-cut-road": key, "data-lens-cut-edges": cut.edges } : {}),
           // Carries the SAME data-k as the invisible hit path below (the
           // multi-polygon-district pattern this file already uses -- see
           // paint()'s district loop, one path per polygon, same data-k) so
@@ -3073,7 +3107,26 @@ export class MapRenderer {
           "data-k": key,
         }),
       );
-      for (const chev of geom.chevrons) {
+      // Issue #348: the cut direction is the point of a cut road, and the
+      // ribbon's own notch was nearly invisible on its red at overview. One
+      // larger chevron, re-centred from the geometry's mid-road chevron:
+      // text-coloured over a canvas halo, wider than the ribbon, above it.
+      if (cut) {
+        const chev = geom.chevrons[0];
+        const mx = (chev.back1[0] + chev.back2[0]) / 2, my = (chev.back1[1] + chev.back2[1]) / 2;
+        const span = Math.hypot(chev.tip[0] - mx, chev.tip[1] - my) || 1;
+        const ux = (chev.tip[0] - mx) / span, uy = (chev.tip[1] - my) / span;
+        const cx = mx + ux * span * (0.5 / 1.1), cy = my + uy * span * (0.5 / 1.1);
+        const size = Math.max(widthPx * 2.2, 14);
+        const d = `M${(cx - ux * size * 0.45 - uy * size * 0.6).toFixed(1)} ${(cy - uy * size * 0.45 + ux * size * 0.6).toFixed(1)}`
+          + `L${(cx + ux * size * 0.45).toFixed(1)} ${(cy + uy * size * 0.45).toFixed(1)}`
+          + `L${(cx - ux * size * 0.45 + uy * size * 0.6).toFixed(1)} ${(cy - uy * size * 0.45 - ux * size * 0.6).toFixed(1)}`;
+        const stroke = Math.max(2.5, size * 0.16);
+        for (const [color, w] of [["var(--canvas)", stroke + 3], ["var(--on)", stroke]] as const) {
+          g.appendChild(el("path", { d, fill: "none", stroke: color, "stroke-width": w.toFixed(2), "stroke-linecap": "round", "stroke-linejoin": "round", "pointer-events": "none", ...(color === "var(--on)" ? { "data-lens-cut-direction": key } : {}) }));
+        }
+      }
+      for (const chev of cut ? [] : geom.chevrons) {
         g.appendChild(
           el("path", {
             d: `M${chev.back1[0].toFixed(1)} ${chev.back1[1].toFixed(1)}L${chev.tip[0].toFixed(1)} ${chev.tip[1].toFixed(1)}L${chev.back2[0].toFixed(1)} ${chev.back2[1].toFixed(1)}`,
@@ -3104,7 +3157,7 @@ export class MapRenderer {
       const nameA = doc.names[String(plan.a)] ?? `district ${plan.a}`;
       const nameB = doc.names[String(plan.b)] ?? `district ${plan.b}`;
       const title = el("title", {});
-      title.textContent = `${nameA} → ${nameB}: ${plan.ab} imports\n${nameB} → ${nameA}: ${plan.ba} imports`;
+      title.textContent = `${nameA} → ${nameB}: ${plan.ab} imports\n${nameB} → ${nameA}: ${plan.ba} imports${cut ? `\nSuggested cut: ${doc.names[String(cut.from)] ?? `district ${cut.from}`} → ${doc.names[String(cut.to)] ?? `district ${cut.to}`}, ${cut.edges} edges` : ""}`;
       hit.appendChild(title);
       g.appendChild(hit);
     }
@@ -4869,8 +4922,9 @@ export class MapRenderer {
       doc,
       lens,
       lensComparison,
+      lensRoads: this.state!.lensRoads,
       districtPaths,
-      roadPlan: this.roadPlan,
+      roadPlan: this.drawnRoads,
       streetCache: this.streetCache,
       inAdj: this.inAdj,
       symLocalByGlobal: this.symLocalByGlobal,

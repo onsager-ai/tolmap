@@ -1,5 +1,6 @@
 import { LensComparisonPanel, useLensComparison } from "@/lens/LensComparisonPanel";
 import { LensPanel, useLenses } from "@/lens/LensPanel";
+import { cutRoads, isDebtLens } from "@/lens/debt";
 import { LensWalkthrough, walkthroughHop, walkthroughStep } from "@/lens/LensWalkthrough";
 import type { LensTarget } from "@bindings/LensTarget";
 import { ComparisonPanel, useComparison } from "@/comparison/ComparisonPanel";
@@ -78,6 +79,13 @@ export function MapView() {
 
   const lenses = useLenses(owner, repo, indexedCommit ?? search.base ?? search.commit ?? early.commit, search.lens, !!doc && !early.waiting);
   const lensComparison = useLensComparison(owner, repo, search, indexedCommit, mapSha256);
+  // Issue #348: the debt lens draws only the finding chosen in the panel or
+  // walkthrough (`path`); its suggested cuts recolour the roads instead.
+  // Saved lenses keep every path.
+  const lensReport = search.lens_compare ? undefined : lenses.data?.report;
+  const debtLens = !!lensReport && isDebtLens(search.lens);
+  const shownLens = useMemo(() => lensReport && debtLens ? { ...lensReport, paths: lensReport.paths.filter(path => path.name === search.path) } : lensReport, [lensReport, debtLens, search.path]);
+  const lensRoads = useMemo(() => doc && lensReport && debtLens ? cutRoads(lensReport.paths, doc.F, file => D_(doc, file)) : undefined, [doc, lensReport, debtLens]);
   // Issue #248: walkthrough steps. `walkRef` is this render's step function
   // (set below, after the map is known); the keyboard and the one deep-link
   // restore call it, so neither moves the camera on lens selection alone.
@@ -1038,8 +1046,10 @@ export function MapView() {
   walkRef.current = goStep;
   const walk = !search.lens_compare && search.path && search.step && lenses.data ? { name: search.path, step: search.step } : null;
   const walkthrough = walk && lenses.data ? <LensWalkthrough report={lenses.data.report} name={walk.name} step={walk.step} go={(step) => goStep(walk.name, step)} exit={() => updateSearch({ path: undefined, step: undefined })} keyboard={!narrow && !touch} /> : null;
-  const lensPanel = <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} walk={narrow || search.lens_compare ? undefined : (path) => goStep(path, 1)} mode={narrow ? "picker" : "full"} />;
-  const activeLens = search.lens ? <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} walk={search.lens_compare ? undefined : (path) => goStep(path, 1)} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
+  // Issue #348: choosing a debt finding only sets `path`; it never moves the camera.
+  const showPath = debtLens ? (path?: string) => updateSearch({ path, step: undefined }) : undefined;
+  const lensPanel = <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} walk={narrow || search.lens_compare ? undefined : (path) => goStep(path, 1)} focus={search.path} show={showPath} mode={narrow ? "picker" : "full"} />;
+  const activeLens = search.lens ? <LensPanel compare={compareLens} lenses={lenses} name={search.lens} select={chooseLens} pick={pickLensStop} walk={search.lens_compare ? undefined : (path) => goStep(path, 1)} focus={search.path} show={showPath} mode="sheet" details={detent === "peek" ? () => changeDetent("half") : undefined} /> : undefined;
 
   const sourceReader = search.read && search.file ? <SourceReader key={JSON.stringify([owner, repo, search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit, search.file, search.line, search.end])} modal={narrow} owner={owner} repo={repo} path={search.file} commit={search.source_commit ?? indexedCommit ?? search.base ?? search.commit ?? early.commit} start={search.line} end={search.end} onClose={closeSource} /> : null;
   const sourceAction = !search.read && sel != null && (!search.compare || search.lens_compare) ? <button ref={sourceActionRef} className={`source-action${narrow ? " source-action-sheet" : ""}`} onClick={openSource}>Read selected source</button> : null;
@@ -1070,7 +1080,8 @@ export function MapView() {
       selSym={selSym}
       selD={selD}
       route={route}
-      lens={search.lens_compare ? undefined : lenses.data?.report}
+      lens={shownLens}
+      lensRoads={lensRoads}
       lensComparison={!lensComparison.isFetching && !lensComparison.error ? lensComparison.data : undefined}
       packageGrouping={packageGrouping}
       districtPaths={packageLayout.districtPaths}

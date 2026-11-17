@@ -1,4 +1,5 @@
 import type { LensComparison } from "@bindings/LensComparison";
+import type { CutRoad } from "@/lens/debt";
 import type { LensReport } from "@bindings/LensReport";
 import type { LensTarget } from "@bindings/LensTarget";
 import { useEffect, useImperativeHandle, useLayoutEffect, useRef } from "react";
@@ -41,6 +42,7 @@ export interface MapCanvasHandle {
 interface MapCanvasProps {
   doc: MapDocument;
   lens?: LensReport;
+  lensRoads?: readonly CutRoad[];
   lensComparison?: LensComparison;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];
@@ -76,6 +78,7 @@ interface MapCanvasProps {
 export function MapCanvas({
   doc,
   lens,
+  lensRoads,
   lensComparison,
   impactFiles,
   impactDistricts,
@@ -186,6 +189,7 @@ export function MapCanvas({
     const state: MapRenderState = {
       doc,
       lens,
+      lensRoads,
       lensComparison,
       impactFiles,
       impactDistricts,
@@ -230,6 +234,7 @@ export function MapCanvas({
     const state: MapRenderState = {
       doc,
       lens,
+      lensRoads,
       lensComparison,
       impactFiles,
       impactDistricts,
@@ -249,7 +254,7 @@ export function MapCanvas({
       selHSym,
     };
     renderer.render(state);
-  }, [doc, lens, lensComparison, impactFiles, impactDistricts, geo, layer, sel, selSym, selD, route, packageGrouping, districtPaths, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
+  }, [doc, lens, lensRoads, lensComparison, impactFiles, impactDistricts, geo, layer, sel, selSym, selD, route, packageGrouping, districtPaths, folderFiles, folderOnlyIslands, folderLabels, activeDirectory, districtSymbols, selHSym]);
 
   // docs/UX.md §3.3: new chrome insets (a sheet detent, a resize) reach the
   // renderer without moving the camera -- MapView decides when a move is
