@@ -13,8 +13,8 @@ use crate::partition::LeidenFfi;
 use crate::pipeline::{self, LayoutDistrict, SHARE_COCHANGE};
 use crate::schema::{
     BuildEntrySidecar, CochangePair, CochangeSidecar, CoverageLanguage, CoverageReport,
-    DebtSidecar, District, DistrictClass, FileId, GeneratedFile, GraphData, LandmarkRow,
-    MapDocument, NodeRow, PackageRoot, RustModPair, RustModSidecar, SymbolRow,
+    DebtSidecar, DescendantFanin, District, DistrictClass, FileId, GeneratedFile, GraphData,
+    LandmarkRow, MapDocument, NodeRow, PackageRoot, RustModPair, RustModSidecar, SymbolRow,
 };
 #[derive(Clone, Debug)]
 pub struct BuildFeatures {
@@ -831,6 +831,18 @@ fn compact(
         .map(|files| BuildEntrySidecar {
             files: files.iter().map(|&file| file as usize).collect(),
         });
+    let descendant_fanin = layout
+        .weighted
+        .rust_mod
+        .as_ref()
+        .map(|tree| {
+            tree.descendant_fanin
+                .iter()
+                .map(|(&file, &mass)| DescendantFanin((file as usize, round_to(mass, 2))))
+                .filter(|row| row.0 .1 > 0.0)
+                .collect::<Vec<_>>()
+        })
+        .filter(|rows| !rows.is_empty());
     let generated = layout.weighted.generated.as_ref().map(|files| {
         files
             .iter()
@@ -852,12 +864,14 @@ fn compact(
     let debt = (cochange.is_some()
         || rust_mod.is_some()
         || build_entries.is_some()
+        || descendant_fanin.is_some()
         || generated.is_some()
         || package_roots.is_some())
     .then_some(DebtSidecar {
         cochange,
         rust_mod,
         build_entries,
+        descendant_fanin,
         generated,
         package_roots,
     });

@@ -835,3 +835,34 @@ fn pinned_report_holds_god_and_hotspot_cutoffs_at_the_base() {
     // Ranks stay within the head: three files more than the base.
     assert_eq!(report.files, 62);
 }
+
+// Issue #343: god-file fan-in leaves out the mass imported by the file's own
+// Rust submodules; the raw value stays beside it.
+#[test]
+fn god_fanin_excludes_descendant_mass_and_reports_the_raw_value() {
+    let plain = synthetic();
+    let report = debt::findings(&plain);
+    assert!(!report.descendant_fanin_measured);
+    assert_eq!(report.god_files[0].fanin, 9.0);
+    assert_eq!(report.god_files[0].raw_fanin, 9.0);
+
+    let with_sidecar = |mass: f64| {
+        let mut value = serde_json::to_value(&plain).unwrap();
+        value["D"] = serde_json::json!({"descendant_fanin": [[11, mass]]});
+        serde_json::from_value::<MapDocument>(value).unwrap()
+    };
+    let report = debt::findings(&with_sidecar(3.0));
+    assert!(report.descendant_fanin_measured);
+    let god = &report.god_files[0];
+    assert_eq!(
+        (god.path.as_str(), god.fanin, god.raw_fanin),
+        ("src/b/god.py", 6.0, 9.0)
+    );
+    assert_eq!(report.thresholds.god_min_fanin, Some(6.0));
+
+    // With 8 of its 9 imported by its own submodules the file falls below the
+    // next-highest fan-in (2.0) and is no longer a god file.
+    let report = debt::findings(&with_sidecar(8.0));
+    assert!(report.god_files.is_empty());
+    assert_eq!(report.thresholds.god_min_fanin, Some(2.0));
+}

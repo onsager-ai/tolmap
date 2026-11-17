@@ -227,7 +227,11 @@ pub struct MisplacedFile {
 pub struct GodFile {
     pub path: String,
     pub district: usize,
+    /// Fan-in without the mass imported by the file's own Rust submodules.
+    /// The god cutoff and `fanin_rank` use this value.
     pub fanin: f64,
+    /// The node's fan-in as the map records it.
+    pub raw_fanin: f64,
     pub fanin_rank: usize,
     pub complexity: usize,
     pub complexity_rank: usize,
@@ -355,6 +359,10 @@ pub struct DebtReport {
     pub unreached: Vec<UnreachedFile>,
     /// False for maps built before the Rust declaration sidecar existed.
     pub rust_mod_reachability_measured: bool,
+    /// False when the map has no descendant fan-in sidecar: it predates the
+    /// measurement, or no file imports its own `mod` ancestor. God-file
+    /// fan-in is then the raw value.
+    pub descendant_fanin_measured: bool,
     pub undeclared_rust: Vec<UndeclaredRustFile>,
     /// False for maps built before statically readable bundler entries were
     /// retained in the debt sidecar.
@@ -492,6 +500,25 @@ struct Cutoffs {
     hotspot_min_score: Option<usize>,
 }
 
+// God-file fan-in: the node's fan-in minus the mass its own Rust submodules
+// import. Without the sidecar the two are equal.
+fn god_fanin(map: &MapDocument) -> Vec<f64> {
+    let mut fanin: Vec<f64> = map.nodes.iter().map(|r| r.fanin()).collect();
+    if let Some(rows) = map
+        .debt
+        .as_ref()
+        .and_then(|debt| debt.descendant_fanin.as_ref())
+    {
+        for row in rows {
+            let (file, mass) = row.0;
+            if let Some(value) = fanin.get_mut(file) {
+                *value = (((*value - mass).max(0.0)) * 100.0).round() / 100.0;
+            }
+        }
+    }
+    fanin
+}
+
 fn hotspot_scores(map: &MapDocument) -> Vec<Option<usize>> {
     map.nodes
         .iter()
@@ -507,11 +534,7 @@ fn cutoffs(map: &MapDocument) -> Cutoffs {
     let complexity: Vec<usize> = map.nodes.iter().map(|r| r.complexity()).collect();
     let production: Vec<usize> = hotspot_scores(map).into_iter().flatten().collect();
     Cutoffs {
-        god_min_fanin: top_cut(
-            &map.nodes.iter().map(|r| r.fanin()).collect::<Vec<f64>>(),
-            GOD_TOP_FRACTION,
-            1,
-        ),
+        god_min_fanin: top_cut(&god_fanin(map), GOD_TOP_FRACTION, 1),
         god_min_complexity: top_cut(&complexity, GOD_TOP_FRACTION, 1),
         hotspot_min_score: top_cut(&production, HOTSPOT_TOP_FRACTION, HOTSPOT_MIN_COUNT),
     }
@@ -958,7 +981,8 @@ fn findings_with_unplaced(
         .count();
     misplaced.retain(|file| !generated_paths.contains(file.path.as_str()));
 
-    let fanin: Vec<f64> = map.nodes.iter().map(|r| r.fanin()).collect();
+    let raw_fanin: Vec<f64> = map.nodes.iter().map(|r| r.fanin()).collect();
+    let fanin = god_fanin(map);
     let complexity: Vec<usize> = map.nodes.iter().map(|r| r.complexity()).collect();
     let Cutoffs {
         god_min_fanin,
@@ -972,6 +996,7 @@ fn findings_with_unplaced(
                 path: map.files[f].clone(),
                 district: district(f),
                 fanin: fanin[f],
+                raw_fanin: raw_fanin[f],
                 fanin_rank: rank(&fanin, &fanin[f]),
                 complexity: complexity[f],
                 complexity_rank: rank(&complexity, &complexity[f]),
@@ -1225,6 +1250,10 @@ fn findings_with_unplaced(
         unreached_generated_files_excluded,
         unreached,
         rust_mod_reachability_measured,
+        descendant_fanin_measured: map
+            .debt
+            .as_ref()
+            .is_some_and(|debt| debt.descendant_fanin.is_some()),
         undeclared_rust,
         build_entry_measurement,
         build_entry_files,
@@ -1499,8 +1528,9 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         note(
             &g.path,
             format!(
-                "god file: fan-in {} (rank {}), complexity {} (rank {}); both in the top {} (fan-in ≥ {}, complexity ≥ {})",
+                "god file: fan-in {} ({} raw; submodule imports excluded) (rank {}), complexity {} (rank {}); both in the top {} (fan-in ≥ {}, complexity ≥ {})",
                 g.fanin,
+                g.raw_fanin,
                 g.fanin_rank,
                 g.complexity,
                 g.complexity_rank,
@@ -1701,6 +1731,11 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
         );
     } else {
         out.push_str("Rust mod reachability not measured (map has no Rust mod sidecar)\n");
+    }
+    if report.rust_mod_reachability_measured && !report.descendant_fanin_measured {
+        out.push_str(
+            "god-file fan-in not adjusted for submodule imports (map has no descendant fan-in sidecar)\n",
+        );
     }
     if report.build_entry_measurement {
         let _ = writeln!(
