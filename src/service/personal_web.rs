@@ -19,6 +19,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
+use sha2::Digest;
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -858,6 +859,10 @@ async fn artifact(path: PathBuf, commit: Option<&str>) -> Result<Response, ApiEr
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|e| ApiError::not_found(e.to_string()))?;
+    // A map's identity for stale-comparison checks. Browsers expose
+    // crypto.subtle only in secure contexts, so plain-HTTP remote viewers
+    // cannot hash the body themselves.
+    let digest = commit.map(|_| format!("{:x}", sha2::Sha256::digest(&bytes)));
     let mut response = (
         [
             (header::CONTENT_TYPE, "application/json"),
@@ -866,12 +871,17 @@ async fn artifact(path: PathBuf, commit: Option<&str>) -> Result<Response, ApiEr
         bytes,
     )
         .into_response();
-    if let Some(commit) = commit {
-        response.headers_mut().insert(
+    if let (Some(commit), Some(digest)) = (commit, digest) {
+        let headers = response.headers_mut();
+        headers.insert(
             "x-tolmap-commit",
             commit
                 .parse()
                 .map_err(|_| ApiError::internal("invalid stored commit"))?,
+        );
+        headers.insert(
+            "x-tolmap-map-sha256",
+            digest.parse().expect("hex digest is a valid header value"),
         );
     }
     Ok(response)

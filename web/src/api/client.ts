@@ -197,8 +197,13 @@ export async function getServiceMapSnapshot(owner: string, repo: string, commit?
     async (response) => {
       indexedCommit = response.headers.get("x-tolmap-commit") ?? commit;
       if (response.ok) {
-        const digest = await crypto.subtle.digest("SHA-256", await response.clone().arrayBuffer());
-        mapSha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+        // crypto.subtle exists only in secure contexts (HTTPS or localhost);
+        // `tolmap web` reached over plain HTTP supplies the digest itself.
+        mapSha256 = response.headers.get("x-tolmap-map-sha256") ?? undefined;
+        if (!mapSha256 && globalThis.crypto?.subtle) {
+          const digest = await crypto.subtle.digest("SHA-256", await response.clone().arrayBuffer());
+          mapSha256 = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+        }
       }
     },
   );
