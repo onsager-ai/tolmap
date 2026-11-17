@@ -299,9 +299,10 @@ pub struct PinnedBase {
     pub commit: Option<String>,
     // Files absent from the base that took a base district by edge weight.
     pub placed_new_files: usize,
-    // Files absent from the base with no edge to a placed file; they sit in
-    // an "(unplaced)" district of their own.
+    // Files absent from the base with no edge to a placed file.
     pub unplaced_new_files: usize,
+    // The unplaced paths, sorted. They count in file-level findings only.
+    pub unplaced_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -625,7 +626,7 @@ fn has_cycle(graph: &BTreeMap<String, BTreeSet<String>>) -> bool {
         .any(|node| !visited.contains(node) && visit(node, graph, &mut visiting, &mut visited))
 }
 
-fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
+fn cycles(map: &MapDocument, unplaced: Option<usize>) -> Vec<DistrictCycle> {
     let package_roots = map.debt.as_ref().and_then(|debt| {
         debt.package_roots.as_ref().map(|roots| {
             roots
@@ -653,7 +654,9 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
             continue;
         }
         let (from_district, to_district) = (district(from), district(to));
-        if from_district == to_district {
+        if from_district == to_district
+            || unplaced.is_some_and(|u| from_district == u || to_district == u)
+        {
             continue;
         }
         graph.entry(from_district).or_default().insert(to_district);
@@ -778,6 +781,12 @@ fn cycles(map: &MapDocument) -> Vec<DistrictCycle> {
 }
 
 pub fn findings(map: &MapDocument) -> DebtReport {
+    findings_with_unplaced(map, None)
+}
+
+// `unplaced` is the district id that stands for files with no base district:
+// they take part in file-level findings but in no district cycle or tally.
+fn findings_with_unplaced(map: &MapDocument, unplaced: Option<usize>) -> DebtReport {
     let n = map.files.len();
     let district = |f: usize| map.nodes[f].district();
     let file_edges = map
@@ -826,14 +835,22 @@ pub fn findings(map: &MapDocument) -> DebtReport {
     let mut inbound = vec![0usize; n];
     let mut outbound = vec![0usize; n];
     let mut by_district: Vec<BTreeMap<usize, usize>> = vec![BTreeMap::new(); n];
+    // An unplaced file (pinned reports) has no district, so an edge to or from
+    // one has no district side and feeds no tally.
+    let tally = |by_district: &mut Vec<BTreeMap<usize, usize>>, a: usize, b: usize| {
+        if unplaced.is_some_and(|u| district(a) == u || district(b) == u) {
+            return;
+        }
+        *by_district[a].entry(district(b)).or_default() += 1;
+        *by_district[b].entry(district(a)).or_default() += 1;
+    };
     for &[a, b] in &map.edges {
         if a == b {
             continue;
         }
         outbound[a] += 1;
         inbound[b] += 1;
-        *by_district[a].entry(district(b)).or_default() += 1;
-        *by_district[b].entry(district(a)).or_default() += 1;
+        tally(&mut by_district, a, b);
     }
     // A Rust `mod` declaration is not a graph edge: it names no item and must
     // remain outside extraction, blending, clustering and layout. For this
@@ -845,8 +862,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             if a == b || file_edges.contains(&(a.min(b), a.max(b))) {
                 continue;
             }
-            *by_district[a].entry(district(b)).or_default() += 1;
-            *by_district[b].entry(district(a)).or_default() += 1;
+            tally(&mut by_district, a, b);
         }
     }
 
@@ -1157,7 +1173,7 @@ pub fn findings(map: &MapDocument) -> DebtReport {
             entry_stem_suffixes: strings(ENTRY_STEM_SUFFIXES),
         },
         coverage: map.coverage.clone(),
-        cycles: cycles(map),
+        cycles: cycles(map, unplaced),
         misplaced,
         god_files,
         hotspots,
@@ -1929,17 +1945,21 @@ fn apply_filters(
     }
 }
 
-// District name for files that are new in the head and have no edge to a placed
-// file. Not a base district: it only keeps them out of every base district.
+// Display name for the id that marks files that are new in the head and have no
+// edge to a placed file. It is not a base district: district cycles and
+// misplaced tallies skip it, and only file-level findings show it.
 const UNPLACED_DISTRICT: &str = "(unplaced)";
 
 // The head map with the base's district membership and names, so the debt
 // computation measures the change and not a repartition. Files in both maps
 // (matched by path) keep the base district; a new file takes the base
 // district holding most of its edges to such files (`check::place`, ties to
-// the lowest id), else lands in `(unplaced)`. Edges in a map carry no weight,
+// the lowest id), else is unplaced. Edges in a map carry no weight,
 // so each counts once. Base-only files are absent, as in the head.
-fn relabel_to_base(head: &MapDocument, base: &MapDocument) -> (MapDocument, usize, usize) {
+fn relabel_to_base(
+    head: &MapDocument,
+    base: &MapDocument,
+) -> (MapDocument, usize, usize, Vec<String>) {
     let base_district = base
         .files
         .iter()
@@ -1971,7 +1991,7 @@ fn relabel_to_base(head: &MapDocument, base: &MapDocument) -> (MapDocument, usiz
         .chain(inherited.iter().flatten().copied())
         .max()
         .map_or(0, |max| max + 1);
-    let (mut placed, mut left) = (0, 0);
+    let (mut placed, mut left) = (0, Vec::<String>::new());
     let mut relabeled = head.clone();
     for (file, node) in relabeled.nodes.iter_mut().enumerate() {
         node.0 .0 = match inherited[file] {
@@ -1982,7 +2002,7 @@ fn relabel_to_base(head: &MapDocument, base: &MapDocument) -> (MapDocument, usiz
                     district
                 }
                 None => {
-                    left += 1;
+                    left.push(head.files[file].clone());
                     unplaced
                 }
             },
@@ -1990,12 +2010,13 @@ fn relabel_to_base(head: &MapDocument, base: &MapDocument) -> (MapDocument, usiz
     }
     relabeled.names = base.names.clone();
     relabeled.districts = base.districts.clone();
-    if left > 0 {
+    left.sort();
+    if !left.is_empty() {
         relabeled
             .names
             .insert(unplaced.to_string(), UNPLACED_DISTRICT.to_owned());
     }
-    (relabeled, placed, left)
+    (relabeled, placed, unplaced, left)
 }
 
 // Findings for `head` held to `base`'s partition. `base_sha256` and
@@ -2006,13 +2027,14 @@ pub fn findings_pinned(
     base_sha256: String,
     base_commit: Option<String>,
 ) -> (MapDocument, DebtReport) {
-    let (relabeled, placed, left) = relabel_to_base(head, base);
-    let mut report = findings(&relabeled);
+    let (relabeled, placed, unplaced, left) = relabel_to_base(head, base);
+    let mut report = findings_with_unplaced(&relabeled, (!left.is_empty()).then_some(unplaced));
     report.pinned = Some(PinnedBase {
         map_sha256: base_sha256,
         commit: base_commit,
         placed_new_files: placed,
-        unplaced_new_files: left,
+        unplaced_new_files: left.len(),
+        unplaced_paths: left,
     });
     (relabeled, report)
 }

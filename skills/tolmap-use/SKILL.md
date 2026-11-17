@@ -129,7 +129,7 @@ tolmap debt diff before-debt.json after-debt.json
 Pin both reports to the same base: `debt diff` exits 2 for a pinned report
 against an unpinned one, or two pinned to different bases. Read `pinned` in the
 head report: `unplaced_new_files` are new files with no edge to a base file,
-held in an `(unplaced)` district, and `placed_new_files` took the base district
+listed in `unplaced_paths` (file-level findings only, no district cycle or misplaced finding), and `placed_new_files` took the base district
 holding most of their edges.
 
 `--kind` is repeatable; `--path` accepts a prefix or glob. `--top` limits ranked

@@ -583,6 +583,7 @@ fn pinned_report_keeps_base_districts_and_only_the_change_differs() {
     assert_eq!(pin.map_sha256, "sha");
     assert_eq!(pin.commit.as_deref(), Some("abc"));
     assert_eq!((pin.placed_new_files, pin.unplaced_new_files), (1, 1));
+    assert_eq!(pin.unplaced_paths, ["src/new/island.py"]);
     // Shared files keep their base district; new files take a.core's, or
     // the unplaced district.
     assert_eq!(relabeled.nodes[7].district(), 3);
@@ -720,4 +721,47 @@ fn debt_cli_partition_from_and_diff_refusals() {
         .code(),
         Some(2)
     );
+}
+
+// An unplaced new file can have edges: a new file whose only edges go to other
+// new files has none to a base file, so it stays unplaced. Those edges have no
+// district side, so it is neither misplaced nor part of a district cycle, but
+// it still counts in file-level findings.
+#[test]
+fn unplaced_files_join_file_level_findings_only() {
+    let base = synthetic();
+    let mut head = synthetic();
+    // Files 16..=20 are placed in district a through src/a/core.py; file 21
+    // links only to them, with enough edges to be misplaced if it had a
+    // district of its own.
+    for i in 0..6 {
+        head.files.push(format!("src/new/f{i}.py"));
+        let mut node = head.nodes[1].clone();
+        node.0 .0 = 2;
+        head.nodes.push(node);
+    }
+    for i in 16..21 {
+        head.edges.push([1, i]);
+        head.edges.push([21, i]);
+    }
+    // High churn x complexity makes the unplaced file a hotspot.
+    head.nodes[21].0 .4 = 100;
+    head.nodes[21].0 .5 = 100;
+    let (relabeled, report) = pinned(&head, &base, "sha");
+    let pin = report.pinned.as_ref().unwrap();
+    assert_eq!((pin.placed_new_files, pin.unplaced_new_files), (5, 1));
+    assert_eq!(pin.unplaced_paths, ["src/new/f5.py"]);
+    assert_ne!(relabeled.nodes[21].district(), 0);
+    let base_report = debt::findings(&base);
+    assert_eq!(
+        paths(report.misplaced.iter().map(|m| &m.path)),
+        paths(base_report.misplaced.iter().map(|m| &m.path))
+    );
+    assert_eq!(report.cycles.len(), base_report.cycles.len());
+    assert_eq!(report.cycles[0].route, base_report.cycles[0].route);
+    assert_eq!(
+        report.cycles[0].cross_edges,
+        base_report.cycles[0].cross_edges
+    );
+    assert!(report.hotspots.iter().any(|h| h.path == "src/new/f5.py"));
 }

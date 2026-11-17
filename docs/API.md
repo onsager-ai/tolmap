@@ -170,11 +170,14 @@ vanishes on an untouched file) as well as the change. Here a file present in
 both maps (matched by path) keeps its base district; a file new in the map
 takes the base district holding most of its edges to such files
 (`check::place`: edges carry no weight in a map, so each counts once; ties go
-to the lowest id); a new file with no edge to a placed file stays unplaced, in a
-district named `(unplaced)`, and is counted. Files only in the base are absent.
+to the lowest id); a new file with no edge to a placed file stays unplaced and is
+counted. An unplaced file appears in file-level findings (god, hotspot,
+no-inbound, hidden coupling), shown under a district named `(unplaced)`, but in
+no district cycle or misplaced finding: its edges have no district side. Files
+only in the base are absent.
 Extraction, partitioning and layout are unchanged: only the report is. The
 report gains `pinned`: `map_sha256` and `commit` of the base (`commit` is null
-when the base records none), `placed_new_files` and `unplaced_new_files`.
+when the base records none), `placed_new_files`, `unplaced_new_files` and the sorted `unplaced_paths`.
 Unpinned reports omit `pinned`.
 
 `tolmap debt diff <before-report.json> <after-report.json>` compares two unfiltered,
