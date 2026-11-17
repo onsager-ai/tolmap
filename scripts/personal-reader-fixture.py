@@ -143,9 +143,14 @@ def worker_pids():
                 except (OSError,ProcessLookupError):pass
     return result
 for _ in range(1000):
-    workers=worker_pids()
-    if workers:
-        for worker in workers:os.killpg(worker,signal.SIGSTOP)
+    stopped=[]
+    for worker in worker_pids():
+        # A listed worker can leave before its group is signalled (#346);
+        # keep polling, and the status check below catches a finished job.
+        try:os.killpg(worker,signal.SIGSTOP);stopped.append(worker)
+        except ProcessLookupError:pass
+    if stopped:
+        workers=stopped
         break
     assert get('/api/jobs/'+job)['status'] not in ('done','failed'),'worker finished before cancellation qualification'
     time.sleep(.01)
