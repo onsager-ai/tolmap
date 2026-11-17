@@ -131,6 +131,26 @@ async fn catalogue_and_history_reread_cli_publications_and_repeated_commits() {
         )
         .unwrap()
     );
+    // Plain-HTTP remote browsers have no crypto.subtle; the server supplies
+    // the map identity used by stale-comparison checks.
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/maps/snapshot/first")
+                .header("host", "localhost:8787")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    {
+        use sha2::Digest;
+        assert_eq!(
+            response.headers()["x-tolmap-map-sha256"],
+            format!("{:x}", sha2::Sha256::digest(bytes.as_bytes())).as_str()
+        );
+    }
     assert_eq!(
         request(
             &app,
