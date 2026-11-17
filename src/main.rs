@@ -1297,7 +1297,8 @@ mod tests {
             .to_string();
         assert!(help.contains("REPO"));
         assert!(help.contains("--repo <REPO>"));
-        assert!(help.contains("Registered repository to inspect."));
+        assert!(help.contains("Registered repository to inspect"));
+        assert!(help.contains("(same as --repo)"));
     }
 
     #[test]
