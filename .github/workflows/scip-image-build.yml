@@ -134,6 +134,30 @@ jobs:
           python3 -c 'import json; assert json.load(open("/tmp/healthz.json")) == {"ok": True}'
           docker rm -f tolmap-healthz
 
+      # #320: a checkout bind-mounted from the host is owned by the host
+      # uid; tolmap's git ignores global config (no safe.directory), so the
+      # container must run as that uid. Mirrors README.md's Self-hosting.
+      - name: Add a bind-mounted checkout as its owner (non-root)
+        run: |
+          set -euo pipefail
+          mkdir -p owned/repos/fixture/fixture owned/data
+          git -C owned/repos/fixture init -q -b main
+          printf '[project]\nname = "fixture"\nversion = "0"\n' > owned/repos/fixture/pyproject.toml
+          printf '' > owned/repos/fixture/fixture/__init__.py
+          printf 'from .b import g\ndef f():\n    return g()\n' > owned/repos/fixture/fixture/a.py
+          printf 'from .c import h\ndef g():\n    return h()\n' > owned/repos/fixture/fixture/b.py
+          printf 'from .a import f\ndef h():\n    return 1\n' > owned/repos/fixture/fixture/c.py
+          git -C owned/repos/fixture add .
+          git -C owned/repos/fixture -c user.name=t -c user.email=t@example.com commit -q -m init
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e HOME=/data -e TOLMAP_DATA_DIR=/data \
+            -v "$PWD/owned/data:/data" -v "$PWD/owned/repos:/repos:ro" \
+            tolmap:after /app/tolmap add /repos/fixture
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e HOME=/data -e TOLMAP_DATA_DIR=/data \
+            -v "$PWD/owned/data:/data" tolmap:after /app/tolmap repos | tee /tmp/repos.txt
+          grep -q fixture /tmp/repos.txt
+
       - name: Build main's image for comparison (before)
         if: github.event_name == 'pull_request' || inputs.compare_main
         run: |
