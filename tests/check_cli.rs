@@ -311,6 +311,7 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
         })
         .unwrap_or_else(|| panic!("the new import is not listed: {report:#}"));
     assert_eq!(edge["static_import"], true);
+    assert_eq!(edge["cause"], "code");
     assert_ne!(edge["source_district"], edge["target_district"]);
     assert_eq!(
         edge["source_district"],
