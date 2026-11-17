@@ -217,28 +217,6 @@ impl Snapshot {
                 None,
             ));
         }
-        if !target.contains("::")
-            && (target.contains('/') || Path::new(target).extension().is_some())
-        {
-            let mut nearest: Vec<_> = self
-                .map
-                .files
-                .iter()
-                .map(|path| (path_distance(target, path), path.clone()))
-                .collect();
-            nearest.sort();
-            return Ok(self.response(
-                Query::Where {
-                    target: target.into(),
-                    ambiguous: false,
-                    missing_path: Some(target.into()),
-                    suggestions: nearest.into_iter().take(3).map(|(_, path)| path).collect(),
-                },
-                limit,
-                Vec::new(),
-                None,
-            ));
-        }
         let symbols_path = if self.path.file_name().is_some_and(|name| name == "map.json")
             && self.path.with_file_name("symbols.json").is_file()
         {
@@ -317,6 +295,31 @@ impl Snapshot {
                     }
                 }
             }
+        }
+        // A path-shaped target that names no file or symbol is reported as
+        // missing, with the nearest mapped paths.
+        if hits.is_empty()
+            && !target.contains("::")
+            && (target.contains('/') || Path::new(target).extension().is_some())
+        {
+            let mut nearest: Vec<_> = self
+                .map
+                .files
+                .iter()
+                .map(|path| (path_distance(target, path), path.clone()))
+                .collect();
+            nearest.sort();
+            return Ok(self.response(
+                Query::Where {
+                    target: target.into(),
+                    ambiguous: false,
+                    missing_path: Some(target.into()),
+                    suggestions: nearest.into_iter().take(3).map(|(_, path)| path).collect(),
+                },
+                limit,
+                Vec::new(),
+                None,
+            ));
         }
         hits.sort_by(|(a, x), (b, y)| {
             self.map.files[*a]
