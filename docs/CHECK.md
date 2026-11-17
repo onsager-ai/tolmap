@@ -80,6 +80,7 @@ This is a correction (issue #176, finding 61). Until then the head graph read he
   - **Direction.** `source → target` follows the import when the edge carries one, and path order otherwise.
   - **`weight`** is the edge's blended weight in its own graph. It is rescaled so the heaviest edge in that graph is 1, so weights compare within one graph only.
   - **`static_import`** is false for an edge made only of co-change, directory proximity or naming similarity.
+  - **`cause`** says why the edge is on one side only. `code`: the pair is not a candidate edge (before pruning) on the other side, so the code or history changed it. `prune`: the pair is a candidate on both sides and blending or pruning kept it on one side only. A `prune` edge may reflect no change to its files, so read `code` edges first. The text format lists `code` edges, then gives a count and the top three `prune` edges. `delta_q`, `districts_crossed` and the exit code do not depend on `cause`.
 - **`landmark_touches`**: changed files that are base-map landmarks of kind `hazard` or `bridge`. They are context only and never count toward a threshold.
 
 **Every number is a lower bound.** tolmap's graph holds only the references it can resolve. It misses calls through variables, dynamic imports and reflection, so a change couples at least as much as reported. The JSON says so in `lower_bound: true`, and the text says so in its last line.
@@ -102,7 +103,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 - **`version` is 1.** Any change to an existing field's meaning or type, and any removal, bumps it. Adding a field does not, so a consumer should ignore fields it does not know, and refuse a version it does not know.
 - **Stable output.** Key order is fixed, and every float is rounded to 6 decimal places. `delta_q` is computed before rounding, and the thresholds compare the rounded values that are printed. The same inputs give a byte-identical report (CLAUDE.md's determinism rule); it holds no timings and no temporary paths.
 - **`head`** is `null` for the working tree.
-- **Added in version 1.** `base_files`, `base_districts` and `thresholds.source` and `outside_graph` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
+- **Added in version 1.** `edges_*[].cause` (issue #336). `base_files`, `base_districts` and `thresholds.source` and `outside_graph` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
 
 | field | type | meaning |
 |---|---|---|
@@ -116,7 +117,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 | `outside_graph` | `{path, base_path, status, reason}[]` | changed files absent from the indexed changes, sorted by path then base path. Rename metadata and statuses match `files`. `unsupported_language` means no extractor supports the path extension; `not_in_scope` includes omitted source languages/roots, extraction exclusions (for example `.test.ts`) and files omitted from a stored snapshot. Reasons deliberately do not guess which exclusion applied. Does not affect thresholds |
 | `unplaced_files` | string[] | head files with no district, sorted |
 | `modularity_base`, `modularity_head`, `delta_q` | number | see above |
-| `edges_added`, `edges_removed` | `{source, target, source_district, target_district, weight, static_import}[]` | heaviest first, then by path |
+| `edges_added`, `edges_removed` | `{source, target, source_district, target_district, weight, static_import, cause}[]` | `cause` is `code` or `prune`; heaviest first, then by path |
 | `landmark_touches` | `{file, kind, detail}[]` | `kind` is `hazard` or `bridge` |
 | `thresholds` | `{max_districts, max_dq, source}` | the thresholds applied, `null` where one was not applied. `source` is `default` (no threshold flag), `flags` (the flags given, and only those) or `report_only` (both `null`) |
 | `verdict` | `"pass" \| "fail"` | `fail` exactly when the exit code is 1 |
@@ -326,7 +327,8 @@ $ tolmap check django --base HEAD~30 --format json
       "source_district": 2,
       "target_district": 0,
       "weight": 0.097254,
-      "static_import": true
+      "static_import": true,
+      "cause": "code"
     },
     {
       "source": "django/core/validators.py",
@@ -334,7 +336,8 @@ $ tolmap check django --base HEAD~30 --format json
       "source_district": 2,
       "target_district": 0,
       "weight": 0.092508,
-      "static_import": true
+      "static_import": true,
+      "cause": "code"
     }
   ],
   "edges_removed": [
@@ -344,7 +347,8 @@ $ tolmap check django --base HEAD~30 --format json
       "source_district": 3,
       "target_district": 0,
       "weight": 0.088049,
-      "static_import": true
+      "static_import": true,
+      "cause": "prune"
     }
   ],
   "landmark_touches": [

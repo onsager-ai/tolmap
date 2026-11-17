@@ -564,6 +564,7 @@ pub enum CheckFileStatus {
 // blended weight on its own side (max-rescaled, so comparable within one
 // graph); `static_import` is true when an import contributes to it, false
 // for an edge made of co-change, proximity or naming similarity alone.
+// `cause` says why the edge differs between the sides: see `CheckEdgeCause`.
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 pub struct CheckEdge {
     pub source: String,
@@ -572,6 +573,18 @@ pub struct CheckEdge {
     pub target_district: usize,
     pub weight: f64,
     pub static_import: bool,
+    pub cause: CheckEdgeCause,
+}
+
+// Why a listed edge is on one side only. `code`: the pair has no candidate
+// edge (before pruning) on the other side, so the code or history changed
+// it. `prune`: the candidate exists on both sides and blending/pruning
+// kept it on one only, so the edge may not reflect any change to its files.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckEdgeCause {
+    Code,
+    Prune,
 }
 
 // A changed file that is a base-map landmark of kind `hazard` or `bridge`.
