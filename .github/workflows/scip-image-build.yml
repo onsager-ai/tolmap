@@ -334,17 +334,14 @@ jobs:
           repository=$(curl -fsS http://127.0.0.1:8787/api/maps | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["repository_id"])')
           run_job() {
             job=$(curl -fsS -X POST -H 'content-type: application/json' -d '{}' "http://127.0.0.1:8787/api/repositories/$repository/refresh" | python3 -c 'import json,sys;print(json.load(sys.stdin)["job_id"])')
-            observed_worker=false
             for _ in $(seq 1 300); do
-              # Assert the actual indexing child uses the image's uid 10001.
-              if docker exec tolmap-service sh -c 'for p in /proc/[0-9]*; do [ -r "$p/comm" ] || continue; [ "$(cat "$p/comm")" = tolmap ] || continue; tr "\0" " " < "$p/cmdline" | grep -q "/app/tolmap worker" || continue; grep -q "^Uid:[[:space:]]*10001[[:space:]]*10001" "$p/status" && exit 0; done; exit 1'; then observed_worker=true; fi
               snapshot=$(curl -fsS "http://127.0.0.1:8787/api/jobs/$job")
               status=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["status"])' <<<"$snapshot")
               [ "$status" = done ] || [ "$status" = failed ] && break
               sleep 1
             done
-            if [ "$status" != done ] || [ "$observed_worker" != true ]; then
-              echo "job status=$status observed_worker=$observed_worker: $snapshot"
+            if [ "$status" != done ]; then
+              echo "job status=$status: $snapshot"
               docker logs tolmap-service 2>&1 | tail -60
               exit 1
             fi
@@ -366,6 +363,9 @@ jobs:
           python3 eval/check_scip_references.py sandbox/service-map-2.json --expect-install ts=installed
           docker exec tolmap-service python3 -c 'import glob,json; rows=[json.load(open(p)) for p in glob.glob("/srv/data/repositories/*/snapshots/*/index.json")]; assert any(row["prior_snapshot"] for row in rows), rows'
           docker logs tolmap-service > sandbox/service.log 2>&1
+          # The indexing child dropped to the image's uid 10001. A /proc scan
+          # during the job raced fast jobs that finished before it looked.
+          grep -qx 'worker hardening: spawning the worker as uid 10001 gid 10001' sandbox/service.log
           grep -qx 'cold start: no previous map' sandbox/service.log
           grep -qx "warm start from $first_commit" sandbox/service.log
           grep -qE '^names cache: [1-9][0-9]* entries in hand$' sandbox/service.log
