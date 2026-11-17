@@ -303,12 +303,16 @@ export interface RoadPlan {
 
 /** Called once per document (loadDocument): picks which district pairs get
  * a road and precomputes their world-space mouth radii. */
-export function buildRoadPlan(doc: MapDocument): RoadPlan[] {
-  const flows = aggregateDistrictFlows(doc);
-  const pairs = selectRoadPairs(flows);
-  return pairs.map((f) => ({
+export function buildRoadPlan(doc: MapDocument, flows = aggregateDistrictFlows(doc)): RoadPlan[] {
+  return selectRoadPairs(flows).map((f) => planRoad(doc, f));
+}
+
+/** One pair's plan, also used for a debt-lens cycle pair that the selection
+ * above left out (issue #348). */
+export function planRoad(doc: MapDocument, f: DistrictFlow): RoadPlan {
+  return {
     ...f,
     raWorld: districtRadius(districtWorldArea(doc.districts[String(f.a)] as District)),
     rbWorld: districtRadius(districtWorldArea(doc.districts[String(f.b)] as District)),
-  }));
+  };
 }

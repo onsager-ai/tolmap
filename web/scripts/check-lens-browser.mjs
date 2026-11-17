@@ -314,6 +314,9 @@ try {
     assert.ok(await page.locator('[data-lens-area]').count()>0,'Debt tints districts at overview');
     assert.equal(await page.locator('[data-lens-stop]').count(),0,'overview hides debt file stops');
     assert.equal(await page.locator('[data-lens-note]').count(),0,'overview hides debt file findings');
+    // Issue #348: Debt recolours roads and draws no path until one is chosen.
+    assert.equal(await page.locator('[data-lens-hop]').count(),0,'Debt draws no path until one is chosen');
+    if (debt.paths.some(path => path.name.startsWith('cycle-'))) assert.ok(await page.locator('[data-lens-cycle-road]').count()>0,'a district cycle recolours its roads');
     await shot('debt-overview');
     for (let i=0; i<10 && await page.locator('[data-lens-note]').count() === 0; i++) await zoomInSettled(page,1);
     assert.ok(await page.locator('[data-lens-note]').count()>0,'file findings appear past the 40 px gate');
@@ -330,6 +333,30 @@ try {
     await shot('debt-reader');
     await page.goBack();
     await page.locator('[data-source-reader]').waitFor({state:'detached'});
+    // Issue #348: one chosen finding is drawn alone, from a link or the panel,
+    // and choosing never moves the camera.
+    const focus = debt.paths.find(path => path.hops.some(hop => hop.resolved));
+    if (focus) {
+      await page.goto(`${url}&lens=%40debt&path=${encodeURIComponent(focus.name)}`);
+      await page.locator('[data-lens-hop]').first().waitFor();
+      assert.ok((await page.locator('[data-lens-hop-hit]').evaluateAll(paths => paths.map(path => path.getAttribute('data-k')))).every(key => key.startsWith('lh:0:')),'only the chosen finding is drawn');
+      assert.equal(new URL(page.url()).searchParams.get('path'),focus.name);
+      assert.equal(new URL(page.url()).searchParams.get('step'),null);
+      await shot('debt-focus');
+      await openPanel();
+      await settleCamera(page);
+      const focusCamera = await cameraBoxes(page);
+      const toggle = panel.locator(`[data-lens-focus="${focus.name}"]`);
+      assert.equal(await toggle.getAttribute('aria-pressed'),'true');
+      await toggle.click();
+      await page.waitForFunction(() => !new URL(location.href).searchParams.has('path'));
+      assert.equal(await page.locator('[data-lens-hop]').count(),0,'clearing the choice draws no path');
+      assert.deepEqual(await cameraBoxes(page),focusCamera,'clearing a finding never moves the camera');
+      await toggle.click();
+      await page.waitForFunction(name => new URL(location.href).searchParams.get('path') === name, focus.name);
+      await page.locator('[data-lens-hop]').first().waitFor();
+      assert.deepEqual(await cameraBoxes(page),focusCamera,'choosing a finding never moves the camera');
+    }
     await page.goto(`${url}&lens=%40debt&lens_compare=true&compare=true&base=${commit}&head=${debtComparison.head}`);
     await comparePanel.locator('[data-lens-comparison-state="loaded"]').waitFor();
     // A phone deep link opens at Peek with counts only; View changes raises it.

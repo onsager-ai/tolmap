@@ -63,7 +63,7 @@ import { GestureRecognizer, PAN_DISMISS_PX, QUIET_AFTER_GESTURE_MS, type Gesture
 import { pinchTransform, type PinchAnchor } from "./pinch";
 import { RenderGate } from "./renderGate";
 import { PIN_CAPITAL_HIDE_ZF, selectPins } from "./pins";
-import { buildRoadGeom, buildRoadPlan, districtRadius, type RoadPlan } from "./roads";
+import { aggregateDistrictFlows, buildRoadGeom, buildRoadPlan, districtRadius, planRoad, type DistrictFlow, type RoadPlan } from "./roads";
 import { aggregateCrossDistrictFlows, aggregateIntraDistrictFlows, selectCrossDistrictPairs, selectStreetPairs, type CrossFlow, type StreetFlow } from "./streets";
 import { compactMap, hasDesktopMapLabels, layoutProfile } from "./layoutProfile";
 import {
@@ -172,6 +172,10 @@ function hollowTriangleGlyph(parent: [number, number], child: [number, number], 
 
 export interface MapRenderState {
   lens?: LensReport;
+  /** Issue #348: directed district pairs `[from, to]` whose road closes a
+   * district cycle (the debt lens's `cycleRoads`). drawRoads paints them red
+   * with one direction mark; nothing else about a road changes. */
+  lensRoads?: readonly (readonly [number, number])[];
   lensComparison?: LensComparison;
   impactFiles?: readonly string[];
   impactDistricts?: readonly number[];
@@ -291,6 +295,11 @@ export class MapRenderer {
   // once here rather than per road per paint.
   private roadPlan: RoadPlan[] = [];
   private roadMaxTotal = 1;
+  // Issue #348: every mainland pair's flow, so a debt-lens cycle pair the
+  // road selection left out still gets its road; `drawnRoads` is what the
+  // last paint drew, which the road hover card reads.
+  private roadFlows = new Map<string, DistrictFlow>();
+  private drawnRoads: RoadPlan[] = [];
   // A4 (hubs, issue #82): every file with fan-in >= HUB_FANIN_THRESHOLD,
   // ranked and named once per document -- see hubs.ts's computeHubs.
   private hubSet: HubSet = { hubs: [], maxFi: 1 };
@@ -671,7 +680,8 @@ export class MapRenderer {
       doc.districts[b].size - doc.districts[a].size || +a - +b);
     this.desktopLabelDistrictIds = [...this.drawableDistrictIds].sort((a, b) =>
       doc.districts[b].size - doc.districts[a].size || +a - +b);
-    this.roadPlan = buildRoadPlan(doc);
+    this.roadFlows = aggregateDistrictFlows(doc);
+    this.roadPlan = buildRoadPlan(doc, this.roadFlows);
     this.roadMaxTotal = Math.max(1, ...this.roadPlan.map((r) => r.total));
     this.hubSet = computeHubs(doc);
     // B4: footprint mode, and its neighbourhood shade/centroid caches --
@@ -1525,7 +1535,10 @@ export class MapRenderer {
               const previous = unique[index];
               const dx = point[0] - previous[0], dy = point[1] - previous[1];
               const length = Math.hypot(dx, dy);
-              const bend = (hop.source === "declared" ? 30 : 14) + (hopIndex + pathIndex) * 8;
+              // Issue #348: the extra bend cycles through six 8 px steps. When
+              // it grew with the index, semon's 108-stop debt cycle path bent
+              // its last hop 30 + 106 * 8 = 878 px off the chord.
+              const bend = (hop.source === "declared" ? 30 : 14) + ((hopIndex + pathIndex) % 6) * 8;
               return `Q${(previous[0] + point[0]) / 2 - dy / length * bend} ${(previous[1] + point[1]) / 2 + dx / length * bend} ${point.join(" ")}`;
             }).join("");
         const key = `lh:${pathIndex}:${hopIndex}`;
@@ -3023,15 +3036,32 @@ export class MapRenderer {
    * through to the district underneath") while a file dot or hub ring drawn
    * later still wins over it. */
   private drawRoads(g: SVGGElement) {
-    const { doc } = this.state!;
+    const { doc, lensRoads } = this.state!;
     const toScreen = (p: [number, number]): [number, number] => [this.X(p[0]), this.Y(p[1])];
-    for (const plan of this.roadPlan) {
+    // Issue #348: the debt lens recolours roads instead of drawing its paths.
+    // `cycle` maps an unordered pair to the directions its cycle edges take.
+    const cycle = new Map<string, Set<number>>();
+    for (const [from, to] of lensRoads ?? []) {
+      const key = `${Math.min(from, to)}-${Math.max(from, to)}`;
+      if (!cycle.has(key)) cycle.set(key, new Set());
+      cycle.get(key)!.add(from);
+    }
+    const plans = [...this.roadPlan];
+    for (const key of cycle.keys()) {
+      const flow = this.roadFlows.get(key);
+      if (flow && !plans.some((plan) => plan.a === flow.a && plan.b === flow.b)) plans.push(planRoad(doc, flow));
+    }
+    this.drawnRoads = plans;
+    for (const plan of plans) {
       const districtA = doc.districts[String(plan.a)];
       const districtB = doc.districts[String(plan.b)];
       if (!districtA || !districtB) continue;
       // Dominant direction: the ribbon's single chevron (or the first of two)
-      // always points the way most imports actually flow.
-      const forward = plan.ab >= plan.ba;
+      // always points the way most imports actually flow. A cycle road's one
+      // chevron points along its cycle edges, or the dominant way when they
+      // run both ways.
+      const sources = cycle.get(`${plan.a}-${plan.b}`);
+      const forward = sources?.size === 1 ? sources.has(plan.a) : plan.ab >= plan.ba;
       const sourceDistrict = forward ? districtA : districtB;
       const targetDistrict = forward ? districtB : districtA;
       const raWorld = forward ? plan.raWorld : plan.rbWorld;
@@ -3041,8 +3071,8 @@ export class MapRenderer {
       // "When minor/major >= 0.35, draw two chevrons ... pointing opposite
       // ways" (spec) -- a near-balanced pair of directed counts reads as
       // effectively bidirectional traffic.
-      const both = major > 0 && minor / major >= 0.35;
-      const widthPx = 1.5 + 6 * Math.sqrt(plan.total / this.roadMaxTotal);
+      const both = !sources && major > 0 && minor / major >= 0.35;
+      const widthPx = (sources ? 2.5 : 1.5) + 6 * Math.sqrt(plan.total / this.roadMaxTotal);
       const geom = buildRoadGeom({
         a: sourceDistrict.c,
         b: targetDistrict.c,
@@ -3059,9 +3089,10 @@ export class MapRenderer {
       g.appendChild(
         el("path", {
           d: "M" + geom.polygon.map((p) => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L") + "Z",
-          fill: "var(--ink)",
-          "fill-opacity": 0.34,
+          fill: sources ? "var(--lens-red)" : "var(--ink)",
+          "fill-opacity": sources ? 0.85 : 0.34,
           "pointer-events": "none",
+          ...(sources ? { "data-lens-cycle-road": key } : {}),
           // Carries the SAME data-k as the invisible hit path below (the
           // multi-polygon-district pattern this file already uses -- see
           // paint()'s district loop, one path per polygon, same data-k) so
@@ -3104,7 +3135,7 @@ export class MapRenderer {
       const nameA = doc.names[String(plan.a)] ?? `district ${plan.a}`;
       const nameB = doc.names[String(plan.b)] ?? `district ${plan.b}`;
       const title = el("title", {});
-      title.textContent = `${nameA} → ${nameB}: ${plan.ab} imports\n${nameB} → ${nameA}: ${plan.ba} imports`;
+      title.textContent = `${nameA} → ${nameB}: ${plan.ab} imports\n${nameB} → ${nameA}: ${plan.ba} imports${sources ? "\nCloses a district cycle" : ""}`;
       hit.appendChild(title);
       g.appendChild(hit);
     }
@@ -4870,7 +4901,7 @@ export class MapRenderer {
       lens,
       lensComparison,
       districtPaths,
-      roadPlan: this.roadPlan,
+      roadPlan: this.drawnRoads,
       streetCache: this.streetCache,
       inAdj: this.inAdj,
       symLocalByGlobal: this.symLocalByGlobal,
