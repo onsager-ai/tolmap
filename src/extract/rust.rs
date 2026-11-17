@@ -2339,6 +2339,7 @@ pub(crate) fn resolve(
                 .into_iter()
                 .map(|(parent, child)| (ids[&parent], ids[&child]))
                 .collect(),
+            descendant_fanin: BTreeMap::new(),
         }),
         generated: Some(generated),
         ts_types: Some(ts_types),

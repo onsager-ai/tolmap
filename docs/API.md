@@ -154,7 +154,7 @@ text, JSON and lens TOML;
 all outputs identify the selections (lens TOML uses a leading comment, which is
 valid TOML and ignored by `tolmap lens check`). Filtered JSON keeps the normal
 DebtReport version and lower-bound evidence, with additive `unfiltered_counts`,
-`filtered_counts` and `filters` fields. DebtReport is now v8 (v8 adds the optional `pinned` object below): `cycle_evidence` is
+`filtered_counts` and `filters` fields. DebtReport is now v9 (v8 added the optional `pinned` object below; v9 adds `pinned.cutoffs_from_base`, `god_files[].raw_fanin` and `descendant_fanin_measured`): `cycle_evidence` is
 `compact` by default for CLI text/JSON. Compact cycles retain member districts,
 `cross_edges`, one `route` and its `closing_edges`, package names and measurement
 flags. Their `package_edges`, `mutual_pairs` and `cut` arrays are empty;
@@ -179,6 +179,13 @@ Extraction, partitioning and layout are unchanged: only the report is. The
 report gains `pinned`: `map_sha256` and `commit` of the base (`commit` is null
 when the base records none), `placed_new_files`, `unplaced_new_files` and the sorted `unplaced_paths`.
 Unpinned reports omit `pinned`.
+
+A pinned report also takes its god and hotspot cutoffs (`god_min_fanin`,
+`god_min_complexity`, `hotspot_min_score` in `thresholds`) from the **base**
+map, and `pinned.cutoffs_from_base` is true. Those cutoffs are nearest-rank cuts
+of the top 5%, so adding a file to the head would otherwise move them and
+promote a file nobody touched. Ranks (`rank`, `fanin_rank`, `complexity_rank`)
+stay within the head.
 
 `tolmap debt diff <before-report.json> <after-report.json>` compares two unfiltered,
 versioned DebtReports. It emits version 2 JSON with each finding marked `added`,
@@ -216,7 +223,13 @@ a cycle `crosses_package` only when those projected package edges form a cycle;
 otherwise it is `within package`, a
 clustering cycle that still lists its package edges. Maps without that sidecar
 report package scope as unmeasured. The report also includes misplaced files,
-god files, hotspots (churn × complexity; the top two include the map's
+god files (fan-in without the mass imported by the file's own Rust submodules,
+transitively; `fanin` is that value, `raw_fanin` the node's fan-in, and the
+cutoff and `fanin_rank` use `fanin`. The mass comes from the optional `D`
+sidecar `descendant_fanin`, rows `[file index, mass]`, omitted when empty;
+`descendant_fanin_measured` is false and `fanin` equals `raw_fanin` when the
+map has none, as for maps that predate it),
+hotspots (churn × complexity; the top two include the map's
 `hazard` landmarks), files with **no inbound edge found**, which excludes
 entry files, and **hidden coupling**: a pair retained in the optional,
 index-aligned map sidecar with at least three co-changes and weight ≥ 0.35 but

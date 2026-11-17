@@ -328,7 +328,7 @@ fn debt_cli_formats_and_exit_codes() {
     let (code, json) = run(&["--map", m, "--format", "json"]);
     assert_eq!(code, 0);
     let compact: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(compact["version"], 8);
+    assert_eq!(compact["version"], debt::DEBT_REPORT_VERSION);
     assert!(compact.get("pinned").is_none());
     assert_eq!(compact["cycle_evidence"], "compact");
     assert_eq!(compact["cycles"][0]["cross_edges"], 3);
@@ -679,7 +679,7 @@ fn debt_cli_partition_from_and_diff_refusals() {
         )
     };
     let (pinned_head, value) = report("pinned-head.json", &head, Some(base.as_path()));
-    assert_eq!(value["version"], 8);
+    assert_eq!(value["version"], debt::DEBT_REPORT_VERSION);
     assert_eq!(value["pinned"]["map_sha256"].as_str().unwrap().len(), 64);
     assert_eq!(value["pinned"]["placed_new_files"], 1);
     assert_eq!(value["pinned"]["unplaced_new_files"], 1);
@@ -764,4 +764,105 @@ fn unplaced_files_join_file_level_findings_only() {
         base_report.cycles[0].cross_edges
     );
     assert!(report.hotspots.iter().any(|h| h.path == "src/new/f5.py"));
+}
+
+// Issue #342: a pinned report holds the god and hotspot cutoffs at the base's
+// values. Adding three low files to the head raises the nearest-rank k from 3
+// to 4, which unpinned promotes `src/f/boundary.py` from nobody-touched to god
+// file and hotspot.
+fn cutoff_base() -> MapDocument {
+    let mut base = synthetic();
+    // [district, x, y, loc, complexity, churn, fan-in, ..]
+    let node = |complexity: usize, churn: usize, fanin: f64| {
+        serde_json::json!([3, 0.0, 0.0, 10, complexity, churn, fanin, 0.0, 0.0, 0.0, 0.0])
+    };
+    let mut extra = vec![
+        ("src/f/x.py".to_owned(), node(40, 6, 5.0)),
+        ("src/f/w.py".to_owned(), node(45, 1, 4.0)),
+        ("src/f/boundary.py".to_owned(), node(35, 5, 3.0)),
+    ];
+    for i in 0..40 {
+        extra.push((format!("src/f/filler{i}.py"), node(1, 1, 0.0)));
+    }
+    for (path, node) in extra {
+        base.files.push(path);
+        base.nodes.push(serde_json::from_value(node).unwrap());
+    }
+    assert_eq!(base.files.len(), 59);
+    base
+}
+
+#[test]
+fn pinned_report_holds_god_and_hotspot_cutoffs_at_the_base() {
+    let base = cutoff_base();
+    let base_report = debt::findings(&base);
+    let t = &base_report.thresholds;
+    assert_eq!(
+        (t.god_min_fanin, t.god_min_complexity, t.hotspot_min_score),
+        (Some(4.0), Some(40), Some(240))
+    );
+    assert!(!paths(base_report.god_files.iter().map(|g| &g.path)).contains(&"src/f/boundary.py"));
+
+    let mut head = base.clone();
+    for i in 0..3 {
+        head.files.push(format!("src/f/new{i}.py"));
+        head.nodes.push(
+            serde_json::from_value(serde_json::json!([
+                3, 0.0, 0.0, 10, 1, 1, 0.0, 0.0, 0.0, 0.0, 0.0
+            ]))
+            .unwrap(),
+        );
+    }
+
+    // Unpinned, the new file moves k and promotes the boundary file.
+    let unpinned = debt::findings(&head);
+    assert!(paths(unpinned.god_files.iter().map(|g| &g.path)).contains(&"src/f/boundary.py"));
+    assert!(paths(unpinned.hotspots.iter().map(|h| &h.path)).contains(&"src/f/boundary.py"));
+
+    let (_, report) = pinned(&head, &base, "sha");
+    assert!(report.pinned.as_ref().unwrap().cutoffs_from_base);
+    let p = &report.thresholds;
+    assert_eq!(
+        (p.god_min_fanin, p.god_min_complexity, p.hotspot_min_score),
+        (t.god_min_fanin, t.god_min_complexity, t.hotspot_min_score)
+    );
+    assert!(!paths(report.god_files.iter().map(|g| &g.path)).contains(&"src/f/boundary.py"));
+    assert!(!paths(report.hotspots.iter().map(|h| &h.path)).contains(&"src/f/boundary.py"));
+    assert_eq!(
+        paths(report.god_files.iter().map(|g| &g.path)),
+        paths(base_report.god_files.iter().map(|g| &g.path))
+    );
+    // Ranks stay within the head: three files more than the base.
+    assert_eq!(report.files, 62);
+}
+
+// Issue #343: god-file fan-in leaves out the mass imported by the file's own
+// Rust submodules; the raw value stays beside it.
+#[test]
+fn god_fanin_excludes_descendant_mass_and_reports_the_raw_value() {
+    let plain = synthetic();
+    let report = debt::findings(&plain);
+    assert!(!report.descendant_fanin_measured);
+    assert_eq!(report.god_files[0].fanin, 9.0);
+    assert_eq!(report.god_files[0].raw_fanin, 9.0);
+
+    let with_sidecar = |mass: f64| {
+        let mut value = serde_json::to_value(&plain).unwrap();
+        value["D"] = serde_json::json!({"descendant_fanin": [[11, mass]]});
+        serde_json::from_value::<MapDocument>(value).unwrap()
+    };
+    let report = debt::findings(&with_sidecar(3.0));
+    assert!(report.descendant_fanin_measured);
+    let god = &report.god_files[0];
+    assert_eq!(
+        (god.path.as_str(), god.fanin, god.raw_fanin),
+        ("src/b/god.py", 6.0, 9.0)
+    );
+    assert_eq!(report.thresholds.god_min_fanin, Some(6.0));
+
+    // With 8 of its 9 imported by its own submodules the file falls below the
+    // next-highest fan-in (2.0) and is no longer a god file.
+    let report = debt::findings(&with_sidecar(8.0));
+    assert!(report.god_files.is_empty());
+    assert_eq!(report.thresholds.god_min_fanin, Some(2.0));
 }

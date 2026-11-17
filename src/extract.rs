@@ -1688,6 +1688,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
         rust_mod: rust_mod_measured.then_some(RustModTree {
             roots: rust_mod_roots,
             pairs: rust_mod_pairs,
+            descendant_fanin: BTreeMap::new(),
         }),
         generated,
         build_entries: None,
@@ -6657,6 +6658,37 @@ fn finish_graph(
         package_roots,
     } = merged;
 
+    // Fan-in mass that a file receives from its own `mod` subtree. `directed`
+    // carries the same per-import shares `fanin` sums, before rounding, so the
+    // two stay consistent. Debt subtracts it from a god file's fan-in; the
+    // node fan-in, edges, blend and partition keep the full value.
+    let mut rust_mod = rust_mod;
+    if let Some(tree) = rust_mod.as_mut() {
+        let mut parents = BTreeMap::<FileId, Vec<FileId>>::new();
+        for &(parent, child) in &tree.pairs {
+            parents.entry(child).or_default().push(parent);
+        }
+        let mut ancestors = BTreeMap::<FileId, BTreeSet<FileId>>::new();
+        for (&(source, target), &weight) in &directed {
+            if !parents.contains_key(&source) {
+                continue;
+            }
+            let found = ancestors.entry(source).or_insert_with(|| {
+                let mut seen = BTreeSet::new();
+                let mut stack = parents[&source].clone();
+                while let Some(file) = stack.pop() {
+                    if seen.insert(file) {
+                        stack.extend(parents.get(&file).into_iter().flatten().copied());
+                    }
+                }
+                seen
+            });
+            if found.contains(&target) {
+                *tree.descendant_fanin.entry(target).or_default() += weight;
+            }
+        }
+    }
+
     let history_stage = progress.stage(crate::progress::StageId::History, None);
     let history = git_history(
         repo,
@@ -7308,6 +7340,55 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    /// Issue #343: the fan-in mass a Rust file receives from its own `mod`
+    /// subtree is recorded beside, not instead of, its node fan-in.
+    #[test]
+    fn rust_descendant_fanin_counts_only_imports_from_the_own_subtree() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        write(
+            root,
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write(root, "src/lib.rs", "pub mod other;\npub mod parent;\n");
+        write(
+            root,
+            "src/parent.rs",
+            "pub mod child;\n\npub fn shared() {}\n",
+        );
+        write(
+            root,
+            "src/parent/child.rs",
+            "use super::shared;\n\npub fn run() {\n    shared();\n}\n",
+        );
+        write(
+            root,
+            "src/other.rs",
+            "use crate::parent::shared;\n\npub fn run() {\n    shared();\n}\n",
+        );
+        git_in(root, &["init", "-q"]);
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-qm", "init"]);
+
+        let graph = build(root, ".", LanguageKind::Rust).unwrap();
+        let parent = graph
+            .nodes
+            .iter()
+            .position(|node| node.file == "src/parent.rs")
+            .unwrap();
+        // Both the child and the unrelated file import the parent.
+        assert_eq!(graph.nodes[parent].fanin, 2.0);
+        let descendant = &graph.rust_mod.as_ref().unwrap().descendant_fanin;
+        assert_eq!(
+            descendant
+                .iter()
+                .map(|(&f, &m)| (f as usize, m))
+                .collect::<Vec<_>>(),
+            [(parent, 1.0)]
+        );
     }
 
     /// Issue #176: co-change read from a named commit, not HEAD, with a
