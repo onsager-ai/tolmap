@@ -687,6 +687,22 @@ fn real_local_repository_add_poll_done() {
         )
     );
     assert_eq!(rows[0]["snapshot_count"], 1);
+    // A complete snapshot offers no retry; only a failed attempt does.
+    let (status, freshness) = http(
+        address,
+        "GET",
+        &format!(
+            "/api/maps/{}/{}/freshness?commit={}",
+            rows[0]["owner"].as_str().unwrap(),
+            rows[0]["repo"].as_str().unwrap(),
+            rows[0]["commit"].as_str().unwrap()
+        ),
+        "",
+    )
+    .unwrap();
+    assert_eq!(status, 200, "{freshness}");
+    assert_eq!(freshness["state"], "complete", "{freshness}");
+    assert_eq!(freshness["retryable"], false, "{freshness}");
 }
 /// Index two commits of a tiny repository through the CLI, then compare them
 /// through the web routes against the retained base snapshot.
