@@ -941,6 +941,7 @@ fn compact(
         .collect();
     MapDocument {
         repo: name,
+        moved_line_filter: layout.weighted.moved_line_filter,
         excluded_tests: None,
         q: layout.modularity,
         names,

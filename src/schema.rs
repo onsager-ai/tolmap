@@ -353,6 +353,9 @@ pub struct Neighbourhood {
 #[ts(export)]
 pub struct MapDocument {
     pub repo: String,
+    /// Whether moved-line filtering was available and applied to git history.
+    #[serde(default)]
+    pub moved_line_filter: bool,
     /// Absent on maps built before test-exclusion measurement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excluded_tests: Option<usize>,
@@ -734,6 +737,9 @@ pub struct GraphData {
     /// Resolved symbol uses indexed into `nodes`; names remain strings.
     pub uses: Vec<(FileId, FileId, String)>,
     pub commits_scanned: usize,
+    /// True when local blobs allowed moved-line filtering of git history.
+    #[serde(default)]
+    pub moved_line_filter: bool,
     // `None` means this graph came from `--graph`, which carries no git
     // history evidence. `Some(empty)` means history was measured and yielded
     // no qualifying pair.
@@ -788,6 +794,8 @@ struct GraphDataWire {
     symbols: BTreeMap<String, Vec<SymbolRow>>,
     uses: Vec<(String, String, String)>,
     commits_scanned: usize,
+    #[serde(default)]
+    moved_line_filter: bool,
     nodes: Vec<SourceNode>,
     edges: Vec<SignalEdge>,
     #[serde(default)]
@@ -853,6 +861,9 @@ impl Serialize for GraphData {
         state.serialize_field("symbols", &self.symbols)?;
         state.serialize_field("uses", &GraphUses(self))?;
         state.serialize_field("commits_scanned", &self.commits_scanned)?;
+        if self.moved_line_filter {
+            state.serialize_field("moved_line_filter", &self.moved_line_filter)?;
+        }
         state.serialize_field("nodes", &self.nodes)?;
         state.serialize_field("edges", &self.edges)?;
         if let Some(references) = &self.references {
@@ -925,6 +936,7 @@ impl<'de> Deserialize<'de> for GraphData {
             symbols: wire.symbols,
             uses,
             commits_scanned: wire.commits_scanned,
+            moved_line_filter: wire.moved_line_filter,
             cochange: None,
             rust_mod: None,
             build_entries: None,
@@ -992,6 +1004,7 @@ mod tests {
             symbols: BTreeMap::new(),
             uses: vec![(0, 1, "Target".to_owned())],
             commits_scanned: 0,
+            moved_line_filter: false,
             cochange: None,
             rust_mod: None,
             build_entries: None,
@@ -1062,6 +1075,7 @@ mod tests {
             symbols: BTreeMap::new(),
             uses: Vec::new(),
             commits_scanned: 0,
+            moved_line_filter: false,
             cochange: None,
             rust_mod: None,
             build_entries: None,
@@ -1097,6 +1111,7 @@ mod tests {
             symbols: BTreeMap::new(),
             uses: Vec::new(),
             commits_scanned: 0,
+            moved_line_filter: false,
             cochange: None,
             rust_mod: None,
             build_entries: None,

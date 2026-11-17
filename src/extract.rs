@@ -6911,6 +6911,7 @@ fn finish_graph(
         symbols,
         uses: uses.into_iter().collect(),
         commits_scanned: history.commits,
+        moved_line_filter: false,
         cochange: Some(cochange),
         rust_mod,
         generated,
