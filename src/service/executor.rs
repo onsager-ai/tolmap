@@ -764,6 +764,17 @@ fn warn_unprivileged_once() {
     });
 }
 
+/// Logged at most once per process, like [`warn_unprivileged_once`]. The
+/// image CI asserts this line: a fast job can finish before a /proc scan
+/// sees the worker, so observing the live child was racy.
+#[cfg(unix)]
+fn announce_drop_once(uid: u32, gid: u32) {
+    static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+    ANNOUNCED.call_once(|| {
+        eprintln!("worker hardening: spawning the worker as uid {uid} gid {gid}");
+    });
+}
+
 /// Chowns `job_dir` (recursively -- it may already hold the names-cache
 /// input file the executor wrote before calling this) to the worker's uid
 /// and locks it to `0700`, before the worker that will run as that uid
@@ -911,6 +922,7 @@ pub(crate) fn run_child(
         if is_root() {
             command.uid(hardening.uid);
             command.gid(hardening.gid);
+            announce_drop_once(hardening.uid, hardening.gid);
         } else {
             warn_unprivileged_once();
         }
