@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 8;
+pub const DEBT_REPORT_VERSION: u32 = 9;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -303,6 +303,9 @@ pub struct PinnedBase {
     pub unplaced_new_files: usize,
     // The unplaced paths, sorted. They count in file-level findings only.
     pub unplaced_paths: Vec<String>,
+    // True: `thresholds` holds the god and hotspot cutoffs computed on the
+    // base map. Ranks still come from the head.
+    pub cutoffs_from_base: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -478,6 +481,40 @@ fn top_cut<T: Copy + PartialOrd + Default>(
         .min(values.len());
     let cut = *sorted.get(k.checked_sub(1)?)?;
     (cut > T::default()).then_some(cut)
+}
+
+// The god and hotspot cutoffs of one map. A pinned report takes them from its
+// base so that adding a file to the head cannot move the cut and promote a
+// file nobody touched.
+struct Cutoffs {
+    god_min_fanin: Option<f64>,
+    god_min_complexity: Option<usize>,
+    hotspot_min_score: Option<usize>,
+}
+
+fn hotspot_scores(map: &MapDocument) -> Vec<Option<usize>> {
+    map.nodes
+        .iter()
+        .zip(&map.files)
+        .map(|(node, path)| {
+            (!is_test_path(path) && !is_non_production_path(path))
+                .then(|| node.churn() * node.complexity())
+        })
+        .collect()
+}
+
+fn cutoffs(map: &MapDocument) -> Cutoffs {
+    let complexity: Vec<usize> = map.nodes.iter().map(|r| r.complexity()).collect();
+    let production: Vec<usize> = hotspot_scores(map).into_iter().flatten().collect();
+    Cutoffs {
+        god_min_fanin: top_cut(
+            &map.nodes.iter().map(|r| r.fanin()).collect::<Vec<f64>>(),
+            GOD_TOP_FRACTION,
+            1,
+        ),
+        god_min_complexity: top_cut(&complexity, GOD_TOP_FRACTION, 1),
+        hotspot_min_score: top_cut(&production, HOTSPOT_TOP_FRACTION, HOTSPOT_MIN_COUNT),
+    }
 }
 
 fn rank<T: PartialOrd>(values: &[T], value: &T) -> usize {
@@ -781,12 +818,17 @@ fn cycles(map: &MapDocument, unplaced: Option<usize>) -> Vec<DistrictCycle> {
 }
 
 pub fn findings(map: &MapDocument) -> DebtReport {
-    findings_with_unplaced(map, None)
+    findings_with_unplaced(map, None, None)
 }
 
 // `unplaced` is the district id that stands for files with no base district:
 // they take part in file-level findings but in no district cycle or tally.
-fn findings_with_unplaced(map: &MapDocument, unplaced: Option<usize>) -> DebtReport {
+// `base_cutoffs` replaces the cutoffs computed on `map`; ranks stay within it.
+fn findings_with_unplaced(
+    map: &MapDocument,
+    unplaced: Option<usize>,
+    base_cutoffs: Option<Cutoffs>,
+) -> DebtReport {
     let n = map.files.len();
     let district = |f: usize| map.nodes[f].district();
     let file_edges = map
@@ -918,8 +960,11 @@ fn findings_with_unplaced(map: &MapDocument, unplaced: Option<usize>) -> DebtRep
 
     let fanin: Vec<f64> = map.nodes.iter().map(|r| r.fanin()).collect();
     let complexity: Vec<usize> = map.nodes.iter().map(|r| r.complexity()).collect();
-    let god_min_fanin = top_cut(&fanin, GOD_TOP_FRACTION, 1);
-    let god_min_complexity = top_cut(&complexity, GOD_TOP_FRACTION, 1);
+    let Cutoffs {
+        god_min_fanin,
+        god_min_complexity,
+        hotspot_min_score,
+    } = base_cutoffs.unwrap_or_else(|| cutoffs(map));
     let mut god_files: Vec<GodFile> = match (god_min_fanin, god_min_complexity) {
         (Some(cf), Some(cc)) => (0..n)
             .filter(|&f| fanin[f] >= cf && complexity[f] >= cc)
@@ -955,11 +1000,6 @@ fn findings_with_unplaced(map: &MapDocument, unplaced: Option<usize>) -> DebtRep
         .count();
     let production =
         |f: usize| !is_test_path(&map.files[f]) && !is_non_production_path(&map.files[f]);
-    let production_scores = (0..n)
-        .filter(|&f| production(f))
-        .map(|f| score[f])
-        .collect::<Vec<_>>();
-    let hotspot_min_score = top_cut(&production_scores, HOTSPOT_TOP_FRACTION, HOTSPOT_MIN_COUNT);
     let mut hot: Vec<usize> = match hotspot_min_score {
         Some(cut) => (0..n)
             .filter(|&f| production(f) && score[f] >= cut)
@@ -1609,7 +1649,7 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
     if let Some(pin) = &report.pinned {
         let _ = writeln!(
             out,
-            "pinned to base map sha256={} commit={}: {} new files placed, {} unplaced",
+            "pinned to base map sha256={} commit={}: {} new files placed, {} unplaced; god and hotspot cutoffs from the base",
             pin.map_sha256,
             pin.commit.as_deref().unwrap_or("unknown"),
             pin.placed_new_files,
@@ -2028,13 +2068,18 @@ pub fn findings_pinned(
     base_commit: Option<String>,
 ) -> (MapDocument, DebtReport) {
     let (relabeled, placed, unplaced, left) = relabel_to_base(head, base);
-    let mut report = findings_with_unplaced(&relabeled, (!left.is_empty()).then_some(unplaced));
+    let mut report = findings_with_unplaced(
+        &relabeled,
+        (!left.is_empty()).then_some(unplaced),
+        Some(cutoffs(base)),
+    );
     report.pinned = Some(PinnedBase {
         map_sha256: base_sha256,
         commit: base_commit,
         placed_new_files: placed,
         unplaced_new_files: left.len(),
         unplaced_paths: left,
+        cutoffs_from_base: true,
     });
     (relabeled, report)
 }
