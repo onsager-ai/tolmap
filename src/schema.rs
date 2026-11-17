@@ -421,6 +421,11 @@ pub struct DebtSidecar {
     pub rust_mod: Option<RustModSidecar>,
     #[serde(default)]
     pub build_entries: Option<BuildEntrySidecar>,
+    /// Per file, the fan-in mass imported by files in its own Rust module
+    /// subtree. Omitted when empty, so a map that predates the measurement
+    /// looks the same as one with no such imports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descendant_fanin: Option<Vec<DescendantFanin>>,
     #[serde(default)]
     pub generated: Option<Vec<GeneratedFile>>,
     #[serde(default)]
@@ -473,6 +478,11 @@ pub struct RustModSidecar {
     pub roots: Vec<usize>,
     pub pairs: Vec<RustModPair>,
 }
+
+/// `[file index, fan-in mass]`, the mass rounded to two decimal places.
+#[derive(Clone, Debug, Serialize, Deserialize, TS)]
+#[ts(type = "[number, number]")]
+pub struct DescendantFanin(pub (usize, f64));
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(type = "[number, number]")]
@@ -694,6 +704,9 @@ pub type FileId = u32;
 pub struct RustModTree {
     pub roots: BTreeSet<FileId>,
     pub pairs: BTreeSet<(FileId, FileId)>,
+    /// Per file, the fan-in mass that comes from files in its own `mod`
+    /// subtree (transitively). Filled by `finish_graph`; empty when none.
+    pub descendant_fanin: BTreeMap<FileId, f64>,
 }
 
 #[derive(Clone, Debug)]

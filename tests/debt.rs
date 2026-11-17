@@ -328,7 +328,8 @@ fn debt_cli_formats_and_exit_codes() {
     let (code, json) = run(&["--map", m, "--format", "json"]);
     assert_eq!(code, 0);
     let compact: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(compact["version"], 7);
+    assert_eq!(compact["version"], debt::DEBT_REPORT_VERSION);
+    assert!(compact.get("pinned").is_none());
     assert_eq!(compact["cycle_evidence"], "compact");
     assert_eq!(compact["cycles"][0]["cross_edges"], 3);
     assert_eq!(
@@ -536,4 +537,332 @@ fn pinned_cycle_modes_and_top_are_deterministic() {
         let zero: serde_json::Value = serde_json::from_slice(&run(mode, Some("0"))).unwrap();
         assert!(zero["cycles"].as_array().unwrap().is_empty());
     }
+}
+
+// Issue #334: a head that repartitions around one changed file. Unpinned, the
+// repartition moves the misplaced finding; pinned to the base, only what the
+// change touched differs.
+fn repartitioned_head() -> MapDocument {
+    let mut head = synthetic();
+    // Churn changes on exactly one file.
+    head.nodes[12].0 .5 = 25;
+    // The head's own clustering moved the misplaced file into district a.
+    head.nodes[7].0 .0 = 0;
+    // Two new files: a.core imports one, one has no edge at all. Their head
+    // districts are arbitrary and must not matter.
+    for path in ["src/a/new.py", "src/new/island.py"] {
+        head.files.push(path.to_owned());
+        let mut node = head.nodes[1].clone();
+        node.0 .0 = 2;
+        head.nodes.push(node);
+    }
+    head.edges.push([1, 16]);
+    head
+}
+
+fn pinned(head: &MapDocument, base: &MapDocument, sha: &str) -> (MapDocument, DebtReport) {
+    debt::findings_pinned(head, base, sha.to_owned(), Some("abc".to_owned()))
+}
+
+#[test]
+fn pinned_report_keeps_base_districts_and_only_the_change_differs() {
+    let base = synthetic();
+    let head = repartitioned_head();
+    let base_report = debt::findings(&base);
+    assert_eq!(
+        paths(base_report.misplaced.iter().map(|m| &m.path)),
+        ["src/d/misplaced.py"]
+    );
+
+    // Unpinned, the repartition hides the misplaced file.
+    let unpinned = debt::findings(&head);
+    assert!(unpinned.misplaced.is_empty());
+
+    let (relabeled, report) = pinned(&head, &base, "sha");
+    let pin = report.pinned.as_ref().unwrap();
+    assert_eq!(pin.map_sha256, "sha");
+    assert_eq!(pin.commit.as_deref(), Some("abc"));
+    assert_eq!((pin.placed_new_files, pin.unplaced_new_files), (1, 1));
+    assert_eq!(pin.unplaced_paths, ["src/new/island.py"]);
+    // Shared files keep their base district; new files take a.core's, or
+    // the unplaced district.
+    assert_eq!(relabeled.nodes[7].district(), 3);
+    assert_eq!(relabeled.nodes[16].district(), 0);
+    assert_eq!(relabeled.names["0"], "a");
+    assert_eq!(
+        relabeled.names[&relabeled.nodes[17].district().to_string()],
+        "(unplaced)"
+    );
+
+    // The misplaced finding survives, with base district numbers and names.
+    assert_eq!(report.misplaced.len(), 1);
+    assert_eq!(report.misplaced[0].path, "src/d/misplaced.py");
+    assert_eq!(report.misplaced[0].district, 3);
+    // Cycles are the base's.
+    assert_eq!(report.cycles.len(), 1);
+    assert_eq!(report.cycles[0].route, base_report.cycles[0].route);
+    assert_eq!(
+        report.cycles[0].closing_edges,
+        base_report.cycles[0].closing_edges
+    );
+    // God files and unreached files are untouched by the change.
+    assert_eq!(
+        paths(report.god_files.iter().map(|g| &g.path)),
+        paths(base_report.god_files.iter().map(|g| &g.path))
+    );
+    assert_eq!(
+        paths(report.unreached.iter().map(|u| &u.path)),
+        paths(base_report.unreached.iter().map(|u| &u.path))
+    );
+    // The one metric change shows up on the one changed file.
+    let churn = |r: &DebtReport| {
+        r.hotspots
+            .iter()
+            .find(|h| h.path == "src/c/hot.py")
+            .map(|h| h.churn)
+    };
+    assert_eq!(churn(&base_report), Some(20));
+    assert_eq!(churn(&report), Some(25));
+}
+
+#[test]
+fn pinned_report_to_the_same_map_is_the_unpinned_report() {
+    let base = synthetic();
+    let (_, report) = pinned(&base, &base, "sha");
+    let mut plain = debt::findings(&base);
+    plain.pinned = report.pinned.clone();
+    assert_eq!(debt::render_json(&report), debt::render_json(&plain));
+    let pin = report.pinned.unwrap();
+    assert_eq!((pin.placed_new_files, pin.unplaced_new_files), (0, 0));
+}
+
+#[test]
+fn debt_cli_partition_from_and_diff_refusals() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, value: &MapDocument| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        path
+    };
+    let base = write("base.json", &synthetic());
+    let head = write("head.json", &repartitioned_head());
+    let other = write("other.json", &{
+        let mut map = synthetic();
+        map.repo = "other".to_owned();
+        map
+    });
+    let debt_cmd = |args: &[&std::path::Path]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tolmap"))
+            .arg("debt")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let report = |name: &str, map: &std::path::Path, from: Option<&std::path::Path>| {
+        let mut args = vec![
+            std::path::Path::new("--map"),
+            map,
+            std::path::Path::new("--format"),
+            std::path::Path::new("json"),
+        ];
+        if let Some(from) = from {
+            args.push(std::path::Path::new("--partition-from"));
+            args.push(from);
+        }
+        let out = debt_cmd(&args);
+        assert_eq!(out.status.code(), Some(0));
+        let path = dir.path().join(name);
+        std::fs::write(&path, &out.stdout).unwrap();
+        (
+            path,
+            serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap(),
+        )
+    };
+    let (pinned_head, value) = report("pinned-head.json", &head, Some(base.as_path()));
+    assert_eq!(value["version"], debt::DEBT_REPORT_VERSION);
+    assert_eq!(value["pinned"]["map_sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(value["pinned"]["placed_new_files"], 1);
+    assert_eq!(value["pinned"]["unplaced_new_files"], 1);
+    let (pinned_base, _) = report("pinned-base.json", &base, Some(base.as_path()));
+    let (plain_base, plain) = report("plain-base.json", &base, None);
+    assert!(plain.get("pinned").is_none());
+    let (pinned_other, _) = report("pinned-other.json", &head, Some(other.as_path()));
+
+    let diff = |a: &std::path::Path, b: &std::path::Path| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_tolmap"))
+            .args(["debt", "diff"])
+            .arg(a)
+            .arg(b)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    assert_eq!(diff(&pinned_base, &pinned_head).0, Some(0));
+    let (code, err) = diff(&plain_base, &pinned_head);
+    assert_eq!(code, Some(2));
+    assert!(err.contains("pinned"), "{err}");
+    assert_eq!(diff(&pinned_head, &plain_base).0, Some(2));
+    let (code, err) = diff(&pinned_base, &pinned_other);
+    assert_eq!(code, Some(2));
+    assert!(err.contains("different base"), "{err}");
+    // An unreadable base map is an input error.
+    let absent = dir.path().join("absent.json");
+    assert_eq!(
+        debt_cmd(&[
+            std::path::Path::new("--map"),
+            head.as_path(),
+            std::path::Path::new("--partition-from"),
+            absent.as_path()
+        ])
+        .status
+        .code(),
+        Some(2)
+    );
+}
+
+// An unplaced new file can have edges: a new file whose only edges go to other
+// new files has none to a base file, so it stays unplaced. Those edges have no
+// district side, so it is neither misplaced nor part of a district cycle, but
+// it still counts in file-level findings.
+#[test]
+fn unplaced_files_join_file_level_findings_only() {
+    let base = synthetic();
+    let mut head = synthetic();
+    // Files 16..=20 are placed in district a through src/a/core.py; file 21
+    // links only to them, with enough edges to be misplaced if it had a
+    // district of its own.
+    for i in 0..6 {
+        head.files.push(format!("src/new/f{i}.py"));
+        let mut node = head.nodes[1].clone();
+        node.0 .0 = 2;
+        head.nodes.push(node);
+    }
+    for i in 16..21 {
+        head.edges.push([1, i]);
+        head.edges.push([21, i]);
+    }
+    // High churn x complexity makes the unplaced file a hotspot.
+    head.nodes[21].0 .4 = 100;
+    head.nodes[21].0 .5 = 100;
+    let (relabeled, report) = pinned(&head, &base, "sha");
+    let pin = report.pinned.as_ref().unwrap();
+    assert_eq!((pin.placed_new_files, pin.unplaced_new_files), (5, 1));
+    assert_eq!(pin.unplaced_paths, ["src/new/f5.py"]);
+    assert_ne!(relabeled.nodes[21].district(), 0);
+    let base_report = debt::findings(&base);
+    assert_eq!(
+        paths(report.misplaced.iter().map(|m| &m.path)),
+        paths(base_report.misplaced.iter().map(|m| &m.path))
+    );
+    assert_eq!(report.cycles.len(), base_report.cycles.len());
+    assert_eq!(report.cycles[0].route, base_report.cycles[0].route);
+    assert_eq!(
+        report.cycles[0].cross_edges,
+        base_report.cycles[0].cross_edges
+    );
+    assert!(report.hotspots.iter().any(|h| h.path == "src/new/f5.py"));
+}
+
+// Issue #342: a pinned report holds the god and hotspot cutoffs at the base's
+// values. Adding three low files to the head raises the nearest-rank k from 3
+// to 4, which unpinned promotes `src/f/boundary.py` from nobody-touched to god
+// file and hotspot.
+fn cutoff_base() -> MapDocument {
+    let mut base = synthetic();
+    // [district, x, y, loc, complexity, churn, fan-in, ..]
+    let node = |complexity: usize, churn: usize, fanin: f64| {
+        serde_json::json!([3, 0.0, 0.0, 10, complexity, churn, fanin, 0.0, 0.0, 0.0, 0.0])
+    };
+    let mut extra = vec![
+        ("src/f/x.py".to_owned(), node(40, 6, 5.0)),
+        ("src/f/w.py".to_owned(), node(45, 1, 4.0)),
+        ("src/f/boundary.py".to_owned(), node(35, 5, 3.0)),
+    ];
+    for i in 0..40 {
+        extra.push((format!("src/f/filler{i}.py"), node(1, 1, 0.0)));
+    }
+    for (path, node) in extra {
+        base.files.push(path);
+        base.nodes.push(serde_json::from_value(node).unwrap());
+    }
+    assert_eq!(base.files.len(), 59);
+    base
+}
+
+#[test]
+fn pinned_report_holds_god_and_hotspot_cutoffs_at_the_base() {
+    let base = cutoff_base();
+    let base_report = debt::findings(&base);
+    let t = &base_report.thresholds;
+    assert_eq!(
+        (t.god_min_fanin, t.god_min_complexity, t.hotspot_min_score),
+        (Some(4.0), Some(40), Some(240))
+    );
+    assert!(!paths(base_report.god_files.iter().map(|g| &g.path)).contains(&"src/f/boundary.py"));
+
+    let mut head = base.clone();
+    for i in 0..3 {
+        head.files.push(format!("src/f/new{i}.py"));
+        head.nodes.push(
+            serde_json::from_value(serde_json::json!([
+                3, 0.0, 0.0, 10, 1, 1, 0.0, 0.0, 0.0, 0.0, 0.0
+            ]))
+            .unwrap(),
+        );
+    }
+
+    // Unpinned, the new file moves k and promotes the boundary file.
+    let unpinned = debt::findings(&head);
+    assert!(paths(unpinned.god_files.iter().map(|g| &g.path)).contains(&"src/f/boundary.py"));
+    assert!(paths(unpinned.hotspots.iter().map(|h| &h.path)).contains(&"src/f/boundary.py"));
+
+    let (_, report) = pinned(&head, &base, "sha");
+    assert!(report.pinned.as_ref().unwrap().cutoffs_from_base);
+    let p = &report.thresholds;
+    assert_eq!(
+        (p.god_min_fanin, p.god_min_complexity, p.hotspot_min_score),
+        (t.god_min_fanin, t.god_min_complexity, t.hotspot_min_score)
+    );
+    assert!(!paths(report.god_files.iter().map(|g| &g.path)).contains(&"src/f/boundary.py"));
+    assert!(!paths(report.hotspots.iter().map(|h| &h.path)).contains(&"src/f/boundary.py"));
+    assert_eq!(
+        paths(report.god_files.iter().map(|g| &g.path)),
+        paths(base_report.god_files.iter().map(|g| &g.path))
+    );
+    // Ranks stay within the head: three files more than the base.
+    assert_eq!(report.files, 62);
+}
+
+// Issue #343: god-file fan-in leaves out the mass imported by the file's own
+// Rust submodules; the raw value stays beside it.
+#[test]
+fn god_fanin_excludes_descendant_mass_and_reports_the_raw_value() {
+    let plain = synthetic();
+    let report = debt::findings(&plain);
+    assert!(!report.descendant_fanin_measured);
+    assert_eq!(report.god_files[0].fanin, 9.0);
+    assert_eq!(report.god_files[0].raw_fanin, 9.0);
+
+    let with_sidecar = |mass: f64| {
+        let mut value = serde_json::to_value(&plain).unwrap();
+        value["D"] = serde_json::json!({"descendant_fanin": [[11, mass]]});
+        serde_json::from_value::<MapDocument>(value).unwrap()
+    };
+    let report = debt::findings(&with_sidecar(3.0));
+    assert!(report.descendant_fanin_measured);
+    let god = &report.god_files[0];
+    assert_eq!(
+        (god.path.as_str(), god.fanin, god.raw_fanin),
+        ("src/b/god.py", 6.0, 9.0)
+    );
+    assert_eq!(report.thresholds.god_min_fanin, Some(6.0));
+
+    // With 8 of its 9 imported by its own submodules the file falls below the
+    // next-highest fan-in (2.0) and is no longer a god file.
+    let report = debt::findings(&with_sidecar(8.0));
+    assert!(report.god_files.is_empty());
+    assert_eq!(report.thresholds.god_min_fanin, Some(2.0));
 }

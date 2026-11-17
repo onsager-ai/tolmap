@@ -114,6 +114,29 @@ tolmap debt --map "$MAP" --district 'CLI · checking' --format json
 tolmap debt diff before-debt.json after-debt.json
 ```
 
+To judge a refactor, hold both sides to the base partition. Independently
+partitioned maps churn: files change district and flags appear or vanish on
+files nobody touched.
+
+```sh
+tolmap build "$BASE_CHECKOUT" --name base --out maps    # one map per side
+tolmap build "$HEAD_CHECKOUT" --name head --out maps
+tolmap debt --map maps/base.json --partition-from maps/base.json --format json > before-debt.json
+tolmap debt --map maps/head.json --partition-from maps/base.json --format json > after-debt.json
+tolmap debt diff before-debt.json after-debt.json
+```
+
+Pin both reports to the same base: `debt diff` exits 2 for a pinned report
+against an unpinned one, or two pinned to different bases. Read `pinned` in the
+head report: `unplaced_new_files` are new files with no edge to a base file,
+listed in `unplaced_paths` (file-level findings only, no district cycle or misplaced finding), and `placed_new_files` took the base district
+holding most of their edges. A pinned report also takes its god and hotspot
+cutoffs from the base (`thresholds`, `pinned.cutoffs_from_base`), so a file
+nobody touched does not become a hotspot because the head has more files.
+A god file's `fanin` leaves out imports from its own Rust submodules; `raw_fanin`
+is the unadjusted value, and `descendant_fanin_measured: false` means the map
+predates that measurement.
+
 `--kind` is repeatable; `--path` accepts a prefix or glob. `--top` limits ranked
 hotspot/god findings and cycles. Cycles default to compact summaries; use
 `--cycle-evidence full` for package, mutual-pair and cut bundles. Keep totals, filter
