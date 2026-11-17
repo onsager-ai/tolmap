@@ -8,6 +8,12 @@ tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
              [--max-districts N] [--max-dq X | --report-only] [--format text|json]
 ```
 
+For a registered GitHub repository, `--repo OWNER/NAME` selects its stored snapshot
+and retained source, not the clone/worktree in the current directory. Supply
+`--head <retained-commit>` for that workflow. To check local changes from a clone
+or worktree, use `tolmap check . --base <commit> --report-only` and omit `--repo`;
+the missing-head error includes the selected snapshot's exact base commit.
+
 ## Flags
 
 | flag | meaning |

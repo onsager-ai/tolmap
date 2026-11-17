@@ -760,8 +760,12 @@ pub fn resolve_check(
         );
         PathBuf::from(&repo.location)
     } else {
-        let head = head.context("remote-only check requires --head and retained source")?;
-        ensure!(snapshot.source_path.is_dir(), "snapshot source is missing");
+        let head = head.with_context(|| remote_check_guidance(&snapshot.commit))?;
+        ensure!(
+            snapshot.source_path.is_dir(),
+            "retained snapshot source is missing; use a local checkout: tolmap check . --base {} --report-only (omit --repo)",
+            snapshot.commit
+        );
         // check creates temporary detached worktrees from this retained bare source.
         ensure!(!head.starts_with('-'), "invalid --head");
         snapshot.source_path.clone()
@@ -775,6 +779,24 @@ pub fn resolve_check(
         );
     }
     Ok((path, snapshot.commit, Some(snapshot.map_path)))
+}
+
+fn remote_check_guidance(base: &str) -> String {
+    format!(
+        "GitHub library entry has no working-tree head; pass --head <retained-commit> to check retained source, or from your clone/worktree run: tolmap check . --base {base} --report-only (omit --repo)"
+    )
+}
+
+#[cfg(test)]
+mod check_resolution_tests {
+    #[test]
+    fn github_entry_without_head_names_both_supported_workflows() {
+        let message = super::remote_check_guidance("abc123");
+        assert!(message.contains("no working-tree head"));
+        assert!(message.contains("--head <retained-commit>"));
+        assert!(message.contains("tolmap check . --base abc123 --report-only"));
+        assert!(message.contains("omit --repo"));
+    }
 }
 
 /// Detached view of retained objects for build/detect. Its lifetime owns cleanup.
