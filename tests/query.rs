@@ -37,6 +37,36 @@ fn pinned_file_symbol_and_ambiguity() {
 }
 
 #[test]
+fn missing_paths_are_explicit_and_suggestions_have_stable_ties() {
+    let mut s = fixture("tolmap");
+    s.map.files = vec!["src/b.ts".into(), "src/a.ts".into(), "lib/z.ts".into()];
+    let response = s.where_is("src/c.ts", 0).unwrap();
+    assert_eq!(response.total, 0);
+    assert!(!response.truncated);
+    let json = serde_json::to_value(&response).unwrap();
+    assert_eq!(json["query"]["missing_path"], "src/c.ts");
+    assert_eq!(
+        json["query"]["suggestions"],
+        serde_json::json!(["src/a.ts", "src/b.ts", "lib/z.ts"])
+    );
+    let text = tolmap::query::text(&response);
+    assert!(text.contains("path is not in the map: src/c.ts"));
+    assert!(text.contains("nearest mapped paths:"));
+    assert!(text.find("src/a.ts").unwrap() < text.find("src/b.ts").unwrap());
+    s.map.files.reverse();
+    assert_eq!(
+        serde_json::to_value(s.where_is("src/c.ts", 0).unwrap()).unwrap(),
+        json
+    );
+    assert!(
+        serde_json::to_value(fixture("tolmap").where_is("missing_symbol", 1).unwrap()).unwrap()
+            ["query"]
+            .get("missing_path")
+            .is_none()
+    );
+}
+
+#[test]
 fn pinned_deps_match_all_edges_and_keep_total() {
     for name in ["tolmap", "flask"] {
         let s = fixture(name);

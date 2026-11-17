@@ -78,6 +78,10 @@ pub enum Query {
     Where {
         target: String,
         ambiguous: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missing_path: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        suggestions: Vec<String>,
     },
     Deps {
         path: String,

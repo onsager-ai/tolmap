@@ -66,7 +66,9 @@ tolmap route src/main.rs src/schema.rs --map "$MAP"
 ```
 
 `overview` lists districts, not entry landmarks; use manifests/source to discover
-entry paths. Paths are exact repository-relative paths, with `/`. JSON is the default;
+entry paths. Paths are exact repository-relative paths, with `/`. Missing path
+lookups report `query.missing_path` and nearest mapped `query.suggestions`;
+suggestions are not matches. JSON is the default;
 `--format text` is for people. `deps` is direct adjacency, not transitive impact.
 `route` is an **import path**, potentially reversed or undirected as its
 `edge_kind` reports, not a runtime call chain. An empty result is not evidence

@@ -56,6 +56,24 @@ pub struct RouteArgs {
     pub options: QueryOptions,
 }
 
+// Levenshtein distance over characters; path text breaks equal-distance ties.
+fn path_distance(a: &str, b: &str) -> usize {
+    let b: Vec<_> = b.chars().collect();
+    let mut row: Vec<_> = (0..=b.len()).collect();
+    for (i, left) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, right) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (row[j] + 1)
+                .min(above + 1)
+                .min(diagonal + usize::from(left != *right));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
 pub struct Snapshot {
     pub map: MapDocument,
     pub identity: MapIdentity,
@@ -187,6 +205,8 @@ impl Snapshot {
                 Query::Where {
                     target: target.into(),
                     ambiguous: false,
+                    missing_path: None,
+                    suggestions: Vec::new(),
                 },
                 limit,
                 vec![QueryResult::File {
@@ -194,6 +214,28 @@ impl Snapshot {
                     district: self.district(file),
                     symbol: None,
                 }],
+                None,
+            ));
+        }
+        if !target.contains("::")
+            && (target.contains('/') || Path::new(target).extension().is_some())
+        {
+            let mut nearest: Vec<_> = self
+                .map
+                .files
+                .iter()
+                .map(|path| (path_distance(target, path), path.clone()))
+                .collect();
+            nearest.sort();
+            return Ok(self.response(
+                Query::Where {
+                    target: target.into(),
+                    ambiguous: false,
+                    missing_path: Some(target.into()),
+                    suggestions: nearest.into_iter().take(3).map(|(_, path)| path).collect(),
+                },
+                limit,
+                Vec::new(),
                 None,
             ));
         }
@@ -296,6 +338,8 @@ impl Snapshot {
             Query::Where {
                 target: target.into(),
                 ambiguous,
+                missing_path: None,
+                suggestions: Vec::new(),
             },
             limit,
             results,
@@ -550,6 +594,19 @@ pub fn text(report: &QueryResponse) -> String {
     }
     match &report.query {
         Query::Status {} => {}
+        Query::Where {
+            missing_path: Some(path),
+            suggestions,
+            ..
+        } => {
+            out.push_str(&format!("path is not in the map: {path}\n"));
+            if !suggestions.is_empty() {
+                out.push_str("nearest mapped paths:\n");
+                for suggestion in suggestions {
+                    out.push_str(&format!("  {suggestion}\n"));
+                }
+            }
+        }
         Query::Overview {
             files,
             imports,

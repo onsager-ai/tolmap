@@ -37,7 +37,11 @@ using `/`; they are not filesystem paths relative to the current directory.
 is a candidate; `query.ambiguous` is true when there is more than one, even if
 the limit hides all but one. Use a returned qualified name (and inspect line
 ranges if that still names several definitions). No candidate is selected for
-the caller.
+the caller. A missing path-shaped target (contains `/` or an extension, without
+`::`) returns zero matches with `query.missing_path` and up to three
+`query.suggestions`: mapped paths ordered by character edit distance, then path.
+Text says the path is absent and lists those suggestions. Suggestions are
+advisory metadata, independent of `--limit`, and are never counted as matches.
 
 Only a symbol lookup reads the map's `<stem>.symbols.json` sibling, when present.
 A registered personal snapshot uses its retained
