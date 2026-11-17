@@ -698,6 +698,7 @@ fn compact(
         references: layout.weighted.references.clone(),
         build_output_mirror: layout.weighted.build_output_mirror,
         python_cross_project: layout.weighted.python_cross_project,
+        history_moves: layout.weighted.history_moves,
     };
     let files = layout
         .weighted
