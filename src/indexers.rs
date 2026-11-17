@@ -1514,6 +1514,11 @@ direct.on('error', () => askProxy());
         repo: &Path,
         before: &std::collections::BTreeSet<PathBuf>,
     ) -> Vec<Rc<CleanupDirectory>> {
+        // The path to the checkout is trusted and may contain symlinks. Resolve
+        // it once; traversal inside the checkout still never follows symlinks.
+        let Ok(absolute) = fs::canonicalize(repo) else {
+            return Vec::new();
+        };
         let Ok(file) = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -1522,16 +1527,8 @@ direct.on('error', () => askProxy());
             return Vec::new();
         };
         let mut root = Rc::new(CleanupDirectory { file, parent: None });
-        let absolute = if repo.is_absolute() {
-            repo.to_path_buf()
-        } else {
-            let Ok(current) = std::env::current_dir() else {
-                return Vec::new();
-            };
-            current.join(repo)
-        };
-        // Pin every component, including the checkout itself. No intermediate
-        // symlink in the supplied repository path may redirect collection.
+        // Pin the resolved components, including the checkout itself, so a
+        // replacement after collection cannot redirect cleanup.
         for component in absolute.components() {
             use std::path::Component;
             let name = match component {
@@ -1548,27 +1545,36 @@ direct.on('error', () => askProxy());
             };
             root = directory;
         }
-        let mut stack = vec![(root, repo.to_path_buf())];
+        let Ok(names) = root.names() else {
+            return Vec::new();
+        };
+        // Pending siblings share their parent's handle and open only when
+        // popped. Open fds depend on traversal depth and the ancestor chains of
+        // collected node_modules, not the number of pending sibling entries.
+        let mut stack = names
+            .into_iter()
+            .map(|name| (Rc::clone(&root), name, repo.to_path_buf()))
+            .collect::<Vec<_>>();
         let mut found = Vec::new();
-        while let Some((directory, path)) = stack.pop() {
+        while let Some((parent, name, parent_path)) = stack.pop() {
+            if parent_path == repo && name.as_c_str() == c".git" {
+                continue;
+            }
+            let Ok(directory) = CleanupDirectory::open(&parent, &name) else {
+                continue;
+            };
+            let path = parent_path.join(std::ffi::OsStr::from_bytes(name.to_bytes()));
+            if name.as_c_str() == c"node_modules" {
+                if !before.contains(&path) {
+                    found.push(directory);
+                }
+                continue;
+            }
             let Ok(names) = directory.names() else {
                 continue;
             };
             for name in names {
-                if path == repo && name.as_c_str() == c".git" {
-                    continue;
-                }
-                let Ok(child) = CleanupDirectory::open(&directory, &name) else {
-                    continue;
-                };
-                let child_path = path.join(std::ffi::OsStr::from_bytes(name.to_bytes()));
-                if name.as_c_str() == c"node_modules" {
-                    if !before.contains(&child_path) {
-                        found.push(child);
-                    }
-                } else {
-                    stack.push((child, child_path));
-                }
+                stack.push((Rc::clone(&directory), name, path.clone()));
             }
         }
         found
@@ -2531,6 +2537,29 @@ mod tests {
         assert!(repo.join(".git/node_modules/untouched").exists());
         assert!(!repo.join("node_modules").exists());
         assert!(!repo.join("packages/a/node_modules").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_accepts_a_checkout_under_a_symlinked_parent() {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = directory.path().join("parent");
+        let link = directory.path().join("link");
+        let repo = link.join("repo");
+        write(&parent, "repo/vendor/node_modules/kept.js", "kept");
+        std::os::unix::fs::symlink(&parent, &link).unwrap();
+        let before = jail::node_modules_dirs(&repo);
+        assert_eq!(before.len(), 1);
+        assert!(before.contains(&repo.join("vendor/node_modules")));
+        write(&repo, "packages/a/node_modules/installed.js", "installed");
+
+        assert_eq!(jail::remove_new_node_modules(&repo, &before), 1);
+        assert!(repo.join("vendor/node_modules/kept.js").is_file());
+        assert!(!repo.join("packages/a/node_modules").exists());
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[cfg(unix)]
