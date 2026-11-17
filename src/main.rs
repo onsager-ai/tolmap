@@ -7,7 +7,8 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "tolmap",
-    about = "Turn a source repository into a deterministic map"
+    about = "Turn a source repository into a deterministic map",
+    version
 )]
 struct Cli {
     /// Shared personal data root (TOLMAP_DATA_DIR, then application config).
@@ -1154,6 +1155,12 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_flag_is_handled() {
+        let error = Cli::try_parse_from(["tolmap", "--version"]).unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
 
     #[test]
     fn personal_selectors_parse_and_conflict() {
