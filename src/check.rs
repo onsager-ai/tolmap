@@ -54,9 +54,9 @@ use crate::geometry::{self, BuildFeatures};
 use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
 use crate::schema::{
-    CheckDistrict, CheckEdge, CheckFile, CheckFileStatus, CheckLandmark, CheckOutsideGraph,
-    CheckReport, CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument,
-    NodeRow,
+    CheckDistrict, CheckEdge, CheckEdgeCause, CheckFile, CheckFileStatus, CheckLandmark,
+    CheckOutsideGraph, CheckReport, CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData,
+    MapDocument, NodeRow,
 };
 
 /// `CheckReport::version`. Bumped on any change to a field's meaning or
@@ -74,6 +74,9 @@ const ROUND_PLACES: i32 = 6;
 
 /// Edges listed in the text format; JSON lists all of them.
 pub const TEXT_EDGE_LIMIT: usize = 20;
+
+/// Pruning-caused edges listed in the text format, after their count.
+pub const TEXT_PRUNE_LIMIT: usize = 3;
 
 /// Landmark kinds reported as context (issue #170: hazard and bridge).
 const TOUCHED_LANDMARKS: [&str; 2] = ["bridge", "hazard"];
@@ -410,15 +413,24 @@ struct SideGraph {
     edges: Vec<(usize, usize, f64, bool)>,
     /// Directed `importer -> target` pairs, for orienting a listed edge.
     imports: BTreeSet<(usize, usize)>,
+    /// Every candidate pair (`a < b`) before pruning, to tell an edge that
+    /// the code removed from one that pruning dropped.
+    candidates: BTreeSet<(usize, usize)>,
 }
 
 fn side_graph(mut data: GraphData) -> Result<SideGraph, CheckError> {
+    let index = file_index(&data);
+    let mut candidates = BTreeSet::new();
+    for edge in &data.edges {
+        if let (Some(&a), Some(&b)) = (index.get(edge.a.as_str()), index.get(edge.b.as_str())) {
+            candidates.insert((a.min(b), a.max(b)));
+        }
+    }
     // A side with no candidate edges (a base before its first import, say)
     // has nothing to blend or prune; blending it is an error.
     if !data.edges.is_empty() {
         pipeline::apply_prune_variant(&mut data, PruneVariant::default()).map_err(internal)?;
     }
-    let index = file_index(&data);
     let mut edges = Vec::with_capacity(data.edges.len());
     for edge in &data.edges {
         let (Some(&a), Some(&b)) = (index.get(edge.a.as_str()), index.get(edge.b.as_str())) else {
@@ -439,6 +451,7 @@ fn side_graph(mut data: GraphData) -> Result<SideGraph, CheckError> {
         files: data.nodes.into_iter().map(|node| node.file).collect(),
         edges,
         imports,
+        candidates,
     })
 }
 
@@ -660,18 +673,20 @@ fn compare(
 
     let base_cross = cross_edges(&base_side, &base_district, &base_identity);
     let head_cross = cross_edges(&head_side, &head_district, &head_identity);
+    let base_candidates = candidate_keys(&base_side, &base_identity);
+    let head_candidates = candidate_keys(&head_side, &head_identity);
     let edges_added = sorted_edges(
         head_cross
             .iter()
             .filter(|(key, _)| !base_cross.contains_key(*key))
-            .map(|(_, edge)| edge.clone())
+            .map(|(key, edge)| caused_by(edge, &base_candidates, key))
             .collect(),
     );
     let edges_removed = sorted_edges(
         base_cross
             .iter()
             .filter(|(key, _)| !head_cross.contains_key(*key))
-            .map(|(_, edge)| edge.clone())
+            .map(|(key, edge)| caused_by(edge, &head_candidates, key))
             .collect(),
     );
 
@@ -869,9 +884,41 @@ fn cross_edges(
             target_district: membership[target].expect("checked above"),
             weight: round(weight),
             static_import,
+            cause: CheckEdgeCause::Code,
         });
     }
     result
+}
+
+/// The side's pre-prune candidate pairs, keyed like [`cross_edges`].
+fn candidate_keys(side: &SideGraph, identity: &[String]) -> BTreeSet<(String, String)> {
+    side.candidates
+        .iter()
+        .map(|&(a, b)| {
+            if identity[a] <= identity[b] {
+                (identity[a].clone(), identity[b].clone())
+            } else {
+                (identity[b].clone(), identity[a].clone())
+            }
+        })
+        .collect()
+}
+
+/// An edge only on one side is `prune` when the other side still holds
+/// the pair as a candidate, and `code` when it does not.
+fn caused_by(
+    edge: &CheckEdge,
+    other_candidates: &BTreeSet<(String, String)>,
+    key: &(String, String),
+) -> CheckEdge {
+    CheckEdge {
+        cause: if other_candidates.contains(key) {
+            CheckEdgeCause::Prune
+        } else {
+            CheckEdgeCause::Code
+        },
+        ..edge.clone()
+    }
 }
 
 fn sorted_edges(mut edges: Vec<CheckEdge>) -> Vec<CheckEdge> {
@@ -890,7 +937,8 @@ fn sorted_edges(mut edges: Vec<CheckEdge>) -> Vec<CheckEdge> {
 // ---------------------------------------------------------------------
 
 /// Three lines (districts crossed, Δq, verdict), then the top
-/// [`TEXT_EDGE_LIMIT`] cross-district edges by weight, context lines, and
+/// [`TEXT_EDGE_LIMIT`] code-caused cross-district edges by weight, then the
+/// count and top [`TEXT_PRUNE_LIMIT`] pruning-caused ones, context lines, and
 /// the lower-bound note.
 pub fn render_text(report: &CheckReport) -> String {
     let mut out = String::new();
@@ -924,28 +972,30 @@ pub fn render_text(report: &CheckReport) -> String {
     );
     let _ = writeln!(out, "verdict: {}", verdict_line(report));
 
-    let mut listed = report
-        .edges_added
-        .iter()
-        .map(|edge| ('+', edge))
-        .chain(report.edges_removed.iter().map(|edge| ('-', edge)))
-        .collect::<Vec<_>>();
-    listed.sort_by(|left, right| {
-        right
-            .1
-            .weight
-            .total_cmp(&left.1.weight)
-            .then_with(|| left.0.cmp(&right.0))
-            .then_with(|| left.1.source.cmp(&right.1.source))
-            .then_with(|| left.1.target.cmp(&right.1.target))
-    });
     let _ = writeln!(
         out,
         "cross-district edges: {} added, {} removed",
         report.edges_added.len(),
         report.edges_removed.len()
     );
-    for (sign, edge) in listed.iter().take(TEXT_EDGE_LIMIT) {
+    let (code, prune): (Vec<_>, Vec<_>) = report
+        .edges_added
+        .iter()
+        .map(|edge| ('+', edge))
+        .chain(report.edges_removed.iter().map(|edge| ('-', edge)))
+        .partition(|(_, edge)| edge.cause == CheckEdgeCause::Code);
+    let heaviest_first = |list: &mut Vec<(char, &CheckEdge)>| {
+        list.sort_by(|left, right| {
+            right
+                .1
+                .weight
+                .total_cmp(&left.1.weight)
+                .then_with(|| left.0.cmp(&right.0))
+                .then_with(|| left.1.source.cmp(&right.1.source))
+                .then_with(|| left.1.target.cmp(&right.1.target))
+        });
+    };
+    let edge_line = |out: &mut String, sign: char, edge: &CheckEdge| {
         let _ = writeln!(
             out,
             "  {sign} {} -> {} (district {} -> {}) weight {:.6}{}",
@@ -956,13 +1006,37 @@ pub fn render_text(report: &CheckReport) -> String {
             edge.weight,
             if edge.static_import { ", import" } else { "" }
         );
+    };
+    let (mut code, mut prune) = (code, prune);
+    heaviest_first(&mut code);
+    heaviest_first(&mut prune);
+    let _ = writeln!(out, "from code or history: {}", code.len());
+    for (sign, edge) in code.iter().take(TEXT_EDGE_LIMIT) {
+        edge_line(&mut out, *sign, edge);
     }
-    if listed.len() > TEXT_EDGE_LIMIT {
+    if code.len() > TEXT_EDGE_LIMIT {
         let _ = writeln!(
             out,
             "  ... {} more in --format json",
-            listed.len() - TEXT_EDGE_LIMIT
+            code.len() - TEXT_EDGE_LIMIT
         );
+    }
+    if !prune.is_empty() {
+        let _ = writeln!(
+            out,
+            "from blending or pruning (the pair is a candidate on both sides): {}",
+            prune.len()
+        );
+        for (sign, edge) in prune.iter().take(TEXT_PRUNE_LIMIT) {
+            edge_line(&mut out, *sign, edge);
+        }
+        if prune.len() > TEXT_PRUNE_LIMIT {
+            let _ = writeln!(
+                out,
+                "  ... {} more in --format json",
+                prune.len() - TEXT_PRUNE_LIMIT
+            );
+        }
     }
     for file in &report.unplaced_files {
         let _ = writeln!(out, "unplaced: {file} (no resolved import into a district)");
@@ -1550,6 +1624,42 @@ mod tests {
         let side = side_graph(data).unwrap();
         assert_eq!(side.files, ["a.py"]);
         assert!(side.edges.is_empty());
+    }
+
+    fn side(edges: &[(usize, usize)], candidates: &[(usize, usize)]) -> SideGraph {
+        SideGraph {
+            files: ["a.py", "b.py", "c.py", "d.py"].map(String::from).to_vec(),
+            edges: edges.iter().map(|&(a, b)| (a, b, 0.5, true)).collect(),
+            imports: BTreeSet::new(),
+            candidates: candidates.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn a_removed_edge_is_code_unless_the_pair_is_still_a_candidate() {
+        // Base: a-b and c-d both survive pruning, across districts 0 | 1.
+        // Head: a-b is gone from the code (no candidate); c-d is still a
+        // candidate but pruning dropped it.
+        let membership = [Some(0), Some(1), Some(0), Some(1)];
+        let base = side(&[(0, 1), (2, 3)], &[(0, 1), (2, 3)]);
+        let head = side(&[], &[(2, 3)]);
+        let identity = base.files.clone();
+        let base_cross = cross_edges(&base, &membership, &identity);
+        let head_cross = cross_edges(&head, &membership, &identity);
+        let head_candidates = candidate_keys(&head, &identity);
+        let removed = base_cross
+            .iter()
+            .filter(|(key, _)| !head_cross.contains_key(*key))
+            .map(|(key, edge)| caused_by(edge, &head_candidates, key))
+            .map(|edge| (edge.source, edge.cause))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            removed,
+            [
+                ("a.py".to_owned(), CheckEdgeCause::Code),
+                ("c.py".to_owned(), CheckEdgeCause::Prune)
+            ]
+        );
     }
 
     #[test]
