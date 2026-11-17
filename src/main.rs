@@ -2,7 +2,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -22,6 +22,19 @@ struct Cli {
 enum DebtCommand {
     /// Compare two versioned debt reports.
     Diff { before: PathBuf, after: PathBuf },
+}
+
+#[derive(Debug, Args)]
+struct StatusCliArgs {
+    /// Registered repository to inspect (same as --repo).
+    #[arg(value_name = "REPO", conflicts_with = "repo_flag")]
+    repo: Option<String>,
+    /// Registered repository to inspect.
+    #[arg(long = "repo", value_name = "REPO", conflicts_with = "repo")]
+    repo_flag: Option<String>,
+    /// Output format: `json` (default) or pretty-printed JSON (`text`).
+    #[arg(long, default_value = "json", value_parser = ["json", "text"])]
+    format: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -53,7 +66,7 @@ enum Command {
     /// Find a file import path, never a runtime call chain (docs/QUERY.md).
     Route(tolmap::query::RouteArgs),
     /// Inspect committed snapshot freshness without indexing.
-    Status(tolmap::personal::StatusArgs),
+    Status(StatusCliArgs),
     /// Explicitly refresh committed HEAD without a server or upload.
     Refresh(tolmap::personal::RefreshArgs),
     /// Build a deterministic map from a repository or extracted graph.
@@ -753,7 +766,8 @@ fn main() -> Result<()> {
         }
         Command::Status(args) => {
             let library = tolmap::personal::Library::open(data)?;
-            let status = library.status(&library.resolve(args.repo.as_deref())?)?;
+            let status = library
+                .status(&library.resolve(args.repo.as_deref().or(args.repo_flag.as_deref()))?)?;
             if args.format == "json" {
                 println!("{}", serde_json::to_string(&status)?);
             } else {
@@ -1232,6 +1246,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn version_flag_is_handled() {
@@ -1267,6 +1282,41 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
+    }
+
+    #[test]
+    fn status_accepts_positional_and_flagged_repository_selectors() {
+        let positional = Cli::try_parse_from(["tolmap", "status", "engine"])
+            .expect("positional repository parses");
+        let flagged =
+            Cli::try_parse_from(["tolmap", "status", "--repo", "engine"]).expect("--repo parses");
+        let (Command::Status(positional), Command::Status(flagged)) =
+            (positional.command, flagged.command)
+        else {
+            panic!("expected status commands");
+        };
+        assert_eq!(positional.repo.as_deref(), Some("engine"));
+        assert_eq!(positional.repo_flag, None);
+        assert_eq!(flagged.repo, None);
+        assert_eq!(flagged.repo_flag.as_deref(), Some("engine"));
+        assert_eq!(positional.format, flagged.format);
+
+        let conflict = Cli::try_parse_from(["tolmap", "status", "engine", "--repo", "other"])
+            .expect_err("both repository selectors conflict");
+        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn status_help_describes_both_repository_selectors() {
+        let help = Cli::command()
+            .find_subcommand_mut("status")
+            .expect("status subcommand")
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("REPO"));
+        assert!(help.contains("--repo <REPO>"));
+        assert!(help.contains("Registered repository to inspect"));
+        assert!(help.contains("(same as --repo)"));
     }
 
     #[test]
