@@ -4061,9 +4061,15 @@ that evidence. Local builds, tests and typechecks were not run; CI is the gate.
 Remaining scope: counts are exposed by pipeline diagnostics and `dump-blend`,
 but are not yet persisted in `MapDocument.coverage`. That requires coordinated
 edits to the protected `src/geometry.rs` coverage constructor and its Rust
-schema. Generated bindings and fixture artifacts must be adopted by Tolmap PM
-under this ticket's machine rules; this branch does not edit `bindings/` or
-`data/`.
+schema. Fixture artifacts still require Tolmap PM adoption; `data/` is untouched.
+Following explicit review authorization, `bindings/DebtReport.ts` uses the
+`generated-bindings` artifact from run
+[44471954911](https://github.com/onsager-ai/tolmap/actions/runs/44471954911),
+artifact `14504927108`, generated at
+`5dc8e6f99e00d361ea5ce1d7fda5803379552724`. Only that file differs from the
+artifact's checked-in counterparts: its field documentation now describes
+suppression for every generated endpoint. Its bytes match the artifact
+(SHA-256 `d649b2c8f76d6ddf8a6be3b6788c1e4a08ad8e5663b6a291ca6001d74122c075`).
 
 ### Earlier implementation (#340)
 
