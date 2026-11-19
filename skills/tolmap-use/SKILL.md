@@ -34,8 +34,9 @@ tolmap status
 ```
 
 Read `freshness`, `checkout_commit`, `snapshot.commit`, `snapshot.map_path`,
-`attempt` and `dirty`. From elsewhere use `--repo NAME`; `tolmap repos` lists
-names and last observed state. Reads never index or fetch. `--commit SHA`
+`attempt` and `dirty`. From elsewhere use `tolmap status NAME` (or
+`tolmap status --repo NAME`); `tolmap repos` lists names and last observed
+state. Reads never index or fetch. `--commit SHA`
 selects the latest snapshot at a retained revision; `--snapshot ID` selects an exact history entry.
 `--map FILE` remains available and conflicts with database selectors. Freshness
 and dirty state are disclosed on stderr without changing compact query JSON.
@@ -121,6 +122,11 @@ tolmap debt --map "$MAP" --district 'CLI · checking' --format json
 # Use actual district names returned by overview; the name above is illustrative.
 tolmap debt diff before-debt.json after-debt.json
 ```
+
+When building from a checkout, `--name` is optional and defaults to the
+checkout directory's canonical basename. An explicit name overrides that
+default; if no usable basename can be derived, pass `--name`. The base/head
+examples below keep explicit names so their output map paths are predictable.
 
 To judge a refactor, hold both sides to the base partition. Independently
 partitioned maps churn: files change district and flags appear or vanish on
