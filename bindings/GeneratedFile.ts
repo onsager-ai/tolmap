@@ -5,4 +5,9 @@
  * known, are indices into `MapDocument::files`. The generator is retained
  * only for a ts-rs binding whose type declaration matched exactly once.
  */
-export type GeneratedFile = { file: number, generator: number | null, };
+export type GeneratedFile = { file: number, generator: number | null, 
+/**
+ * The header identifies ts-rs, even when its generator is ambiguous or absent.
+ * Absent in legacy evidence and for other generated files.
+ */
+ts_rs?: boolean, };
