@@ -150,10 +150,20 @@ pub struct CoverageReport {
     /// byte-identical.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub python_cross_project: usize,
+    /// ts-rs bindings collapsed onto a unique authored generator.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generated_collapsed: usize,
+    /// ts-rs bindings excluded because no unique authored generator was found.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generated_excluded: usize,
 }
 
 fn is_zero(value: &usize) -> bool {
     *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 // One language's reference path under `--refs scip`. Plain `//` comments
@@ -434,6 +444,10 @@ pub struct PackageRoot {
 pub struct GeneratedFile {
     pub file: u32,
     pub generator: Option<u32>,
+    /// The header identifies ts-rs, even when its generator is ambiguous or absent.
+    /// Absent in legacy evidence and for other generated files.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ts_rs: bool,
 }
 
 /// Co-change evidence retained for hidden-coupling findings. `pairs` rows are
@@ -745,8 +759,10 @@ pub struct GraphData {
     /// means a relevant config could not be read statically; `Some(empty)`
     /// means configs were measured and named no mapped source file.
     pub build_entries: Option<BTreeSet<FileId>>,
-    /// Generated source files found from their headers. This stays out of
-    /// graph JSON and every map-building input, then becomes debt evidence.
+    /// Generated source files found from their headers. Before blending,
+    /// uniquely matched ts-rs bindings collapse onto authored generators and
+    /// unmatched ts-rs bindings are excluded. Other generated files remain;
+    /// their remapped indices become debt evidence.
     pub generated: Option<Vec<GeneratedFile>>,
     /// Package manifest roots found with the organization manifest reader.
     /// Like the other sidecar inputs, this never affects graph construction.
@@ -1122,6 +1138,8 @@ mod tests {
             references: None,
             build_output_mirror: 0,
             python_cross_project: count,
+            generated_collapsed: 0,
+            generated_excluded: 0,
         };
         assert!(serde_json::to_value(coverage(0))
             .unwrap()

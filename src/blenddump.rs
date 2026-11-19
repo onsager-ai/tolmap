@@ -67,6 +67,7 @@ fn dump_data(
     out: &Path,
     diagnostic_source: Option<(&Path, &[(String, LanguageKind)])>,
 ) -> Result<()> {
+    let generated = crate::generated::collapse(&mut data).coverage;
     let mut candidate_files = BTreeSet::new();
     let mut static_files = BTreeSet::new();
     for edge in &data.edges {
@@ -159,6 +160,7 @@ fn dump_data(
         "node_order": data.nodes.iter().map(|n| n.file.clone()).collect::<Vec<_>>(),
         "edges": edges,
         "coverage": coverage,
+        "generated": generated,
         "workspace_imports": workspace_imports,
     });
     std::fs::write(out, serde_json::to_string_pretty(&document)?)?;

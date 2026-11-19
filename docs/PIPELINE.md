@@ -9,6 +9,21 @@ Go imports name a *package*, so one import spreads 1/|D| weight across that dire
 
 The Rust product also reads Rust (`src/extract/rust.rs`, finding 57), which the reference never did. A crate's module tree is built from `Cargo.toml` and `mod` declarations, and each `use` or written-out path links the file that defines the name it uses. Each `use` declaration shares a mass of 1 among the files it reaches.
 
+Before mass normalization, `src/generated.rs` projects generated ts-rs files
+onto their unique authored Rust generator from extraction's header/type
+evidence. A ts-rs binding without a unique generator is excluded. All other
+generated files (`@generated`, `DO NOT EDIT`, protobuf) stay in the map with
+their existing debt handling. Imports, uses and candidate signals follow the same projection;
+self-loops disappear and converging signal masses are added. Co-change counts
+use the maximum observed count, because overlapping commit sets cannot be
+added without inflating the lower bound. The authored generator keeps its own
+LOC, complexity, churn and symbols. Warm-start membership and symbol siblings
+use the surviving file order. Unaffected files retain their extracted fan-in;
+changed fan-in uses extraction's two-decimal rounding outside Python.
+`coverage.generated_collapsed` and `coverage.generated_excluded` persist the
+ts-rs counts, omitted when zero. Maps without ts-rs bindings take an unchanged
+path, including maps containing other generated files (finding 78).
+
 ## 2 · weight
 ```
 w(a,b) = α·static + β·cochange + γ·proximity + δ·semantic     α .45 β .35 γ .08 δ .12

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
-pub const DEBT_REPORT_VERSION: u32 = 9;
+pub const DEBT_REPORT_VERSION: u32 = 10;
 
 // ---- thresholds ------------------------------------------------------------
 
@@ -372,8 +372,7 @@ pub struct DebtReport {
     /// Test paths use the same rule as production hotspot exclusions and are
     /// excluded from hidden-coupling ranking.
     pub hidden_coupling_test_pairs_excluded: usize,
-    /// Pairs suppressed because a generated ts-rs binding is paired with its
-    /// generator or a file already statically linked to that generator.
+    /// Pairs suppressed because at least one endpoint is generated.
     pub hidden_coupling_generated_pairs_suppressed: usize,
     pub hidden_coupling: Vec<HiddenCoupling>,
     // Files the entry rule excludes from `unreached`, and files with no edge
@@ -889,14 +888,6 @@ fn findings_with_unplaced(
         .iter()
         .filter_map(|&file| map.files.get(file).map(String::as_str))
         .collect::<BTreeSet<_>>();
-    let generated_by_file = generated
-        .map(|files| {
-            files
-                .iter()
-                .map(|file| (file.file as usize, file.generator.map(|id| id as usize)))
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
     let mut inbound = vec![0usize; n];
     let mut outbound = vec![0usize; n];
     let mut by_district: Vec<BTreeMap<usize, usize>> = vec![BTreeMap::new(); n];
@@ -1158,16 +1149,10 @@ fn findings_with_unplaced(
                     {
                         return None;
                     }
-                    let suppresses = |generated: usize, other: usize| {
-                        let Some(Some(generator)) = generated_by_file.get(&generated) else {
-                            return false;
-                        };
-                        other == *generator
-                            || linked.contains(&((*generator).min(other), (*generator).max(other)))
-                            || declared_rust_pairs
-                                .contains(&((*generator).min(other), (*generator).max(other)))
-                    };
-                    if suppresses(left, right) || suppresses(right, left) {
+                    // Generated endpoints are not authored debt. This also
+                    // fixes legacy maps: binding-to-binding pairs and pairs
+                    // without a static generator link used to leak through.
+                    if generated_files.contains(&left) || generated_files.contains(&right) {
                         hidden_coupling_generated_pairs_suppressed += 1;
                         return None;
                     }
@@ -1749,7 +1734,7 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
     if report.hidden_coupling_measured {
         let _ = writeln!(
             out,
-            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found; {} test pairs excluded, {} generated-binding pairs suppressed)",
+            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found; {} test pairs excluded, {} generated-file pairs suppressed)",
             report.hidden_coupling.len(),
             t.hidden_coupling_min_count,
             t.hidden_coupling_min_weight,
@@ -2691,7 +2676,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_binding_hidden_coupling_is_suppressed_only_with_static_generator_link() {
+    fn generated_binding_hidden_coupling_never_leaks_unlinked_pairs() {
         let document: MapDocument = serde_json::from_value(json!({
             "repo": "generated", "q": 0.0, "names": {"0": "only"}, "districts": {},
             "F": ["bindings/Thing.ts", "src/model.rs", "src/linked.rs", "src/unlinked.rs", "src/direct.rs"],
@@ -2710,9 +2695,8 @@ mod tests {
             }
         })).unwrap();
         let report = findings(&document);
-        assert_eq!(report.hidden_coupling_generated_pairs_suppressed, 2);
-        assert_eq!(report.hidden_coupling.len(), 1);
-        assert_eq!(report.hidden_coupling[0].right, "src/unlinked.rs");
+        assert_eq!(report.hidden_coupling_generated_pairs_suppressed, 3);
+        assert!(report.hidden_coupling.is_empty());
         assert!(
             report
                 .hidden_coupling
@@ -2720,6 +2704,17 @@ mod tests {
                 .all(|pair| pair.right != "src/direct.rs"),
             "a directly linked generated pair is dropped before alias suppression"
         );
+
+        let mut value = serde_json::to_value(&document).unwrap();
+        value["D"]["generated"] = json!([
+            {"file": 0, "generator": 1}, {"file": 2, "generator": null}
+        ]);
+        value["D"]["cochange"]["pairs"] = json!([[0, 2, 4, 0.5], [2, 3, 4, 0.5], [1, 3, 4, 0.5]]);
+        let report = findings(&serde_json::from_value(value).unwrap());
+        assert_eq!(report.hidden_coupling_generated_pairs_suppressed, 2);
+        assert_eq!(report.hidden_coupling.len(), 1);
+        assert_eq!(report.hidden_coupling[0].left, "src/model.rs");
+        assert_eq!(report.hidden_coupling[0].right, "src/unlinked.rs");
     }
 
     #[test]

@@ -2259,17 +2259,30 @@ pub(crate) fn write_sibling_with_progress(
     progress: &crate::progress::Progress,
 ) -> Result<()> {
     let map: MapDocument = serde_json::from_slice(&fs::read(map_path)?)?;
+    // The map pipeline removes generated files after extraction has spooled
+    // symbols. Build the sibling against exactly the surviving map order;
+    // excluded records stay unused in the spool and receive no symbol ids.
+    let mapped = map
+        .files
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let nodes = nodes
+        .iter()
+        .filter(|node| mapped.contains(node.file.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
     ensure!(
         map.files.len() == nodes.len()
             && map
                 .files
                 .iter()
-                .zip(nodes)
+                .zip(&nodes)
                 .all(|(file, node)| file == &node.file),
         "symbol source file order differs from map F order"
     );
     let symbols_stage = progress.stage(crate::progress::StageId::Symbols, Some(nodes.len() as u64));
-    let mut document = build_with_progress(repo, nodes, spool, Some(&symbols_stage))?;
+    let mut document = build_with_progress(repo, &nodes, spool, Some(&symbols_stage))?;
     symbols_stage.set(nodes.len() as u64);
     symbols_stage.finish();
     let cards_stage = progress.stage(

@@ -9,6 +9,7 @@ pub mod debt;
 pub mod detect;
 mod entry_points;
 pub mod extract;
+pub mod generated;
 pub mod geometry;
 pub(crate) mod go_build;
 pub mod incremental;

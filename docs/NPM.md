@@ -9,7 +9,7 @@ npm install -g tolmap
 tolmap --help
 
 # Or run it without a global install.
-npx tolmap build /path/to/repository --name my-repository --out out
+npx tolmap build /path/to/repository --out out
 npx tolmap add /path/to/private-repository --name engine
 npx tolmap web --addr 127.0.0.1:8988
 ```
@@ -19,6 +19,10 @@ global `--data ROOT` or `TOLMAP_DATA_DIR` selects its root, otherwise XDG/HOME
 defaults apply. The npm launcher sets its packaged production viewer as
 `TOLMAP_STATIC_DIR` unless that environment variable is already set. See
 [LOCAL.md](LOCAL.md) for registration, history, credentials and exposure.
+
+For a checkout build, `--name` is optional and defaults to the checkout
+directory's canonical basename. Pass `--name` to choose a specific map name;
+if no usable basename can be derived, provide `--name` explicitly.
 
 Install `git` on PATH and the system runtimes `libstdc++6` and `libgcc-s1` on
 minimal Ubuntu images. The launcher requires Node.js 22.14.0 or newer. Consumer

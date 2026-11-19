@@ -41,7 +41,7 @@ env:
 jobs:
   plan:
     name: plan scip-ingest matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       repos: ${{ steps.plan.outputs.repos }}
@@ -63,7 +63,7 @@ jobs:
   measure:
     name: measure ${{ matrix.slug }}
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Four builds with indexing on n8n are about half an hour on a standard
     # runner (finding 41: 315 s per scip-typescript run); generous so a slow
     # runner still finishes, bounded so a hung indexer cannot hold the job
@@ -194,7 +194,7 @@ jobs:
     name: scip-ingest summary
     needs: measure
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
