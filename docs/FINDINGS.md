@@ -4050,9 +4050,13 @@ without an extraction cache. A repeated cold map must be byte-identical.
 records its hash and collapsed/excluded counts, checks web-to-Rust imports,
 and rejects bindings in `F` or hidden coupling.
 
-Measurements are pending the on-demand CI artifacts; no numerical parity or
-stability result is claimed here before that evidence exists. Local builds,
-tests and typechecks were not run; CI is the gate.
+Measurements are blocked: dispatching `ci.yml` on this ticket branch returned
+HTTP 403, `Resource not accessible by integration`. The repository app also
+lacks workflow-file write permission, so the measurement commands use the
+existing `eval/regenerate_fixtures.py` entrypoint without a workflow change.
+A maintainer must dispatch the branch to produce full-corpus parity and batch
+stability evidence. No numerical parity or stability result is claimed without
+that evidence. Local builds, tests and typechecks were not run; CI is the gate.
 
 Remaining scope: counts are exposed by pipeline diagnostics and `dump-blend`,
 but are not yet persisted in `MapDocument.coverage`. That requires coordinated

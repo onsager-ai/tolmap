@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -13,14 +14,19 @@ out = parser.parse_args().out
 out.mkdir(parents=True, exist_ok=True)
 binary = "target/release/tolmap"
 hashes = []
-for attempt in range(2):
-    result = subprocess.run(
-        [binary, "build", ".", "--all-sources", "--name", "tolmap",
-         "--out", str(out), "--refs", "hand", "--no-parcels"],
-        capture_output=True, text=True)
-    (out / f"build-{attempt}.log").write_text(result.stdout + result.stderr)
-    result.check_returncode()
-    hashes.append(hashlib.sha256((out / "tolmap.json").read_bytes()).hexdigest())
+# Keep the mapped checkout separate from the full-fixtures job's corpus clones,
+# generated output and build products. A local clone retains the same history.
+with tempfile.TemporaryDirectory(prefix="tolmap-generated-") as temporary:
+    checkout = Path(temporary) / "tolmap"
+    subprocess.run(["git", "clone", "--quiet", "--no-hardlinks", ".", str(checkout)], check=True)
+    for attempt in range(2):
+        result = subprocess.run(
+            [binary, "build", str(checkout), "--all-sources", "--name", "tolmap",
+             "--out", str(out), "--refs", "hand", "--no-parcels"],
+            capture_output=True, text=True)
+        (out / f"build-{attempt}.log").write_text(result.stdout + result.stderr)
+        result.check_returncode()
+        hashes.append(hashlib.sha256((out / "tolmap.json").read_bytes()).hexdigest())
 if len(set(hashes)) != 1:
     raise SystemExit("repeated all-sources maps differ")
 coverage = re.findall(r"generated coverage: (\{[^\n]+\})", result.stdout + result.stderr)
