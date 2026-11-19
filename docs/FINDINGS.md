@@ -4064,3 +4064,29 @@ edits to the protected `src/geometry.rs` coverage constructor and its Rust
 schema. Generated bindings and fixture artifacts must be adopted by Tolmap PM
 under this ticket's machine rules; this branch does not edit `bindings/` or
 `data/`.
+
+### Earlier implementation (#340)
+
+[PR #340](https://github.com/onsager-ai/tolmap/pull/340), reviewed at
+`40368ac2b18531f754ccf0ec736697d85b9b41e1` (`fix/generated-collapse`), already
+implements `extract::collapse_generated` and persists
+`coverage.generated_collapsed` / `coverage.generated_excluded`, including
+graph dump round trips. Its collapse runs after SCIP and before `finish_graph`,
+so generated files are removed before history, proximity and semantic candidate
+construction. It also recomputes the dominant source and rereads generated
+files for scoped `tolmap check` snapshots whose stored `F` excludes them.
+
+This branch retains the later `GraphData` projection because the ticket
+explicitly protects `src/extract.rs` and `src/geometry.rs`, both required by
+that earlier implementation. It projects already extracted signals and retains
+redirected co-change lower bounds, so the two implementations are not
+equivalent. Persisted counts, dominant-source recomputation and scoped-check
+generated-file discovery remain integration work; remapping indices alone does
+not complete those contracts. The earlier coverage/scoped-check implementation
+is a concrete starting point once those protected edits can be coordinated.
+Its generated-file suppression wording is adopted here for debt text output.
+
+The earlier PR's extraction-change mode also relaxes structural fixture checks;
+this branch retains strict checks and records their failures. Neither the
+earlier incomplete attempt nor its pending fixture measurements establish parity
+for this implementation.

@@ -1734,7 +1734,7 @@ fn render_text_with_files(report: &DebtReport, files: Option<&[String]>) -> Stri
     if report.hidden_coupling_measured {
         let _ = writeln!(
             out,
-            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found; {} test pairs excluded, {} generated-binding pairs suppressed)",
+            "{} hidden-coupling pairs (at least {} co-changes, weight >= {}, no static or reference edge found; {} test pairs excluded, {} generated-file pairs suppressed)",
             report.hidden_coupling.len(),
             t.hidden_coupling_min_count,
             t.hidden_coupling_min_weight,
