@@ -98,7 +98,7 @@ env:
 jobs:
   changes:
     name: changed inputs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       web: ${{ steps.filter.outputs.web }}
@@ -132,7 +132,7 @@ jobs:
     name: Rust build, lint, offline parity
     needs: changes
     if: always() && needs.changes.result == 'success' && needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -156,6 +156,11 @@ jobs:
       # to the versions the script names, and the result is cached by a hash
       # of that script (the version pins live inside it, so a version bump
       # invalidates the cache automatically).
+      # Runners are pinned to ubuntu-24.04, not ubuntu-latest. On 2026-11-19
+      # ubuntu-latest moved to 26.04, and this cache (keyed by runner.os, not
+      # the image version) restored a 24.04-built igraph that links
+      # libxml2.so.2, which 26.04 does not ship, so the binary failed to load.
+      # Move to a newer image deliberately, together with the cache key.
       - name: Cache native Leiden/igraph build
         id: cache-leiden
         uses: actions/cache@v4
@@ -393,7 +398,7 @@ jobs:
     name: build, lint, offline parity gate
     needs: [changes, rust]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Report scoped Rust gate result
         env:
@@ -413,7 +418,7 @@ jobs:
     name: Python scanner mechanism and differential AST
     needs: changes
     if: always() && needs.changes.result == 'success' && needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -437,7 +442,7 @@ jobs:
     # diagnostic lanes. On every PR its 4-second gdb attach bound timed
     # out in about 2 of 5 runs (Nov 2026) without any code change.
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -488,7 +493,7 @@ jobs:
   reader:
     name: personal library + production CM6 journey
     needs: [gate, web]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -551,7 +556,7 @@ jobs:
     name: SCIP ingest determinism (--refs scip, 3x sha256)
     needs: [changes, rust]
     if: always() && needs.changes.result == 'success' && needs.rust.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SCIP_TYPESCRIPT_VERSION: "0.4.0"
       SCIP_PYTHON_VERSION: "0.6.6"
@@ -674,7 +679,7 @@ jobs:
     name: SCIP install sandbox (nsjail, --install sandbox, 3x sha256)
     needs: [changes, rust]
     if: always() && needs.changes.result == 'success' && needs.rust.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SCIP_TYPESCRIPT_VERSION: "0.4.0"
       PNPM_VERSION: "12.6.0"
@@ -828,7 +833,7 @@ jobs:
     name: SCIP nine-fixture gate (on demand / nightly)
     needs: [changes, rust]
     if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.changes.result == 'success' && needs.rust.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # django's scip-python run is about two minutes (finding 44); the other
     # eight are smaller. Bounded so a hung indexer cannot hold the runner.
     timeout-minutes: 120
@@ -937,7 +942,7 @@ jobs:
     name: SCIP churn diagnosis (on demand)
     needs: [changes, rust]
     if: github.event_name == 'workflow_dispatch' && inputs.scip_churn && needs.changes.result == 'success' && needs.rust.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 150
     env:
       SCIP_TYPESCRIPT_VERSION: "0.4.0"
@@ -1132,7 +1137,7 @@ jobs:
     name: Hand resolver vs SCIP score (on demand / nightly)
     needs: [changes, rust]
     if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && needs.changes.result == 'success' && needs.rust.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # About the scip-fixtures job's indexing time plus the ingest; bounded so
     # a hung indexer cannot hold the runner.
     timeout-minutes: 90
@@ -1367,7 +1372,7 @@ jobs:
     name: web build and lint
     needs: changes
     if: always() && needs.changes.result == 'success' && needs.changes.outputs.web == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: web
@@ -1440,7 +1445,7 @@ jobs:
   full-fixtures:
     name: full nine-fixture parity (on demand / nightly)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
