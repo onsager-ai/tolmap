@@ -1,4 +1,5 @@
 """CI evidence for generated-file projection on tolmap's all-sources map."""
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -6,8 +7,10 @@ import re
 import subprocess
 
 
-out = Path("generated-record")
-out.mkdir(exist_ok=True)
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--out", type=Path, default=Path("generated-record"))
+out = parser.parse_args().out
+out.mkdir(parents=True, exist_ok=True)
 binary = "target/release/tolmap"
 hashes = []
 for attempt in range(2):

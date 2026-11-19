@@ -92,6 +92,8 @@ def main():
         run("target/release/tolmap", "lens", "suggest", "--map", str(args.out / "flask.json"),
             "--out", str(args.out / "lenses/flask-suggest"))
     (args.out / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    run("python3", "eval/batch_stability.py", "--out", str(args.out / "stability"))
+    run("python3", "eval/generated_mapping.py", "--out", str(args.out / "generated"))
     if failures:
         raise SystemExit(f"fixture gates failed: {', '.join(failures)}; see evidence.json")
 

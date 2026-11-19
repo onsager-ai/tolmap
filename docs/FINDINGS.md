@@ -4039,8 +4039,10 @@ from hidden coupling, alongside the existing misplaced/unreached exclusions.
 
 The on-demand `full-fixtures` job records strict fixture parity against the
 existing `data/fixtures.toml` pins, seeded names, `--refs hand`, resolution 1.1
-and seed 7. It uploads candidates and evidence even when a parity or structural
-gate fails; no failed baseline is silently accepted. `eval/batch_stability.py`
+and seed 7. It records all candidates and evidence before reporting parity or
+structural failures; no failed baseline is silently accepted. The existing
+workflow uploads artifacts only when the regeneration step succeeds, so failed
+runs must be inspected through their logs. `eval/batch_stability.py`
 now measures the Rust product at those same scrapy/django/celery/httpx pins,
 300/300/300/200 commits apart, comparing cold and `--previous-map` head builds
 without an extraction cache. A repeated cold map must be byte-identical.
