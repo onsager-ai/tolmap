@@ -571,7 +571,7 @@ fn prune_node_relative(
     data.edges.retain(|edge| keep.contains(&edge_key(edge)));
 }
 
-fn weighted_graph(data: &GraphData) -> Result<WeightedGraph> {
+pub(crate) fn weighted_graph(data: &GraphData) -> Result<WeightedGraph> {
     let index = data
         .nodes
         .iter()
