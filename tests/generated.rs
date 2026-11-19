@@ -206,10 +206,11 @@ fn collapse_preserves_untouched_fanin_and_rounds_changed_non_python_fanin() {
     for language in ["ts", "py"] {
         let mut data = graph();
         data.nodes[4].lang = language.into();
-        data.nodes[6].fanin = 1.23;
+        data.nodes[6].fanin = 1.0;
         // Rounding each import is lossy; an untouched node must retain the
         // extractor's fan-in rather than summing its rounded import rows.
-        data.imports.push((5, 6, 0.23));
+        data.imports[5].2 = 0.33;
+        data.imports.extend([(4, 6, 0.33), (5, 6, 0.33)]);
         data.imports[0].2 = 1.234;
         data.imports[1].2 = 0.117;
         let expected = if language == "py" {
@@ -218,7 +219,7 @@ fn collapse_preserves_untouched_fanin_and_rounds_changed_non_python_fanin() {
             2.35
         };
         generated::collapse(&mut data);
-        assert_eq!(data.nodes[3].fanin, 1.23);
+        assert_eq!(data.nodes[3].fanin, 1.0);
         assert_eq!(data.nodes[1].fanin, expected);
     }
 }
