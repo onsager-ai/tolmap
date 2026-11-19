@@ -232,6 +232,28 @@ fn extraction_matches_unique_ts_rs_generator_and_excludes_ambiguous_or_other_hea
     );
     write("web/api.ts", "// @generated\nexport const value = 1;\n");
     write("web/app.ts", "import type { Thing } from '../bindings/Thing';\nexport function read(x: Thing) { return x.value; }\n");
+    // Extraction reads history as well as source, so this fixture must be a
+    // committed repository, just like the repositories mapped by the CLI.
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+            .env("GIT_COMMITTER_NAME", "fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "generated extraction fixture"]);
     use tolmap::extract::LanguageKind;
     let mut data = tolmap::extract::build_multi_source(
         repo.path(),
