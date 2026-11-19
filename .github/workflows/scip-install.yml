@@ -38,7 +38,7 @@ env:
 jobs:
   plan:
     name: plan scip-install matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       repos: ${{ steps.plan.outputs.repos }}
@@ -64,7 +64,7 @@ jobs:
   measure:
     name: measure ${{ matrix.slug }}
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Three builds, two with indexing, on n8n are about twenty minutes on a
     # standard runner (finding 44: 371 s per SCIP build); generous so a slow
     # runner still finishes, bounded so a hung build cannot hold the job to
@@ -201,7 +201,7 @@ jobs:
     name: scip-install summary
     needs: measure
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
