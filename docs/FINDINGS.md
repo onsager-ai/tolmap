@@ -4120,3 +4120,37 @@ artifact `14504927108`, for source head `5dc8e6f`, under explicit review
 authorization. Tolmap PM adopted the coverage/header bindings from run
 [44488961128](https://github.com/onsager-ai/tolmap/actions/runs/44488961128)
 in `6a444d6`. No bindings are regenerated locally.
+
+## 79. Tiny-community merge routes are measured separately from edge merges (#46)
+
+Full-fixtures run [44562421997](https://github.com/onsager-ai/tolmap/actions/runs/44562421997),
+at source head `871d14bc6369659abe0e89a06a7fbc4dd17dff39`, recorded the communities
+and files moved through each `merge_tiny` route. Each cell is
+**communities/files**; the run contains the nine acceptance fixtures and the
+additional tolmap self-map:
+
+| Fixture | By edge | `sibling_target` | `parent_target` |
+| --- | ---: | ---: | ---: |
+| celery | 0/0 | 7/7 | 0/0 |
+| django | 1/3 | 137/137 | 90/175 |
+| flask | 1/3 | 0/0 | 0/0 |
+| httpx | 0/0 | 0/0 | 0/0 |
+| prometheus | 0/0 | 21/28 | 1/1 |
+| rich | 0/0 | 0/0 | 0/0 |
+| scrapy | 0/0 | 6/6 | 0/0 |
+| sqlalchemy | 0/0 | 1/1 | 0/0 |
+| vue | 0/0 | 0/0 | 0/0 |
+| tolmap | 0/0 | 0/0 | 1/1 |
+
+All nine acceptance fixtures reported **parity passed**; the tolmap self-map did
+too, so the diagnostics did not change map output. Django placed 312 files via
+directory fallback (137 sibling plus 175 parent) and 3 via an edge. The counts
+show that the directory fallback dominates this fixture; they do not propose a
+change to merge behavior.
+
+The same dispatch's bounded reader extraction profile failed when its `gdb`
+stack probe timed out after four seconds. That profile job measures reader
+extraction and does not run `merge_tiny`, so the failure is unrelated to this
+measurement. Its build log also reports `write_sibling` as unused. That
+function and its callers are unchanged from `origin/main`; the warning
+predates this PR.
