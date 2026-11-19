@@ -26,19 +26,18 @@ that all callers or dependencies were found.
 
 ```sh
 # Register once (committed source only), then infer from the current checkout:
-tolmap add . --name engine --all-sources
-tolmap status engine
+tolmap add . --all-sources
+tolmap status
 # Explicitly refresh only when requested:
 tolmap refresh --all-sources
-tolmap status engine
+tolmap status
 ```
 
 Read `freshness`, `checkout_commit`, `snapshot.commit`, `snapshot.map_path`,
-`attempt` and `dirty`. From elsewhere use `--repo NAME`; `tolmap repos` lists
-names and last observed state. Reads never index or fetch. `--commit SHA`
+`attempt` and `dirty`. From elsewhere use `tolmap status NAME` (or
+`tolmap status --repo NAME`); `tolmap repos` lists names and last observed
+state. Reads never index or fetch. `--commit SHA`
 selects the latest snapshot at a retained revision; `--snapshot ID` selects an exact history entry.
-`tolmap status REPO` is the primary status form; `tolmap status --repo REPO`
-is also supported.
 `--map FILE` remains available and conflicts with database selectors. Freshness
 and dirty state are disclosed on stderr without changing compact query JSON.
 Dirty and untracked files are excluded from snapshots; `check` without `--head`
