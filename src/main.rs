@@ -953,7 +953,7 @@ fn main() -> Result<()> {
             out,
             refs,
         } => {
-            let graph = if wants_multi_source(&pkg, &lang, all_sources) {
+            let mut graph = if wants_multi_source(&pkg, &lang, all_sources) {
                 let sources = resolve_multi_source(&repo, pkg, lang, all_sources)?;
                 tolmap::extract::build_multi_source_with_refs(&repo, &sources, refs)?
             } else {
@@ -965,6 +965,8 @@ fn main() -> Result<()> {
                 // dump is unchanged.
                 tolmap::extract::build_multi_source_with_refs(&repo, &[(pkg, language)], refs)?
             };
+            let generated = tolmap::generated::collapse(&mut graph).coverage;
+            eprintln!("generated coverage: {}", serde_json::to_string(&generated)?);
             let bytes = serde_json::to_vec(&graph)?;
             std::fs::write(&out, bytes).with_context(|| format!("write {}", out.display()))?;
             println!(
