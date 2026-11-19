@@ -2,6 +2,30 @@
 
 `tolmap web` is the only HTTP entry point. CLI examples and resolution rules are in [QUERY.md](QUERY.md); setup is in [LOCAL.md](LOCAL.md).
 
+## Map coverage
+
+The map's `coverage` object records:
+
+- `zero_edge_files`: source files in the map with no incident kept edge, in files.
+- `total_files`: source files represented in the map, in files.
+- `by_language`: per-language file counts; each value's `total_files` and
+  `zero_edge_files` use files as their unit.
+- `references`: per-language reference extraction path and status, recorded
+  only for `--refs scip`; descriptive evidence, not a count or completeness
+  measure.
+- `build_output_mirror`: TypeScript import statements resolved by mapping an
+  absent build-output target back to a source file, in import statements. This
+  inferred resolution is counted separately to keep the lower bound auditable.
+- `python_cross_project`: Python import statements resolved by the guarded
+  cross-project fallback, in import statements. This inferred resolution is
+  counted separately to keep the lower bound auditable.
+
+The current `CoverageReport` schema defines these six fields. Zero-valued
+optional counters `build_output_mirror` and `python_cross_project` are omitted
+from JSON; absence means zero for these counters. Optional `references` is
+omitted when it was not recorded, which means unknown, not an empty result.
+Older maps may also omit the entire `coverage` object.
+
 Source-built maps record optional `excluded_tests`: the count of source files
 omitted by the collector's test rules within the selected source roots. It is
 absent on older maps and graph-only builds, which means unknown, not zero.

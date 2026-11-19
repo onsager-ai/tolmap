@@ -90,6 +90,8 @@ several symbol candidates: inspect qualified names and line ranges.
 Null counts mean unknown or unread, never zero. `lower_bound: true` means
 unresolved or dynamic references may be missing, even with SCIP. Confirm
 important boundaries against imports/source and use LSP for exact callers.
+See [API.md's Map coverage section](../../docs/API.md#map-coverage) for the
+coverage fields, their units, and omitted values.
 
 ## Review a diff without imposing a new gate
 
