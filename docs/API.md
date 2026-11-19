@@ -26,9 +26,10 @@ The map's `coverage` object records:
 
 Zero-valued optional counters `build_output_mirror`, `python_cross_project`,
 `generated_collapsed`, and `generated_excluded` are omitted from JSON; absence
-means zero for these counters. Optional `references` is omitted when it was
-not recorded, which means unknown, not an empty result. Older maps may also
-omit the entire `coverage` object.
+means zero only on maps built after the corresponding counter was introduced.
+On older maps, absence means unknown, not zero. Optional `references` is
+omitted when it was not recorded, which means unknown, not an empty result.
+Older maps may also omit the entire `coverage` object.
 
 Source-built maps record optional `excluded_tests`: the count of source files
 omitted by the collector's test rules within the selected source roots. It is
