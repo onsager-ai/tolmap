@@ -124,6 +124,24 @@ pub struct PipelineOutput {
     pub graph: WeightedGraph,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MergeTinyStats {
+    pub edge_communities: usize,
+    pub edge_files: usize,
+    pub sibling_target_communities: usize,
+    pub sibling_target_files: usize,
+    pub parent_target_communities: usize,
+    pub parent_target_files: usize,
+}
+
+#[derive(Clone, Copy)]
+enum MergeRoute {
+    Edge,
+    SiblingTarget,
+    ParentTarget,
+    NoTarget,
+}
+
 pub fn run<P: Partitioner>(
     data: GraphData,
     resolution: f64,
@@ -175,7 +193,18 @@ pub fn run_with_variant_progress<P: Partitioner>(
         modularity,
     } = partitioner.partition(&graph, resolution, SEED, initial_membership)?;
     partition_stage.finish();
-    let membership = merge_tiny(&membership, &data, 4);
+    let (membership, merge_tiny) = merge_tiny_with_stats(&membership, &data, 4);
+    progress.log(format!(
+        "merge_tiny {}",
+        serde_json::json!({
+            "edge_communities": merge_tiny.edge_communities,
+            "edge_files": merge_tiny.edge_files,
+            "sibling_target_communities": merge_tiny.sibling_target_communities,
+            "sibling_target_files": merge_tiny.sibling_target_files,
+            "parent_target_communities": merge_tiny.parent_target_communities,
+            "parent_target_files": merge_tiny.parent_target_files,
+        })
+    ));
     let layout_started = std::time::Instant::now();
     let (districts, nodes) = layout(&membership, &data);
     progress.log(format!("index_timing {}", serde_json::json!({"stage":"district_layout", "duration_s":layout_started.elapsed().as_secs_f64(), "done":nodes.len(), "unit":"files", "success":true})));
@@ -568,7 +597,16 @@ fn weighted_graph(data: &GraphData) -> Result<WeightedGraph> {
 }
 
 pub fn merge_tiny(membership: &[usize], data: &GraphData, minimum: usize) -> Vec<usize> {
+    merge_tiny_with_stats(membership, data, minimum).0
+}
+
+pub fn merge_tiny_with_stats(
+    membership: &[usize],
+    data: &GraphData,
+    minimum: usize,
+) -> (Vec<usize>, MergeTinyStats) {
     let mut membership = membership.to_vec();
+    let mut stats = MergeTinyStats::default();
     let mut size_order = Vec::new();
     let mut sizes = BTreeMap::<usize, usize>::new();
     for &community in &membership {
@@ -617,23 +655,43 @@ pub fn merge_tiny(membership: &[usize], data: &GraphData, minimum: usize) -> Vec
                 .unwrap_or(Ordering::Equal)
                 .then(left.1.cmp(&right.1))
         });
-        let target = if let Some((_, target)) = options.last() {
-            *target
+        let (target, route) = if let Some((_, target)) = options.last() {
+            (*target, MergeRoute::Edge)
         } else {
             let orphan = membership
                 .iter()
                 .position(|value| *value == community)
                 .expect("community has a member");
             let directory = directory_name(&data.nodes[orphan].file);
-            sibling_target(&membership, data, community, directory, &sizes, minimum)
-                .or_else(|| {
-                    let parent = directory_name(directory);
-                    parent_target(&membership, data, community, parent, &sizes, minimum)
-                })
-                .unwrap_or(community)
+            if let Some(target) =
+                sibling_target(&membership, data, community, directory, &sizes, minimum)
+            {
+                (target, MergeRoute::SiblingTarget)
+            } else {
+                let parent = directory_name(directory);
+                parent_target(&membership, data, community, parent, &sizes, minimum)
+                    .map_or((community, MergeRoute::NoTarget), |target| {
+                        (target, MergeRoute::ParentTarget)
+                    })
+            }
         };
         if target == community {
             continue;
+        }
+        match route {
+            MergeRoute::Edge => {
+                stats.edge_communities += 1;
+                stats.edge_files += count;
+            }
+            MergeRoute::SiblingTarget => {
+                stats.sibling_target_communities += 1;
+                stats.sibling_target_files += count;
+            }
+            MergeRoute::ParentTarget => {
+                stats.parent_target_communities += 1;
+                stats.parent_target_files += count;
+            }
+            MergeRoute::NoTarget => {}
         }
         for value in &mut membership {
             if *value == community {
@@ -668,7 +726,10 @@ pub fn merge_tiny(membership: &[usize], data: &GraphData, minimum: usize) -> Vec
         .enumerate()
         .map(|(new, old)| (old, new))
         .collect::<BTreeMap<_, _>>();
-    membership.into_iter().map(|value| remap[&value]).collect()
+    (
+        membership.into_iter().map(|value| remap[&value]).collect(),
+        stats,
+    )
 }
 
 fn sibling_target(
@@ -1374,6 +1435,66 @@ fn hypot(point: [f64; 2]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_tiny_counts_edge_sibling_and_parent_routes_separately() {
+        let data = GraphData {
+            entry_points: BTreeMap::new(),
+            repo: "routes".to_owned(),
+            pkg: ".".to_owned(),
+            lang: "py".to_owned(),
+            sources: Vec::new(),
+            imports: Vec::new(),
+            symbols: BTreeMap::new(),
+            uses: Vec::new(),
+            commits_scanned: 0,
+            cochange: None,
+            rust_mod: None,
+            build_entries: None,
+            generated: None,
+            package_roots: None,
+            nodes: [
+                "root/large/a.py",
+                "root/large/b.py",
+                "root/large/edge.py",
+                "root/large/sibling.py",
+                "root/other/parent.py",
+            ]
+            .into_iter()
+            .map(|file| crate::schema::SourceNode {
+                file: file.to_owned(),
+                loc: 1,
+                code_lines: None,
+                complexity: 0,
+                churn: 0,
+                fanin: 0.0,
+                module: String::new(),
+                lang: "py".to_owned(),
+            })
+            .collect(),
+            references: None,
+            build_output_mirror: 0,
+            python_cross_project: 0,
+            edges: vec![SignalEdge {
+                a: "root/large/a.py".to_owned(),
+                b: "root/large/edge.py".to_owned(),
+                weight: 1.0,
+                static_signal: 1.0,
+                cochange: 0.0,
+                proximity: 0.0,
+                semantic: 0.0,
+            }],
+        };
+        let (membership, stats) = merge_tiny_with_stats(&[0, 0, 1, 2, 3], &data, 2);
+
+        assert_eq!(membership, vec![0; 5]);
+        assert_eq!(stats.edge_communities, 1);
+        assert_eq!(stats.edge_files, 1);
+        assert_eq!(stats.sibling_target_communities, 1);
+        assert_eq!(stats.sibling_target_files, 1);
+        assert_eq!(stats.parent_target_communities, 1);
+        assert_eq!(stats.parent_target_files, 1);
+    }
 
     fn dominant_outlier_graph() -> GraphData {
         let edge = |a: &str, b: &str, static_signal: f64| SignalEdge {

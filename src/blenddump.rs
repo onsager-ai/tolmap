@@ -20,7 +20,9 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::extract::{self, LanguageKind};
+use crate::partition::{LeidenFfi, Partitioner};
 use crate::pipeline::{self, PruneVariant};
+use crate::SEED;
 
 /// Below this, a weight difference is float summation order; above it, real.
 pub const TOLERANCE: f64 = 1e-9;
@@ -99,6 +101,9 @@ fn dump_data(
     mass_normalized_weights.sort_by(f64::total_cmp);
 
     let stats = pipeline::apply_prune_variant(&mut data, prune_variant)?;
+    let graph = pipeline::weighted_graph(&data)?;
+    let partition = LeidenFfi.partition(&graph, 1.1, SEED, None)?;
+    let (_, merge_tiny) = pipeline::merge_tiny_with_stats(&partition.membership, &data, 4);
     let weight_sum_pre_prune = round_to(stats.weight_sum_pre_prune, 10);
     let n_blended_edges = stats.candidate_edges;
     let below_prune_floor = stats.below_floor_share();
@@ -143,6 +148,14 @@ fn dump_data(
         "weight_sum": weight_sum,
         "below_prune_floor_count": stats.below_floor_count,
         "below_prune_floor": round_to(below_prune_floor, 6),
+        "merge_tiny": {
+            "edge_communities": merge_tiny.edge_communities,
+            "edge_files": merge_tiny.edge_files,
+            "sibling_target_communities": merge_tiny.sibling_target_communities,
+            "sibling_target_files": merge_tiny.sibling_target_files,
+            "parent_target_communities": merge_tiny.parent_target_communities,
+            "parent_target_files": merge_tiny.parent_target_files,
+        },
         "node_order": data.nodes.iter().map(|n| n.file.clone()).collect::<Vec<_>>(),
         "edges": edges,
         "coverage": coverage,
