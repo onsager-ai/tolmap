@@ -19,12 +19,16 @@ The map's `coverage` object records:
 - `python_cross_project`: Python import statements resolved by the guarded
   cross-project fallback, in import statements. This inferred resolution is
   counted separately to keep the lower bound auditable.
+- `generated_collapsed`: ts-rs binding files mapped onto a unique authored
+  generator during graph projection, in binding files.
+- `generated_excluded`: ts-rs binding files excluded from the graph because no
+  unique authored generator was found, in binding files.
 
-The current `CoverageReport` schema defines these six fields. Zero-valued
-optional counters `build_output_mirror` and `python_cross_project` are omitted
-from JSON; absence means zero for these counters. Optional `references` is
-omitted when it was not recorded, which means unknown, not an empty result.
-Older maps may also omit the entire `coverage` object.
+Zero-valued optional counters `build_output_mirror`, `python_cross_project`,
+`generated_collapsed`, and `generated_excluded` are omitted from JSON; absence
+means zero for these counters. Optional `references` is omitted when it was
+not recorded, which means unknown, not an empty result. Older maps may also
+omit the entire `coverage` object.
 
 Source-built maps record optional `excluded_tests`: the count of source files
 omitted by the collector's test rules within the selected source roots. It is
