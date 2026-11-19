@@ -725,6 +725,8 @@ fn compact(
         references: layout.weighted.references.clone(),
         build_output_mirror: layout.weighted.build_output_mirror,
         python_cross_project: layout.weighted.python_cross_project,
+        generated_collapsed: layout.generated_coverage.collapsed,
+        generated_excluded: layout.generated_coverage.excluded,
     };
     let files = layout
         .weighted
@@ -876,6 +878,7 @@ fn compact(
             .map(|file| GeneratedFile {
                 file: file.file,
                 generator: file.generator,
+                ts_rs: file.ts_rs,
             })
             .collect()
     });

@@ -4025,74 +4025,89 @@ measurements. Both default limits are 25 per direction, with no truncation.
 - No semon/duhem code changes, automatic indexing, impact enforcement, parity
   fixture refresh, extraction/query/debt behavior change, merge or deployment.
 
-## 78. Generated-file projection before blending (#335)
+## 78. Generated ts-rs projection before blending (#335)
 
-The Rust pipeline now collapses ts-rs bindings onto the unique authored Rust
-file identified by extraction and excludes all other generated files. Generated
-LOC, churn, complexity and symbol declarations do not inflate the generator's
+The Rust pipeline collapses ts-rs bindings onto the unique authored Rust file
+identified by extraction. A ts-rs binding without a unique generator is excluded.
+Other generated files (`@generated`, Go `DO NOT EDIT`, protobuf) remain in the
+map, with their generated debt evidence retained and remapped. Header detection
+already distinguishes ts-rs; its boolean now survives the two extraction
+metadata constructors instead of being discarded. No path heuristic is used.
+
+Generated LOC, churn, complexity and symbols do not inflate the generator's
 metrics. Converging candidate edges add each signal's mass before normalization;
 co-change evidence retains the maximum observed count and weight rather than
-adding overlapping commit sets. Index-based imports, uses, build entries, Rust
-module trees, warm starts and symbol siblings follow the surviving file order.
-Legacy maps also suppress generated-to-generated and unlinked generated pairs
-from hidden coupling, alongside the existing misplaced/unreached exclusions.
+adding overlapping commit sets. Imports, uses, build entries, Rust module trees,
+warm starts and symbol siblings follow the surviving file order. Only files
+whose incoming imports change have fan-in recomputed, using extraction's
+two-decimal ties-to-even rounding outside Python. Unaffected fan-in stays exact.
+Maps without ts-rs evidence return before any projection, preserving their
+bytes, including generic generated-file rows.
 
-The on-demand `full-fixtures` job records strict fixture parity against the
-existing `data/fixtures.toml` pins, seeded names, `--refs hand`, resolution 1.1
-and seed 7. It records all candidates and evidence before reporting parity or
-structural failures; no failed baseline is silently accepted. The existing
-workflow uploads artifacts only when the regeneration step succeeds, so failed
-runs must be inspected through their logs. `eval/batch_stability.py`
-now measures the Rust product at those same scrapy/django/celery/httpx pins,
-300/300/300/200 commits apart, comparing cold and `--previous-map` head builds
-without an extraction cache. A repeated cold map must be byte-identical.
-`eval/generated_mapping.py` separately checks tolmap's all-sources map twice,
-records its hash and collapsed/excluded counts, checks web-to-Rust imports,
-and rejects bindings in `F` or hidden coupling.
+`coverage.generated_collapsed` and `coverage.generated_excluded` persist
+the ts-rs counts in map output and are omitted when zero. Pipeline diagnostics
+and `dump-blend` retain the same counters. The self-map measurement checks
+persisted counts against diagnostic counts. Debt keeps its existing generated
+handling: all generated endpoints are excluded from hidden coupling,
+misplaced and unreached findings, and cycle reporting retains its projection.
 
-Measurements are blocked: dispatching `ci.yml` on this ticket branch returned
-HTTP 403, `Resource not accessible by integration`. The repository app also
-lacks workflow-file write permission, so the measurement commands use the
-existing `eval/regenerate_fixtures.py` entrypoint without a workflow change.
-A maintainer must dispatch the branch to produce full-corpus parity and batch
-stability evidence. No numerical parity or stability result is claimed without
-that evidence. Local builds, tests and typechecks were not run; CI is the gate.
+### Measurements on the previous revision
 
-Remaining scope: counts are exposed by pipeline diagnostics and `dump-blend`,
-but are not yet persisted in `MapDocument.coverage`. That requires coordinated
-edits to the protected `src/geometry.rs` coverage constructor and its Rust
-schema. Fixture artifacts still require Tolmap PM adoption; `data/` is untouched.
-Following explicit review authorization, `bindings/DebtReport.ts` uses the
-`generated-bindings` artifact from run
+Full-fixtures run
+[44476627912](https://github.com/onsager-ai/tolmap/actions/runs/44476627912),
+at `b301ea862d697d7892ac528a72d0bff8b6e07bc4`, measured the earlier,
+broader exclusion rule. Eight of nine fixtures were unchanged, with 100%
+district placement and zero modularity delta. Prometheus lost eight generated
+Go files (444 → 436): placement was 82.3% (359/436 common files), below the
+95% gate; modularity changed from 0.5519 to 0.5464 (delta 0.0055).
+This measured failure is why the owner narrowed exclusion to ts-rs in
+[the issue decision](https://github.com/onsager-ai/tolmap/issues/335#issuecomment-7002878369).
+The revised behavior requires another full-fixture measurement; these numbers
+do not validate the revision.
+
+That run's self-map collapsed all 144 bindings, excluded zero files, retained
+182 files and produced byte-identical repeated cold maps:
+SHA-256 `f2559292bc1b63b393fdde7d73054e596e3ec013bf02baf9d27d34f6e8e1e2de`.
+Web imports reached authored Rust generators and no binding appeared in
+hidden coupling. The same run measured Rust batch stability with seed 7,
+resolution 1.1, `--refs hand`, no extraction cache and the source pins in
+`data/fixtures.toml`. Retention compares old and head districts by Jaccard
+matching over common files.
+
+| Repository | Commits back | Common files | Cold retention | Warm retention | Cold q | Warm q |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| scrapy | 300 | 168 | 64.88% | 91.07% | 0.3331 | 0.3231 |
+| django | 300 | 847 | 67.53% | 87.96% | 0.5187 | 0.5165 |
+| celery | 300 | 161 | 67.08% | 88.20% | 0.3552 | 0.3516 |
+| httpx | 200 | 23 | 95.65% | 95.65% | 0.0317 | 0.0317 |
+
+All four repeated cold builds were byte-identical and had zero generated
+projection counts. These are measurements of `b301ea8`, not the revised code.
+
+### Gates and earlier implementation
+
+The on-demand `full-fixtures` job retains strict parity against existing
+fixture pins and seeded names, recording every candidate and failure before
+reporting acceptance. `eval/batch_stability.py` measures cold and warm builds;
+`eval/generated_mapping.py` verifies self-map determinism, coverage counts,
+web-to-Rust imports and debt exclusions. Baselines are never refreshed to hide
+a regression. Fixture data is unchanged. Local builds, tests and typechecks
+were not run; CI is the gate.
+
+[Draft PR #340](https://github.com/onsager-ai/tolmap/pull/340), reviewed at
+`40368ac2b18531f754ccf0ec736697d85b9b41e1`, provided the pattern for
+zero-omitted coverage counts. Its `extract::collapse_generated` runs before
+history, proximity and semantic candidate construction, recomputes dominant
+source, and rereads generated headers for scoped check snapshots. This branch
+retains the later `GraphData` projection and co-change lower bounds; those
+earlier extraction/scoped-check mechanisms are not part of this change.
+The owner's updated scope allows the geometry coverage constructor and
+supersedes the earlier deferred coverage work. The earlier draft's broad
+generated-file exclusion and relaxed structural fixture checks are not adopted.
+
+`bindings/DebtReport.ts` was previously adopted byte for byte from the
+`generated-bindings` artifact in run
 [44471954911](https://github.com/onsager-ai/tolmap/actions/runs/44471954911),
-artifact `14504927108`, generated at
-`5dc8e6f99e00d361ea5ce1d7fda5803379552724`. Only that file differs from the
-artifact's checked-in counterparts: its field documentation now describes
-suppression for every generated endpoint. Its bytes match the artifact
-(SHA-256 `d649b2c8f76d6ddf8a6be3b6788c1e4a08ad8e5663b6a291ca6001d74122c075`).
-
-### Earlier implementation (#340)
-
-[PR #340](https://github.com/onsager-ai/tolmap/pull/340), reviewed at
-`40368ac2b18531f754ccf0ec736697d85b9b41e1` (`fix/generated-collapse`), already
-implements `extract::collapse_generated` and persists
-`coverage.generated_collapsed` / `coverage.generated_excluded`, including
-graph dump round trips. Its collapse runs after SCIP and before `finish_graph`,
-so generated files are removed before history, proximity and semantic candidate
-construction. It also recomputes the dominant source and rereads generated
-files for scoped `tolmap check` snapshots whose stored `F` excludes them.
-
-This branch retains the later `GraphData` projection because the ticket
-explicitly protects `src/extract.rs` and `src/geometry.rs`, both required by
-that earlier implementation. It projects already extracted signals and retains
-redirected co-change lower bounds, so the two implementations are not
-equivalent. Persisted counts, dominant-source recomputation and scoped-check
-generated-file discovery remain integration work; remapping indices alone does
-not complete those contracts. The earlier coverage/scoped-check implementation
-is a concrete starting point once those protected edits can be coordinated.
-Its generated-file suppression wording is adopted here for debt text output.
-
-The earlier PR's extraction-change mode also relaxes structural fixture checks;
-this branch retains strict checks and records their failures. Neither the
-earlier incomplete attempt nor its pending fixture measurements establish parity
-for this implementation.
+artifact `14504927108`, for source head `5dc8e6f`, under explicit review
+authorization. The new coverage/header schema requires a further PM-owned
+CI binding update; no bindings are regenerated locally.

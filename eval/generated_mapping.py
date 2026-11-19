@@ -34,6 +34,9 @@ counts = json.loads(coverage[-1])
 if counts["collapsed"] == 0:
     raise SystemExit("no ts-rs binding collapsed on tolmap")
 document = json.loads((out / "tolmap.json").read_text())
+for name, count in counts.items():
+    if document["coverage"].get(f"generated_{name}", 0) != count:
+        raise SystemExit(f"map coverage disagrees with generated {name} count")
 if any(file.startswith("bindings/") for file in document["F"]):
     raise SystemExit("generated binding leaked into F")
 cross_imports = [

@@ -15,8 +15,9 @@ pub struct Projection {
     pub retained: Vec<usize>,
 }
 
-/// Only the extractor's unique ts-rs match earns a redirect. Unmatched
-/// generated files disappear, along with their incident evidence. Authored
+/// Only the extractor's unique ts-rs match earns a redirect. Unmatched ts-rs
+/// bindings disappear, along with their incident evidence. Other generated
+/// files and their debt evidence remain. Authored
 /// metrics and symbols stay on their original files; generated LOC, churn and
 /// complexity must not inflate the generator's metrics.
 pub fn collapse(data: &mut GraphData) -> Projection {
@@ -25,13 +26,17 @@ pub fn collapse(data: &mut GraphData) -> Projection {
         coverage: GeneratedCoverage::default(),
         retained: (0..data.nodes.len()).collect(),
     };
-    if generated.is_empty() {
-        return projection;
-    }
     let generated_ids = generated
         .iter()
+        // Older evidence has no header flag, but a generator is itself proof
+        // of a unique ts-rs match. Never guess an unmatched file's kind.
+        .filter(|row| row.ts_rs || row.generator.is_some())
         .map(|row| row.file)
         .collect::<BTreeSet<_>>();
+    if generated_ids.is_empty() {
+        // Preserve generic-only maps byte for byte, including fan-in and debt.
+        return projection;
+    }
     projection
         .retained
         .retain(|id| !generated_ids.contains(&(*id as FileId)));
@@ -39,11 +44,14 @@ pub fn collapse(data: &mut GraphData) -> Projection {
     for (new, &old) in projection.retained.iter().enumerate() {
         targets[old] = Some(new as FileId);
     }
-    for row in generated {
+    for row in generated
+        .iter()
+        .filter(|row| generated_ids.contains(&row.file))
+    {
         // A generator must itself be authored. In particular, never follow
         // chains or cycles of generated files from externally supplied data.
         let target = row.generator.and_then(|id| {
-            (!generated_ids.contains(&id))
+            (!generated.iter().any(|row| row.file == id))
                 .then(|| targets.get(id as usize).copied().flatten())
                 .flatten()
         });
@@ -59,7 +67,13 @@ pub fn collapse(data: &mut GraphData) -> Projection {
         (a != b).then_some((a, b))
     };
     let mut imports = BTreeMap::<(FileId, FileId), f64>::new();
+    let mut changed_fanin = BTreeSet::new();
     for (a, b, weight) in std::mem::take(&mut data.imports) {
+        if generated_ids.contains(&a) || generated_ids.contains(&b) {
+            if let Some(target) = targets[b as usize] {
+                changed_fanin.insert(target);
+            }
+        }
         if let Some(pair) = pair(a, b) {
             *imports.entry(pair).or_default() += weight;
         }
@@ -156,11 +170,24 @@ pub fn collapse(data: &mut GraphData) -> Projection {
         .enumerate()
         .filter_map(|(id, node)| (!generated_ids.contains(&(id as FileId))).then_some(node))
         .collect();
-    for node in &mut data.nodes {
-        node.fanin = 0.0;
+    for &target in &changed_fanin {
+        data.nodes[target as usize].fanin = 0.0;
     }
     for &(_, target, weight) in &data.imports {
-        data.nodes[target as usize].fanin += weight;
+        if changed_fanin.contains(&target) {
+            data.nodes[target as usize].fanin += weight;
+        }
+    }
+    for &target in &changed_fanin {
+        let node = &mut data.nodes[target as usize];
+        let language = if node.lang.is_empty() {
+            &data.lang
+        } else {
+            &node.lang
+        };
+        if language != "py" {
+            node.fanin = crate::extract::round_to(node.fanin, 2);
+        }
     }
     data.symbols
         .retain(|path, _| redirects[path].as_ref() == Some(path));
@@ -169,8 +196,16 @@ pub fn collapse(data: &mut GraphData) -> Projection {
             .get(path)
             .is_some_and(|target| target.as_ref() == Some(path))
     });
-    // Some(empty) retains the fact that generated-file detection ran; removed
-    // file indices must never escape into compact debt evidence.
-    data.generated = Some(Vec::new());
+    // Retain other generated files for debt's existing exclusions, with their
+    // surviving indices. Some(empty) still records that header detection ran.
+    data.generated = data.generated.take().map(|rows| {
+        rows.into_iter()
+            .filter(|row| !generated_ids.contains(&row.file))
+            .map(|mut row| {
+                row.file = targets[row.file as usize].expect("retained generated file");
+                row
+            })
+            .collect()
+    });
     projection
 }

@@ -46,18 +46,22 @@ fn graph() -> GraphData {
         GeneratedFile {
             file: 0,
             generator: Some(4),
+            ts_rs: true,
         },
         GeneratedFile {
             file: 1,
             generator: Some(4),
+            ts_rs: true,
         },
         GeneratedFile {
             file: 2,
             generator: None,
+            ts_rs: true,
         },
         GeneratedFile {
             file: 3,
             generator: None,
+            ts_rs: false,
         },
     ]);
     data.cochange = Some(BTreeMap::from([
@@ -106,20 +110,29 @@ fn collapse_redirects_and_sums_signal_mass_without_inventing_cochange_counts() {
     let projection = generated::collapse(&mut data);
     assert_eq!(
         (projection.coverage.collapsed, projection.coverage.excluded),
-        (2, 2)
+        (2, 1)
     );
-    assert_eq!(projection.retained, [4, 5, 6]);
+    assert_eq!(projection.retained, [3, 4, 5, 6]);
     assert_eq!(
         data.nodes
             .iter()
             .map(|n| n.file.as_str())
             .collect::<Vec<_>>(),
-        ["src/model.rs", "web/app.ts", "web/other.ts"]
+        [
+            "generated/api.ts",
+            "src/model.rs",
+            "web/app.ts",
+            "web/other.ts"
+        ]
     );
-    assert_eq!(data.imports, [(1, 0, 2.5)]);
-    assert_eq!(data.uses, [(1, 0, "A".into())]);
-    assert_eq!(data.edges.len(), 1);
-    let edge = &data.edges[0];
+    assert_eq!(data.imports, [(0, 3, 1.0), (2, 1, 2.5)]);
+    assert_eq!(data.uses, [(2, 1, "A".into())]);
+    assert_eq!(data.edges.len(), 2);
+    let edge = data
+        .edges
+        .iter()
+        .find(|edge| edge.a == "src/model.rs")
+        .unwrap();
     assert_eq!((&*edge.a, &*edge.b), ("src/model.rs", "web/app.ts"));
     assert_eq!(
         (
@@ -133,15 +146,15 @@ fn collapse_redirects_and_sums_signal_mass_without_inventing_cochange_counts() {
     let cochange = data.cochange.as_ref().unwrap();
     assert_eq!(cochange.len(), 1);
     assert_eq!(
-        (cochange[&(0, 1)].count, cochange[&(0, 1)].weight),
+        (cochange[&(1, 2)].count, cochange[&(1, 2)].weight),
         (5, 0.6)
     );
-    assert_eq!(data.nodes[0].fanin, 2.5);
+    assert_eq!(data.nodes[1].fanin, 2.5);
     assert_eq!(
         (
-            data.nodes[0].loc,
-            data.nodes[0].complexity,
-            data.nodes[0].churn
+            data.nodes[1].loc,
+            data.nodes[1].complexity,
+            data.nodes[1].churn
         ),
         (20, 2, 3)
     );
@@ -150,10 +163,14 @@ fn collapse_redirects_and_sums_signal_mass_without_inventing_cochange_counts() {
         ["src/model.rs"]
     );
     let tree = data.rust_mod.as_ref().unwrap();
-    assert_eq!(tree.roots, BTreeSet::from([0]));
-    assert_eq!(tree.pairs, BTreeSet::from([(0, 2)]));
-    assert_eq!(data.build_entries, Some(BTreeSet::from([1])));
-    assert_eq!(data.generated.as_ref().unwrap().len(), 0);
+    assert_eq!(tree.roots, BTreeSet::from([1]));
+    assert_eq!(tree.pairs, BTreeSet::from([(1, 3)]));
+    assert_eq!(data.build_entries, Some(BTreeSet::from([2])));
+    let retained_generated = data.generated.as_ref().unwrap();
+    assert_eq!(retained_generated.len(), 1);
+    assert_eq!(retained_generated[0].file, 0);
+    assert_eq!(retained_generated[0].generator, None);
+    assert!(!retained_generated[0].ts_rs);
 
     let once = serde_json::to_vec(&data).unwrap();
     assert_eq!(generated::collapse(&mut data).coverage, Default::default());
@@ -173,6 +190,58 @@ fn old_graph_without_generated_evidence_is_byte_identical() {
 }
 
 #[test]
+fn generic_generated_files_leave_the_entire_graph_and_debt_evidence_unchanged() {
+    let mut data = graph();
+    data.generated.as_mut().unwrap().retain(|row| !row.ts_rs);
+    data.nodes[6].fanin = 1.234567;
+    let before = serde_json::to_vec(&data).unwrap();
+    let debt_before = serde_json::to_vec(&data.generated).unwrap();
+    assert_eq!(generated::collapse(&mut data).coverage, Default::default());
+    assert_eq!(serde_json::to_vec(&data).unwrap(), before);
+    assert_eq!(serde_json::to_vec(&data.generated).unwrap(), debt_before);
+}
+
+#[test]
+fn collapse_preserves_untouched_fanin_and_rounds_changed_non_python_fanin() {
+    for language in ["ts", "py"] {
+        let mut data = graph();
+        data.nodes[4].lang = language.into();
+        data.nodes[6].fanin = 1.23;
+        // Rounding each import is lossy; an untouched node must retain the
+        // extractor's fan-in rather than summing its rounded import rows.
+        data.imports.push((5, 6, 0.23));
+        data.imports[0].2 = 1.234;
+        data.imports[1].2 = 0.117;
+        let expected = if language == "py" {
+            1.234 + 0.117 + 1.0
+        } else {
+            2.35
+        };
+        generated::collapse(&mut data);
+        assert_eq!(data.nodes[3].fanin, 1.23);
+        assert_eq!(data.nodes[1].fanin, expected);
+    }
+}
+
+#[test]
+fn generated_coverage_counts_are_optional_and_round_trip() {
+    use tolmap::schema::CoverageReport;
+    let legacy = json!({"zero_edge_files": 0, "total_files": 4, "by_language": {}});
+    let mut coverage: CoverageReport = serde_json::from_value(legacy).unwrap();
+    let absent = serde_json::to_value(&coverage).unwrap();
+    assert!(absent.get("generated_collapsed").is_none());
+    assert!(absent.get("generated_excluded").is_none());
+    coverage.generated_collapsed = 2;
+    coverage.generated_excluded = 1;
+    let value = serde_json::to_value(coverage).unwrap();
+    assert_eq!(value["generated_collapsed"], 2);
+    assert_eq!(value["generated_excluded"], 1);
+    let restored: CoverageReport = serde_json::from_value(value).unwrap();
+    assert_eq!(restored.generated_collapsed, 2);
+    assert_eq!(restored.generated_excluded, 1);
+}
+
+#[test]
 fn warm_start_membership_tracks_retained_files_before_partition() {
     struct Capture;
     impl tolmap::partition::Partitioner for Capture {
@@ -184,10 +253,10 @@ fn warm_start_membership_tracks_retained_files_before_partition() {
             initial: Option<&[usize]>,
         ) -> anyhow::Result<tolmap::partition::PartitionResult> {
             assert_eq!(seed, 7);
-            assert_eq!(graph.node_count, 3);
-            assert_eq!(initial, Some([8, 9, 10].as_slice()));
+            assert_eq!(graph.node_count, 4);
+            assert_eq!(initial, Some([4, 8, 9, 10].as_slice()));
             Ok(tolmap::partition::PartitionResult {
-                membership: vec![0; 3],
+                membership: vec![0; 4],
                 modularity: 0.0,
             })
         }
@@ -199,13 +268,13 @@ fn warm_start_membership_tracks_retained_files_before_partition() {
             output.generated_coverage.collapsed,
             output.generated_coverage.excluded
         ),
-        (2, 2)
+        (2, 1)
     );
-    assert_eq!(output.weighted.nodes.len(), 3);
+    assert_eq!(output.weighted.nodes.len(), 4);
 }
 
 #[test]
-fn extraction_matches_unique_ts_rs_generator_and_excludes_ambiguous_or_other_headers() {
+fn extraction_collapses_only_ts_rs_and_retains_other_generated_headers() {
     let repo = tempfile::tempdir().unwrap();
     let write = |path: &str, source: &str| {
         let path = repo.path().join(path);
@@ -227,10 +296,14 @@ fn extraction_matches_unique_ts_rs_generator_and_excludes_ambiguous_or_other_hea
         "// This file was generated by [ts-rs]\nexport type Duplicate = {};\n",
     );
     write(
-        "bindings/Missing.ts",
+        "elsewhere/Missing.ts",
         "// This file was generated by [ts-rs]\nexport type Missing = {};\n",
     );
     write("web/api.ts", "// @generated\nexport const value = 1;\n");
+    write(
+        "web/proto.ts",
+        "// Code generated by protoc. DO NOT EDIT.\nexport const message = 1;\n",
+    );
     write("web/app.ts", "import type { Thing } from '../bindings/Thing';\nexport function read(x: Thing) { return x.value; }\n");
     // Extraction reads history as well as source, so this fixture must be a
     // committed repository, just like the repositories mapped by the CLI.
@@ -264,11 +337,20 @@ fn extraction_matches_unique_ts_rs_generator_and_excludes_ambiguous_or_other_hea
     )
     .unwrap();
     let coverage = generated::collapse(&mut data).coverage;
-    assert_eq!((coverage.collapsed, coverage.excluded), (1, 3));
+    assert_eq!((coverage.collapsed, coverage.excluded), (1, 2));
     assert!(data
         .nodes
         .iter()
-        .all(|node| !node.file.starts_with("bindings/") && node.file != "web/api.ts"));
+        .all(|node| !node.file.starts_with("bindings/") && node.file != "elsewhere/Missing.ts"));
+    for path in ["web/api.ts", "web/proto.ts"] {
+        assert!(data.nodes.iter().any(|node| node.file == path));
+        assert!(data
+            .generated
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|row| data.nodes[row.file as usize].file == path && !row.ts_rs));
+    }
     assert!(data
         .imports
         .iter()

@@ -11,15 +11,18 @@ The Rust product also reads Rust (`src/extract/rust.rs`, finding 57), which the 
 
 Before mass normalization, `src/generated.rs` projects generated ts-rs files
 onto their unique authored Rust generator from extraction's header/type
-evidence. Other generated files, including ambiguous ts-rs matches, are
-excluded. Imports, uses and candidate signals follow the same projection;
+evidence. A ts-rs binding without a unique generator is excluded. All other
+generated files (`@generated`, `DO NOT EDIT`, protobuf) stay in the map with
+their existing debt handling. Imports, uses and candidate signals follow the same projection;
 self-loops disappear and converging signal masses are added. Co-change counts
 use the maximum observed count, because overlapping commit sets cannot be
 added without inflating the lower bound. The authored generator keeps its own
 LOC, complexity, churn and symbols. Warm-start membership and symbol siblings
-use the surviving file order. Collapsed/excluded counts currently appear in
-pipeline diagnostics and `dump-blend`; persisting them in map coverage needs
-the coordinated coverage constructor/schema update described in finding 78.
+use the surviving file order. Unaffected files retain their extracted fan-in;
+changed fan-in uses extraction's two-decimal rounding outside Python.
+`coverage.generated_collapsed` and `coverage.generated_excluded` persist the
+ts-rs counts, omitted when zero. Maps without ts-rs bindings take an unchanged
+path, including maps containing other generated files (finding 78).
 
 ## 2 · weight
 ```
