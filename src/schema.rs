@@ -745,8 +745,9 @@ pub struct GraphData {
     /// means a relevant config could not be read statically; `Some(empty)`
     /// means configs were measured and named no mapped source file.
     pub build_entries: Option<BTreeSet<FileId>>,
-    /// Generated source files found from their headers. This stays out of
-    /// graph JSON and every map-building input, then becomes debt evidence.
+    /// Generated source files found from their headers. Before blending,
+    /// known ts-rs bindings collapse onto authored generators and all other
+    /// generated files are excluded. Remaining indices become debt evidence.
     pub generated: Option<Vec<GeneratedFile>>,
     /// Package manifest roots found with the organization manifest reader.
     /// Like the other sidecar inputs, this never affects graph construction.

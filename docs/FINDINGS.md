@@ -4024,3 +4024,37 @@ measurements. Both default limits are 25 per direction, with no truncation.
   sweep was needed to recover those counts.
 - No semon/duhem code changes, automatic indexing, impact enforcement, parity
   fixture refresh, extraction/query/debt behavior change, merge or deployment.
+
+## 78. Generated-file projection before blending (#335)
+
+The Rust pipeline now collapses ts-rs bindings onto the unique authored Rust
+file identified by extraction and excludes all other generated files. Generated
+LOC, churn, complexity and symbol declarations do not inflate the generator's
+metrics. Converging candidate edges add each signal's mass before normalization;
+co-change evidence retains the maximum observed count and weight rather than
+adding overlapping commit sets. Index-based imports, uses, build entries, Rust
+module trees, warm starts and symbol siblings follow the surviving file order.
+Legacy maps also suppress generated-to-generated and unlinked generated pairs
+from hidden coupling, alongside the existing misplaced/unreached exclusions.
+
+The on-demand `full-fixtures` job records strict fixture parity against the
+existing `data/fixtures.toml` pins, seeded names, `--refs hand`, resolution 1.1
+and seed 7. It uploads candidates and evidence even when a parity or structural
+gate fails; no failed baseline is silently accepted. `eval/batch_stability.py`
+now measures the Rust product at those same scrapy/django/celery/httpx pins,
+300/300/300/200 commits apart, comparing cold and `--previous-map` head builds
+without an extraction cache. A repeated cold map must be byte-identical.
+`eval/generated_mapping.py` separately checks tolmap's all-sources map twice,
+records its hash and collapsed/excluded counts, checks web-to-Rust imports,
+and rejects bindings in `F` or hidden coupling.
+
+Measurements are pending the on-demand CI artifacts; no numerical parity or
+stability result is claimed here before that evidence exists. Local builds,
+tests and typechecks were not run; CI is the gate.
+
+Remaining scope: counts are exposed by pipeline diagnostics and `dump-blend`,
+but are not yet persisted in `MapDocument.coverage`. That requires coordinated
+edits to the protected `src/geometry.rs` coverage constructor and its Rust
+schema. Generated bindings and fixture artifacts must be adopted by Tolmap PM
+under this ticket's machine rules; this branch does not edit `bindings/` or
+`data/`.

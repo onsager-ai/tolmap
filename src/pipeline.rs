@@ -115,6 +115,7 @@ pub struct Landmark {
 
 #[derive(Clone, Debug)]
 pub struct PipelineOutput {
+    pub generated_coverage: crate::generated::GeneratedCoverage,
     pub membership: Vec<usize>,
     pub modularity: f64,
     pub districts: BTreeMap<usize, LayoutDistrict>,
@@ -164,6 +165,18 @@ pub fn run_with_variant_progress<P: Partitioner>(
     prune_variant: PruneVariant,
     progress: &crate::progress::Progress,
 ) -> Result<PipelineOutput> {
+    let projection = crate::generated::collapse(&mut data);
+    let initial = initial_membership.map(|membership| {
+        projection
+            .retained
+            .iter()
+            .map(|&old| membership[old])
+            .collect::<Vec<_>>()
+    });
+    progress.log(format!(
+        "generated coverage: {}",
+        serde_json::to_string(&projection.coverage)?
+    ));
     let blend_stage = progress.stage(crate::progress::StageId::BlendPrune, Some(1));
     apply_prune_variant_inner(&mut data, prune_variant, false)?;
     blend_stage.set(1);
@@ -173,7 +186,7 @@ pub fn run_with_variant_progress<P: Partitioner>(
     let PartitionResult {
         membership,
         modularity,
-    } = partitioner.partition(&graph, resolution, SEED, initial_membership)?;
+    } = partitioner.partition(&graph, resolution, SEED, initial.as_deref())?;
     partition_stage.finish();
     let membership = merge_tiny(&membership, &data, 4);
     let layout_started = std::time::Instant::now();
@@ -181,6 +194,7 @@ pub fn run_with_variant_progress<P: Partitioner>(
     progress.log(format!("index_timing {}", serde_json::json!({"stage":"district_layout", "duration_s":layout_started.elapsed().as_secs_f64(), "done":nodes.len(), "unit":"files", "success":true})));
     let landmarks = landmarks(&membership, &data, &graph);
     Ok(PipelineOutput {
+        generated_coverage: projection.coverage,
         membership,
         modularity: round_to(modularity, 4),
         districts,

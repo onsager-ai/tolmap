@@ -1469,14 +1469,40 @@ jobs:
         run: bash scripts/install-leiden.sh "${{ env.LEIDEN_PREFIX }}"
 
       - name: cargo build
+        id: fixture-build
         run: cargo build --release --bin tolmap
 
       - name: Regenerate pinned fixtures with seeded names and parity
         run: python3 eval/regenerate_fixtures.py --out fixture-record
 
       - name: Upload regenerated maps, lenses and parity evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: regenerated-fixtures
           path: fixture-record/
+          if-no-files-found: error
+
+      - name: Pinned Rust batch stability
+        if: always() && steps.fixture-build.outcome == 'success'
+        run: python3 eval/batch_stability.py --out stability-record
+
+      - name: Upload batch stability evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-stability
+          path: stability-record/
+          if-no-files-found: error
+
+      - name: Generated binding projection on tolmap
+        if: always() && steps.fixture-build.outcome == 'success'
+        run: python3 eval/generated_mapping.py
+
+      - name: Upload generated mapping evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-mapping
+          path: generated-record/
           if-no-files-found: error
