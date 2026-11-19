@@ -419,6 +419,7 @@ struct SideGraph {
 }
 
 fn side_graph(mut data: GraphData) -> Result<SideGraph, CheckError> {
+    crate::generated::collapse(&mut data);
     let index = file_index(&data);
     let mut candidates = BTreeSet::new();
     for edge in &data.edges {

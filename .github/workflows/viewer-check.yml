@@ -24,7 +24,7 @@ concurrency:
 jobs:
   lens-fixtures:
     name: pinned Flask lens fixtures
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       LEIDEN_PREFIX: ${{ github.workspace }}/.native/leiden
@@ -58,7 +58,7 @@ jobs:
   view:
     needs: lens-fixtures
     name: check:view + screenshots (${{ matrix.profile }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -156,7 +156,7 @@ jobs:
   screenshots:
     needs: lens-fixtures
     name: screenshots and perf bench
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
       run:

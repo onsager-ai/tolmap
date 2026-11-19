@@ -1474,6 +1474,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
                 .map(|(file, ts_rs)| GeneratedFile {
                     file,
                     generator: ts_rs_generator(file, ts_rs, &files, ts_types.as_ref()),
+                    ts_rs,
                 })
                 .collect::<Vec<_>>();
             generated.sort_by_key(|file| file.file);
@@ -1672,6 +1673,7 @@ fn union_sources(mut intermediates: Vec<SourceIntermediate>) -> Result<MergedSou
             .map(|(file, ts_rs)| GeneratedFile {
                 file,
                 generator: ts_rs_generator(file, ts_rs, &files, Some(&ts_types)),
+                ts_rs,
             })
             .collect::<Vec<_>>();
         generated.sort_by_key(|file| file.file);

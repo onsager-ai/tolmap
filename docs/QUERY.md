@@ -171,7 +171,7 @@ tolmap add /path/to/checkout --name engine --all-sources
 tolmap add owner/name
 tolmap add --scan /path/to/projects --all-sources
 tolmap repos
-tolmap status --repo engine
+tolmap status engine
 tolmap refresh engine
 tolmap refresh --repo engine --commit <available-commit>
 tolmap overview --repo engine
@@ -184,6 +184,8 @@ tolmap rm engine
 XDG/HOME defaults choose the shared root. Local identity is canonical checkout
 root; identical origins never merge checkouts. Basename collisions receive a
 path hash suffix. GitHub URL/name spellings deduplicate case-insensitively.
+`tolmap status REPO` is the primary form; `tolmap status --repo REPO` is also
+supported.
 GitHub HEAD lookup, clone and fetch each try anonymous access first with
 helpers/prompts disabled. An authentication/not-found refusal retries with your
 existing Git credential helper, then `gh auth git-credential` if that helper
