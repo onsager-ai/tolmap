@@ -106,7 +106,7 @@ jobs:
   setup:
     name: build binary(ies) + plan matrix
     if: inputs.command != 'rust-scip-spike'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -264,7 +264,7 @@ jobs:
     name: build ${{ matrix.slug }}
     needs: setup
     if: inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot' && inputs.command != 'agent-sweep'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
     # largest "ultra" repo) at 6m29s wall time before its fix. 90 minutes
@@ -697,7 +697,7 @@ jobs:
     name: combine results
     needs: build
     if: always() && inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot' && inputs.command != 'agent-sweep'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -730,7 +730,7 @@ jobs:
     name: agent payload pilot on tolmap
     needs: setup
     if: inputs.command == 'agent-pilot'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -773,7 +773,7 @@ jobs:
     name: agent size sweep ${{ matrix.repo }}
     needs: setup
     if: inputs.command == 'agent-sweep'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 100
     strategy:
       fail-fast: false
@@ -821,7 +821,7 @@ jobs:
     name: check replay ${{ matrix.slug }} shard ${{ matrix.shard }}
     needs: setup
     if: inputs.command == 'check-calibrate'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 50 checks per shard at django's measured 5.6 s is under ten minutes;
     # 120 leaves room for a slower repository or runner without letting a
     # stuck job run to the 6h ceiling.
@@ -892,7 +892,7 @@ jobs:
     name: combine check replay
     needs: check-calibrate
     if: always() && inputs.command == 'check-calibrate'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -919,7 +919,7 @@ jobs:
     name: sequential name evaluation (20 repos, $5 reserved cap)
     needs: setup
     if: inputs.command == 'name-eval'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4

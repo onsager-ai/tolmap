@@ -67,7 +67,7 @@ env:
 jobs:
   index:
     name: index ${{ matrix.slug }} (${{ matrix.variant }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -231,7 +231,7 @@ jobs:
   # a config file is a way to avoid a build.
   config_probe:
     name: config-path probe (tolmap, build scripts + proc macros off)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -338,7 +338,7 @@ jobs:
     name: rust scip summary
     needs: [index, config_probe]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@v4
