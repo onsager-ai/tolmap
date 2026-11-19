@@ -4051,23 +4051,23 @@ persisted counts against diagnostic counts. Debt keeps its existing generated
 handling: all generated endpoints are excluded from hidden coupling,
 misplaced and unreached findings, and cycle reporting retains its projection.
 
-### Measurements on the previous revision
+### Measurements on the revised behavior
 
 Full-fixtures run
-[44476627912](https://github.com/onsager-ai/tolmap/actions/runs/44476627912),
-at `b301ea862d697d7892ac528a72d0bff8b6e07bc4`, measured the earlier,
-broader exclusion rule. Eight of nine fixtures were unchanged, with 100%
-district placement and zero modularity delta. Prometheus lost eight generated
-Go files (444 → 436): placement was 82.3% (359/436 common files), below the
-95% gate; modularity changed from 0.5519 to 0.5464 (delta 0.0055).
-This measured failure is why the owner narrowed exclusion to ts-rs in
-[the issue decision](https://github.com/onsager-ai/tolmap/issues/335#issuecomment-7002878369).
-The revised behavior requires another full-fixture measurement; these numbers
-do not validate the revision.
+[44492229470](https://github.com/onsager-ai/tolmap/actions/runs/44492229470),
+at `6a444d65fca08bedc7073138c8829dfbf37765ca`, measured the narrowed ts-rs
+rule. All nine fixtures reached 100% district placement with modularity delta
+0.0000. Prometheus retained all 444/444 files, with q 0.5519 → 0.5519.
+The SCIP nine-fixture gate and hand-vs-SCIP score also passed; SCIP Prometheus
+placement was 100%, with q 0.5725 → 0.5725.
 
-That run's self-map collapsed all 144 bindings, excluded zero files, retained
-182 files and produced byte-identical repeated cold maps:
-SHA-256 `f2559292bc1b63b393fdde7d73054e596e3ec013bf02baf9d27d34f6e8e1e2de`.
+Regenerated fixtures differed from `data/` only in `excluded_tests`, a field
+introduced by #357 on main rather than by generated-file projection. No fixture
+data or baseline update is needed in this change.
+
+The all-sources self-map collapsed all 144 bindings, excluded zero files,
+retained 182 files and had q 0.5003. Two cold builds were byte-identical:
+SHA-256 `6933bea7543f0097d21fbc4fe7661e49aeccb8c38a99d6acf8bb3a686aa34b48`.
 Web imports reached authored Rust generators and no binding appeared in
 hidden coupling. The same run measured Rust batch stability with seed 7,
 resolution 1.1, `--refs hand`, no extraction cache and the source pins in
@@ -4082,7 +4082,15 @@ matching over common files.
 | httpx | 200 | 23 | 95.65% | 95.65% | 0.0317 | 0.0317 |
 
 All four repeated cold builds were byte-identical and had zero generated
-projection counts. These are measurements of `b301ea8`, not the revised code.
+projection counts.
+
+The earlier broad exclusion rule failed on Prometheus in run
+[44476627912](https://github.com/onsager-ai/tolmap/actions/runs/44476627912),
+at `b301ea862d697d7892ac528a72d0bff8b6e07bc4`: removing eight generated Go
+files (444 → 436) reduced placement to 82.3% (359/436 common files), below
+the 95% gate; q changed from 0.5519 to 0.5464 (delta 0.0055). This measured
+failure is why the owner narrowed exclusion to ts-rs in
+[the issue decision](https://github.com/onsager-ai/tolmap/issues/335#issuecomment-7002878369).
 
 ### Gates and earlier implementation
 
@@ -4109,5 +4117,6 @@ generated-file exclusion and relaxed structural fixture checks are not adopted.
 `generated-bindings` artifact in run
 [44471954911](https://github.com/onsager-ai/tolmap/actions/runs/44471954911),
 artifact `14504927108`, for source head `5dc8e6f`, under explicit review
-authorization. The new coverage/header schema requires a further PM-owned
-CI binding update; no bindings are regenerated locally.
+authorization. Tolmap PM adopted the coverage/header bindings from run
+[44488961128](https://github.com/onsager-ai/tolmap/actions/runs/44488961128)
+in `6a444d6`. No bindings are regenerated locally.
