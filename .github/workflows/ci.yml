@@ -86,6 +86,10 @@ on:
         description: "full-fixtures: gate extraction changes on placement and modularity and record changed fields"
         type: boolean
         default: false
+      full_clone:
+        description: "full-fixtures: fetch all blobs to exercise extraction that requires local history"
+        type: boolean
+        default: false
   schedule:
     # 03:17 UTC nightly -- off the hour to avoid the top-of-hour GitHub
     # Actions scheduling crush.
@@ -1483,7 +1487,8 @@ jobs:
       - name: Regenerate pinned fixtures with seeded names and parity
         env:
           EXTRACTION_CHANGE: ${{ inputs.extraction_change && '--extraction-change' || '' }}
-        run: python3 eval/regenerate_fixtures.py --out fixture-record $EXTRACTION_CHANGE
+          FULL_CLONE: ${{ inputs.full_clone && '--full-clone' || '' }}
+        run: python3 eval/regenerate_fixtures.py --out fixture-record $EXTRACTION_CHANGE $FULL_CLONE
 
       - name: Upload regenerated maps, lenses and parity evidence
         if: ${{ !cancelled() }}

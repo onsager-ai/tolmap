@@ -26,7 +26,10 @@ def main():
     parser.add_argument(
         "--extraction-change", action="store_true",
         help="record extraction changes and gate on 95%% placement and modularity within 0.02")
+    parser.add_argument("--full-clone", action="store_true",
+                        help="fetch all blobs for fixture and stability history reads")
     args = parser.parse_args()
+    clone_filter = [] if args.full_clone else ["--filter=blob:none"]
     args.out.mkdir(parents=True, exist_ok=True)
     clones = Path("full-clones")
     clones.mkdir(exist_ok=True)
@@ -40,7 +43,7 @@ def main():
             raise SystemExit(f"{name}: unsupported generator {spec['generator']}")
         print(f"::group::{name} ({spec['generator']})", flush=True)
         repo = clones / name
-        run("git", "clone", "--quiet", "--filter=blob:none", spec["url"], str(repo))
+        run("git", "clone", "--quiet", *clone_filter, spec["url"], str(repo))
         run("git", "-C", str(repo), "checkout", "--quiet", spec["commit"])
         seed_names.seed(name, str(built))
         command = ["target/release/tolmap", "build", str(repo), "--pkg", spec["pkg"],
@@ -106,6 +109,8 @@ def main():
         shutil.copyfile(built / f"{name}.json", args.out / f"{name}.json")
         (args.out / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
         print("::endgroup::", flush=True)
+    if args.extraction_change and failures:
+        raise SystemExit(f"fixture gates failed: {', '.join(failures)}; see evidence.json")
     if (args.out / "flask.json").read_bytes() != Path("data/flask.json").read_bytes():
         run("target/release/tolmap", "lens", "suggest", "--map", str(args.out / "flask.json"),
             "--out", str(args.out / "lenses/flask-suggest"))
