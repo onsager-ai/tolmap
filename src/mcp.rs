@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{ensure, Context, Result};
 use clap::{Arg, ArgAction, CommandFactory, Parser};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, Content, Implementation, JsonObject,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    JsonObject, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
     ToolAnnotations,
 };
 use rmcp::service::RequestContext;
@@ -24,7 +24,7 @@ struct Queries {
 }
 
 #[tokio::main(flavor = "current_thread")]
-pub fn serve(data: Option<PathBuf>) -> Result<()> {
+pub async fn serve(data: Option<PathBuf>) -> Result<()> {
     Queries { data }
         .serve(rmcp::transport::stdio_pipes())
         .await?
@@ -83,8 +83,8 @@ impl ServerHandler for Queries {
         let data = self.data.clone();
         let result = tokio::task::spawn_blocking(move || execute(request, data.as_deref())).await;
         let result = match result {
-            Ok(Ok(text)) => CallToolResult::success(vec![Content::text(text)]),
-            Ok(Err(error)) => CallToolResult::error(vec![Content::text(error)]),
+            Ok(Ok(text)) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Ok(Err(error)) => CallToolResult::error(vec![ContentBlock::text(error)]),
             Err(error) => return Err(ErrorData::internal_error(error.to_string(), None)),
         };
         Ok(result.into())
