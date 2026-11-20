@@ -1463,6 +1463,7 @@ mod tests {
             uses: Vec::new(),
             commits_scanned: 0,
             cochange: None,
+            history_moves: None,
             rust_mod: None,
             build_entries: None,
             generated: None,
