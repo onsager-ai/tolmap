@@ -30,7 +30,7 @@ machines need no Rust, Cargo, CMake, compiler, igraph or libleidenalg installati
 
 ## Supported platform
 
-Version 0.1.0 supports **linux-x64 with glibc 2.35 or newer**. CI builds on Ubuntu 22.04 and installs and exercises the tarball in a clean Ubuntu 22.04 consumer at glibc 2.35. The runtime guard checks `process.report` and rejects musl when no glibc version is reported.
+Version 0.2.0 supports **linux-x64 with glibc 2.35 or newer**. CI builds on Ubuntu 22.04 and installs and exercises the tarball in a clean Ubuntu 22.04 consumer at glibc 2.35. The runtime guard checks `process.report` and rejects musl when no glibc version is reported.
 
 macOS, Windows, Linux arm64, and musl/Alpine are unsupported. The package metadata also limits installation to Linux x64.
 
