@@ -4835,7 +4835,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-debt-loaded-desktop-dark.png",
-      "sha256": "813f3e24f935599b2f9ae959232d26ae392309256ee053a99629fac01789580d"
+      "sha256": "cd459345f6fa09679bf38ff82e3ee0eded0f10398b1261f75f812d0153cca98c"
     },
     {
       "id": "map-debt-loaded",
@@ -4843,7 +4843,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-debt-loaded-desktop-light.png",
-      "sha256": "2a71850bd87f796de9ea838d9f25b01a4388ba7cad5d13fe879b1f7c6afbbf30"
+      "sha256": "3c2cbc3a3d3bcb1ec67072e8e2fb7166e6184144a7789b181eb7aca25536adb0"
     },
     {
       "id": "map-debt-loaded",
@@ -4851,7 +4851,7 @@
       "viewport": "landscape",
       "theme": "dark",
       "file": "oss-map-debt-loaded-landscape-dark.png",
-      "sha256": "297b35ac20448cbf648a2511dfc492fd4a2a8d281de949db3fd629f68d0386cd"
+      "sha256": "fe13d34c8dc1e5a8d4f3d850edaaab5c1eae0315ac5078b441be9092dc1b9394"
     },
     {
       "id": "map-debt-loaded",
@@ -4859,7 +4859,7 @@
       "viewport": "landscape",
       "theme": "light",
       "file": "oss-map-debt-loaded-landscape-light.png",
-      "sha256": "c3d7bd843733b32ebc20fce446a990f0636ba229ccf5503aa0cdd7536d3004b2"
+      "sha256": "d3312c94aef00cb29e36ad1460562b3890028083f83dc57927c1beb463138359"
     },
     {
       "id": "map-debt-loaded",
@@ -4867,7 +4867,7 @@
       "viewport": "phone",
       "theme": "dark",
       "file": "oss-map-debt-loaded-phone-dark.png",
-      "sha256": "f6b1884c0813d26c717470810707359570a27ed669966b1a9572492434558a4e"
+      "sha256": "679c5d47a4bc634f4564d81f87f665716b4230e231c69d1012332aa6d2a793d2"
     },
     {
       "id": "map-debt-loaded",
@@ -4875,7 +4875,7 @@
       "viewport": "phone",
       "theme": "light",
       "file": "oss-map-debt-loaded-phone-light.png",
-      "sha256": "8afcd73fb6613b26301c99680b25a85ae9ec4b75c392a3df4aad849673074cb0"
+      "sha256": "f5bc5cbd2c89816c53ce96ca6ba6c746a40ba62722093e6a712356d63d31ca10"
     },
     {
       "id": "map-debt-loaded",
@@ -4883,7 +4883,7 @@
       "viewport": "tablet",
       "theme": "dark",
       "file": "oss-map-debt-loaded-tablet-dark.png",
-      "sha256": "6c8d8922b522fa2f8bb51e5f7883c0878da1abe7b7ce73a608f33e6a1929ab6d"
+      "sha256": "d0f976e922ea597f703f0bf22881465a5b94aa7a913370663fe51fed792b379a"
     },
     {
       "id": "map-debt-loaded",
@@ -4891,7 +4891,7 @@
       "viewport": "tablet",
       "theme": "light",
       "file": "oss-map-debt-loaded-tablet-light.png",
-      "sha256": "7147aaffee42a121bbee4ce9f2b80b8b9d31f2434ff3105b7e1f15a9dd88e3ba"
+      "sha256": "a5b9339e08ea3be2dbc10761791a62c1df3c15f1890a38a20e6f93c17caebc5a"
     },
     {
       "id": "map-debt-compare",
@@ -4899,7 +4899,7 @@
       "viewport": "desktop",
       "theme": "dark",
       "file": "oss-map-debt-compare-desktop-dark.png",
-      "sha256": "5f4b5c2fbf54bb42dee378cf57134eed0eb58e5baea94ba4d612d6fb1d9b30f6"
+      "sha256": "7702231804a3590f747602bedbaeb8c7ad5f8fcb1576afb45d857e9b616b157b"
     },
     {
       "id": "map-debt-compare",
@@ -4907,7 +4907,7 @@
       "viewport": "desktop",
       "theme": "light",
       "file": "oss-map-debt-compare-desktop-light.png",
-      "sha256": "e2c96b54c2b5a9c67529ddfed636a34c346f70506b54234449346df8a366a647"
+      "sha256": "3bb8c44300a5c413d8b33904516e53a832b361a0d28a4e12eb23e02f9fa63739"
     },
     {
       "id": "map-debt-compare",
@@ -7146,6 +7146,28 @@
         "oss-map-lens-walk-middle-tablet-dark.png",
         "oss-map-lens-walk-last-tablet-light.png"
       ]
+    },
+    {
+      "files": [
+        "oss-map-debt-compare-desktop-dark.png",
+        "oss-map-debt-compare-desktop-light.png",
+        "oss-map-debt-loaded-desktop-dark.png",
+        "oss-map-debt-loaded-desktop-light.png",
+        "oss-map-debt-loaded-landscape-dark.png",
+        "oss-map-debt-loaded-landscape-light.png",
+        "oss-map-debt-loaded-phone-dark.png",
+        "oss-map-debt-loaded-phone-light.png",
+        "oss-map-debt-loaded-tablet-dark.png",
+        "oss-map-debt-loaded-tablet-light.png"
+      ],
+      "reason": "PR #349 (#348) changes the Debt lens to roads + focus: overview no longer draws the cycle path's file routes, and the panel separates Show on map from Start walkthrough. 10 map-debt-loaded/compare identities re-approved by the repository owner on 2026-11-17 after reviewing before/after captures and the duhem/semon renders.",
+      "sourceRun": {
+        "id": "44111141969",
+        "workflow": "storybook.yml",
+        "artifact": "tolmap-visual-candidates",
+        "url": "https://github.com/onsager-ai/tolmap/actions/runs/44111141969",
+        "sourceSha": "3be5b33e9e87c6db0dda5a404b2132607fbe3ef2"
+      }
     }
   ]
 }

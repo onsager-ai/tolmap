@@ -52,7 +52,8 @@ pub fn report(
     let mut sorted_sources = sources.to_vec();
     sorted_sources.sort_by(|a, b| a.1.as_str().cmp(b.1.as_str()).then_with(|| a.0.cmp(&b.0)));
 
-    let merged = extract::build_multi_source(repo, &sorted_sources)?;
+    let mut merged = extract::build_multi_source(repo, &sorted_sources)?;
+    crate::generated::collapse(&mut merged);
     let file_language = file_language_map(&merged)?;
     let languages = sorted_sources
         .iter()
@@ -117,7 +118,8 @@ pub fn report(
     let mut per_language = serde_json::Map::new();
     for (pkg, language) in &sorted_sources {
         let lang_key = language.as_str();
-        let single = extract::build(repo, pkg, *language)?;
+        let mut single = extract::build(repo, pkg, *language)?;
+        crate::generated::collapse(&mut single);
         let single_candidate_edges = single.edges.len();
         let mut single_pruned = single.clone();
         let single_prune_stats = pipeline::apply_prune_variant(&mut single_pruned, prune_variant)?;

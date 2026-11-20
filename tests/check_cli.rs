@@ -298,6 +298,21 @@ fn a_new_cross_district_import_lowers_q_and_fails_only_past_max_dq() {
         "a cross-district import must lower q: {report:#}"
     );
     assert_eq!(report["verdict"], "pass", "--report-only: report only");
+    let defaults = &report["default_thresholds"];
+    assert_eq!(defaults["max_districts"], 4);
+    assert_eq!(defaults["max_dq"], 0.0001);
+    assert_eq!(
+        defaults["districts_over"].as_i64().unwrap(),
+        report["districts_crossed"].as_i64().unwrap() - 4
+    );
+    assert_eq!(
+        defaults["verdict"],
+        if report["districts_crossed"].as_u64().unwrap() > 4 || delta_q < -0.0001 {
+            "fail"
+        } else {
+            "pass"
+        }
+    );
     assert_eq!(
         report["thresholds"],
         serde_json::json!({"max_districts": null, "max_dq": null, "source": "report_only"})

@@ -4024,3 +4024,133 @@ measurements. Both default limits are 25 per direction, with no truncation.
   sweep was needed to recover those counts.
 - No semon/duhem code changes, automatic indexing, impact enforcement, parity
   fixture refresh, extraction/query/debt behavior change, merge or deployment.
+
+## 78. Generated ts-rs projection before blending (#335)
+
+The Rust pipeline collapses ts-rs bindings onto the unique authored Rust file
+identified by extraction. A ts-rs binding without a unique generator is excluded.
+Other generated files (`@generated`, Go `DO NOT EDIT`, protobuf) remain in the
+map, with their generated debt evidence retained and remapped. Header detection
+already distinguishes ts-rs; its boolean now survives the two extraction
+metadata constructors instead of being discarded. No path heuristic is used.
+
+Generated LOC, churn, complexity and symbols do not inflate the generator's
+metrics. Converging candidate edges add each signal's mass before normalization;
+co-change evidence retains the maximum observed count and weight rather than
+adding overlapping commit sets. Imports, uses, build entries, Rust module trees,
+warm starts and symbol siblings follow the surviving file order. Only files
+whose incoming imports change have fan-in recomputed, using extraction's
+two-decimal ties-to-even rounding outside Python. Unaffected fan-in stays exact.
+Maps without ts-rs evidence return before any projection, preserving their
+bytes, including generic generated-file rows.
+
+`coverage.generated_collapsed` and `coverage.generated_excluded` persist
+the ts-rs counts in map output and are omitted when zero. Pipeline diagnostics
+and `dump-blend` retain the same counters. The self-map measurement checks
+persisted counts against diagnostic counts. Debt keeps its existing generated
+handling: all generated endpoints are excluded from hidden coupling,
+misplaced and unreached findings, and cycle reporting retains its projection.
+
+### Measurements on the revised behavior
+
+Full-fixtures run
+[44492229470](https://github.com/onsager-ai/tolmap/actions/runs/44492229470),
+at `6a444d65fca08bedc7073138c8829dfbf37765ca`, measured the narrowed ts-rs
+rule. All nine fixtures reached 100% district placement with modularity delta
+0.0000. Prometheus retained all 444/444 files, with q 0.5519 → 0.5519.
+The SCIP nine-fixture gate and hand-vs-SCIP score also passed; SCIP Prometheus
+placement was 100%, with q 0.5725 → 0.5725.
+
+Regenerated fixtures differed from `data/` only in `excluded_tests`, a field
+introduced by #357 on main rather than by generated-file projection. No fixture
+data or baseline update is needed in this change.
+
+The all-sources self-map collapsed all 144 bindings, excluded zero files,
+retained 182 files and had q 0.5003. Two cold builds were byte-identical:
+SHA-256 `6933bea7543f0097d21fbc4fe7661e49aeccb8c38a99d6acf8bb3a686aa34b48`.
+Web imports reached authored Rust generators and no binding appeared in
+hidden coupling. The same run measured Rust batch stability with seed 7,
+resolution 1.1, `--refs hand`, no extraction cache and the source pins in
+`data/fixtures.toml`. Retention compares old and head districts by Jaccard
+matching over common files.
+
+| Repository | Commits back | Common files | Cold retention | Warm retention | Cold q | Warm q |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| scrapy | 300 | 168 | 64.88% | 91.07% | 0.3331 | 0.3231 |
+| django | 300 | 847 | 67.53% | 87.96% | 0.5187 | 0.5165 |
+| celery | 300 | 161 | 67.08% | 88.20% | 0.3552 | 0.3516 |
+| httpx | 200 | 23 | 95.65% | 95.65% | 0.0317 | 0.0317 |
+
+All four repeated cold builds were byte-identical and had zero generated
+projection counts.
+
+The earlier broad exclusion rule failed on Prometheus in run
+[44476627912](https://github.com/onsager-ai/tolmap/actions/runs/44476627912),
+at `b301ea862d697d7892ac528a72d0bff8b6e07bc4`: removing eight generated Go
+files (444 → 436) reduced placement to 82.3% (359/436 common files), below
+the 95% gate; q changed from 0.5519 to 0.5464 (delta 0.0055). This measured
+failure is why the owner narrowed exclusion to ts-rs in
+[the issue decision](https://github.com/onsager-ai/tolmap/issues/335#issuecomment-7002878369).
+
+### Gates and earlier implementation
+
+The on-demand `full-fixtures` job retains strict parity against existing
+fixture pins and seeded names, recording every candidate and failure before
+reporting acceptance. `eval/batch_stability.py` measures cold and warm builds;
+`eval/generated_mapping.py` verifies self-map determinism, coverage counts,
+web-to-Rust imports and debt exclusions. Baselines are never refreshed to hide
+a regression. Fixture data is unchanged. Local builds, tests and typechecks
+were not run; CI is the gate.
+
+[Draft PR #340](https://github.com/onsager-ai/tolmap/pull/340), reviewed at
+`40368ac2b18531f754ccf0ec736697d85b9b41e1`, provided the pattern for
+zero-omitted coverage counts. Its `extract::collapse_generated` runs before
+history, proximity and semantic candidate construction, recomputes dominant
+source, and rereads generated headers for scoped check snapshots. This branch
+retains the later `GraphData` projection and co-change lower bounds; those
+earlier extraction/scoped-check mechanisms are not part of this change.
+The owner's updated scope allows the geometry coverage constructor and
+supersedes the earlier deferred coverage work. The earlier draft's broad
+generated-file exclusion and relaxed structural fixture checks are not adopted.
+
+`bindings/DebtReport.ts` was previously adopted byte for byte from the
+`generated-bindings` artifact in run
+[44471954911](https://github.com/onsager-ai/tolmap/actions/runs/44471954911),
+artifact `14504927108`, for source head `5dc8e6f`, under explicit review
+authorization. Tolmap PM adopted the coverage/header bindings from run
+[44488961128](https://github.com/onsager-ai/tolmap/actions/runs/44488961128)
+in `6a444d6`. No bindings are regenerated locally.
+
+## 79. Tiny-community merge routes are measured separately from edge merges (#46)
+
+Full-fixtures run [44562421997](https://github.com/onsager-ai/tolmap/actions/runs/44562421997),
+at source head `871d14bc6369659abe0e89a06a7fbc4dd17dff39`, recorded the communities
+and files moved through each `merge_tiny` route. Each cell is
+**communities/files**; the run contains the nine acceptance fixtures and the
+additional tolmap self-map:
+
+| Fixture | By edge | `sibling_target` | `parent_target` |
+| --- | ---: | ---: | ---: |
+| celery | 0/0 | 7/7 | 0/0 |
+| django | 1/3 | 137/137 | 90/175 |
+| flask | 1/3 | 0/0 | 0/0 |
+| httpx | 0/0 | 0/0 | 0/0 |
+| prometheus | 0/0 | 21/28 | 1/1 |
+| rich | 0/0 | 0/0 | 0/0 |
+| scrapy | 0/0 | 6/6 | 0/0 |
+| sqlalchemy | 0/0 | 1/1 | 0/0 |
+| vue | 0/0 | 0/0 | 0/0 |
+| tolmap | 0/0 | 0/0 | 1/1 |
+
+All nine acceptance fixtures reported **parity passed**; the tolmap self-map did
+too, so the diagnostics did not change map output. Django placed 312 files via
+directory fallback (137 sibling plus 175 parent) and 3 via an edge. The counts
+show that the directory fallback dominates this fixture; they do not propose a
+change to merge behavior.
+
+The same dispatch's bounded reader extraction profile failed when its `gdb`
+stack probe timed out after four seconds. That profile job measures reader
+extraction and does not run `merge_tiny`, so the failure is unrelated to this
+measurement. Its build log also reports `write_sibling` as unused. That
+function and its callers are unchanged from `origin/main`; the warning
+predates this PR.

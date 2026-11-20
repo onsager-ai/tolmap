@@ -536,8 +536,11 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
         }
         None => progress.log("names cache: none".to_owned()),
     }
-    let map_path = geometry::build_from_graph_warm_with_progress(
+    let excluded_tests = extract::excluded_tests(&materialized.path, &source_pairs)
+        .map_err(|error| fail("index_failed", format!("{error:#}")))?;
+    let map_path = geometry::build_from_graph_with_exclusions(
         graph,
+        Some(excluded_tests),
         repo_ref.repo.clone(),
         &output_dir,
         1.1,

@@ -35,6 +35,14 @@ build_output_mirror?: number,
  */
 python_cross_project?: number, 
 /**
+ * ts-rs bindings collapsed onto a unique authored generator.
+ */
+generated_collapsed?: number, 
+/**
+ * ts-rs bindings excluded because no unique authored generator was found.
+ */
+generated_excluded?: number, 
+/**
  * Issue #337: the history reader's moved-line filter. Absent on a map
  * built from `--graph`, which reads no history.
  */

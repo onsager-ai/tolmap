@@ -8,7 +8,7 @@ tolmap add owner/name
 tolmap add --scan /path/to/projects
 tolmap repos
 tolmap repos --format text
-tolmap status --repo engine
+tolmap status engine
 tolmap refresh engine
 tolmap web
 # Remove tolmap-owned history/source; preserve the original checkout.
@@ -51,3 +51,6 @@ should be treated as private. Localhost links work on this computer only.
 
 [QUERY.md](QUERY.md) covers `--repo`, retained commits and explicit map inputs.
 [CHECK.md](CHECK.md) covers advisory working-tree diff checks.
+
+`tolmap status REPO` inspects a registered repository; `tolmap status --repo REPO`
+is also supported.

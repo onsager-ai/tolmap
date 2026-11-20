@@ -164,6 +164,12 @@ pub struct CoverageReport {
     /// byte-identical.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub python_cross_project: usize,
+    /// ts-rs bindings collapsed onto a unique authored generator.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generated_collapsed: usize,
+    /// ts-rs bindings excluded because no unique authored generator was found.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generated_excluded: usize,
     /// Issue #337: the history reader's moved-line filter. Absent on a map
     /// built from `--graph`, which reads no history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,6 +178,10 @@ pub struct CoverageReport {
 
 fn is_zero(value: &usize) -> bool {
     *value == 0
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 // One language's reference path under `--refs scip`. Plain `//` comments
@@ -371,6 +381,9 @@ pub struct Neighbourhood {
 #[ts(export)]
 pub struct MapDocument {
     pub repo: String,
+    /// Absent on maps built before test-exclusion measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_tests: Option<usize>,
     pub q: f64,
     pub names: BTreeMap<String, String>,
     pub districts: BTreeMap<String, District>,
@@ -449,6 +462,10 @@ pub struct PackageRoot {
 pub struct GeneratedFile {
     pub file: u32,
     pub generator: Option<u32>,
+    /// The header identifies ts-rs, even when its generator is ambiguous or absent.
+    /// Absent in legacy evidence and for other generated files.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ts_rs: bool,
 }
 
 /// Co-change evidence retained for hidden-coupling findings. `pairs` rows are
@@ -536,8 +553,21 @@ pub struct CheckReport {
     pub edges_removed: Vec<CheckEdge>,
     pub landmark_touches: Vec<CheckLandmark>,
     pub thresholds: CheckThresholds,
+    /// Advisory comparison; never changes the applied verdict or exit code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thresholds: Option<CheckDefaultThresholds>,
     pub verdict: CheckVerdict,
     pub lower_bound: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct CheckDefaultThresholds {
+    pub verdict: CheckVerdict,
+    pub max_districts: usize,
+    pub max_dq: f64,
+    /// Positive means over the limit, negative means remaining margin.
+    pub districts_over: i64,
+    pub dq_over: f64,
 }
 
 // A changed file absent from both graphs. `not_in_scope` includes files
@@ -747,8 +777,10 @@ pub struct GraphData {
     /// means a relevant config could not be read statically; `Some(empty)`
     /// means configs were measured and named no mapped source file.
     pub build_entries: Option<BTreeSet<FileId>>,
-    /// Generated source files found from their headers. This stays out of
-    /// graph JSON and every map-building input, then becomes debt evidence.
+    /// Generated source files found from their headers. Before blending,
+    /// uniquely matched ts-rs bindings collapse onto authored generators and
+    /// unmatched ts-rs bindings are excluded. Other generated files remain;
+    /// their remapped indices become debt evidence.
     pub generated: Option<Vec<GeneratedFile>>,
     /// Package manifest roots found with the organization manifest reader.
     /// Like the other sidecar inputs, this never affects graph construction.
@@ -1131,6 +1163,8 @@ mod tests {
             references: None,
             build_output_mirror: 0,
             python_cross_project: count,
+            generated_collapsed: 0,
+            generated_excluded: 0,
             history_moves: None,
         };
         assert!(serde_json::to_value(coverage(0))

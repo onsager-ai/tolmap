@@ -37,7 +37,11 @@ using `/`; they are not filesystem paths relative to the current directory.
 is a candidate; `query.ambiguous` is true when there is more than one, even if
 the limit hides all but one. Use a returned qualified name (and inspect line
 ranges if that still names several definitions). No candidate is selected for
-the caller.
+the caller. A missing path-shaped target (contains `/` or an extension, without
+`::`) returns zero matches with `query.missing_path` and up to three
+`query.suggestions`: mapped paths ordered by character edit distance, then path.
+Text says the path is absent and lists those suggestions. Suggestions are
+advisory metadata, independent of `--limit`, and are never counted as matches.
 
 Only a symbol lookup reads the map's `<stem>.symbols.json` sibling, when present.
 A registered personal snapshot uses its retained
@@ -106,7 +110,13 @@ one trailing newline. Paths and district names replace all internal indices.
   `{"kind":"dependency","path":...,"district":...,"direction":"in|out"}`,
   sorted by path then direction (`in` first).
 - **overview**: `query` includes `files`, `imports` (map edge rows), `districts`,
-  and `language` (the map's language label). Rows are
+  and `language` (the map's language label), `excluded_tests` and
+  `test_exclusion_rule`. The excluded count is measured at source build time,
+  deduplicated across selected roots; null means an older map or graph-only build
+  did not record it. The rule excludes `test/` and `tests/`, plus `__tests__/`
+  for Go/TypeScript/Rust, Go `*_test.go`, and TypeScript `.test.`/`.spec.`
+  filenames. Other collection exclusions still apply; inline tests are not
+  counted. Text prints the count (or unknown) and this rule. Rows are
   `{"kind":"district","name":...,"files":N,"imports_in":N,"imports_out":N}`.
   Counts describe cross-district imports only; internal imports are excluded.
   Rows sort by descending file count, then name, with stored district order
@@ -161,7 +171,7 @@ tolmap add /path/to/checkout --name engine --all-sources
 tolmap add owner/name
 tolmap add --scan /path/to/projects --all-sources
 tolmap repos
-tolmap status --repo engine
+tolmap status engine
 tolmap refresh engine
 tolmap refresh --repo engine --commit <available-commit>
 tolmap overview --repo engine
@@ -174,6 +184,8 @@ tolmap rm engine
 XDG/HOME defaults choose the shared root. Local identity is canonical checkout
 root; identical origins never merge checkouts. Basename collisions receive a
 path hash suffix. GitHub URL/name spellings deduplicate case-insensitively.
+`tolmap status REPO` is the primary form; `tolmap status --repo REPO` is also
+supported.
 GitHub HEAD lookup, clone and fetch each try anonymous access first with
 helpers/prompts disabled. An authentication/not-found refusal retries with your
 existing Git credential helper, then `gh auth git-credential` if that helper

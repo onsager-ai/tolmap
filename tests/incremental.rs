@@ -50,6 +50,8 @@ fn build_with_prior(
         progress,
     )
     .unwrap();
+    let document: MapDocument = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(document.excluded_tests, Some(0));
     vec![
         std::fs::read(&path).unwrap(),
         std::fs::read(path.with_extension("symbols.json")).unwrap(),

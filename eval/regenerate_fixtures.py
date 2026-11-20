@@ -8,6 +8,7 @@ they record the last algorithm change that required each oracle's refresh.
 import argparse
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tomllib
@@ -30,6 +31,7 @@ def main():
     built.mkdir(exist_ok=True)
     manifest = tomllib.loads(Path("data/fixtures.toml").read_text())
     evidence = []
+    failures = []
     for name, spec in manifest.items():
         if not spec["generator"].startswith("rust-"):
             raise SystemExit(f"{name}: unsupported generator {spec['generator']}")
@@ -43,26 +45,33 @@ def main():
                    "--out", str(built), "--resolution", "1.1"]
         if not spec["parcels"]:
             command.append("--no-parcels")
-        run(*command)
+        build = subprocess.run(command, capture_output=True, text=True)
+        (args.out / f"{name}-build.log").write_text(build.stdout + build.stderr)
+        print(build.stdout, flush=True)
+        print(build.stderr, flush=True)
+        build.check_returncode()
         parity = subprocess.run(
             ["target/release/tolmap", "parity", f"data/{name}.json", str(built / f"{name}.json")],
             capture_output=True, text=True)
         print(parity.stdout, flush=True)
         print(parity.stderr, flush=True)
-        parity.check_returncode()
         before = json.loads(Path(f"data/{name}.json").read_text())
         after = json.loads((built / f"{name}.json").read_text())
+        issues = []
         # Entry selection must not affect extraction or partition inputs.
         # Record every landmark row, including rank changes, for PR review.
         for key in ("F", "E", "S", "U", "q"):
             if before[key] != after[key]:
-                raise SystemExit(f"{name}: non-landmark {key} changed")
+                issues.append(f"non-landmark {key} changed")
         if [row[0] for row in before["N"]] != [row[0] for row in after["N"]]:
-            raise SystemExit(f"{name}: partition changed")
+            issues.append("partition changed")
         if before["names"] != after["names"]:
-            raise SystemExit(f"{name}: district names changed: {before['names']} -> {after['names']}")
+            issues.append(f"district names changed: {before['names']} -> {after['names']}")
         if "D" not in after:
-            raise SystemExit(f"{name}: missing D sidecar")
+            issues.append("missing D sidecar")
+        if parity.returncode or issues:
+            failures.append(name)
+        coverage = re.findall(r"generated coverage: (\{[^\n]+\})", build.stdout + build.stderr)
         evidence.append({"fixture": name, "generator": spec["generator"],
                          "commit": spec["commit"], "before_names": before["names"],
                          "after_names": after["names"], "before_keys": sorted(before),
@@ -74,13 +83,19 @@ def main():
                              {"file": after["F"][row[0]], "kind": row[1],
                               "detail": row[2], "rank": row[3]} for row in after["L"]],
                          "parity": parity.stdout,
-                         "parity_exit": parity.returncode})
+                         "parity_exit": parity.returncode, "issues": issues,
+                         "generated": json.loads(coverage[-1]) if coverage else None})
         shutil.copyfile(built / f"{name}.json", args.out / f"{name}.json")
+        (args.out / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
         print("::endgroup::", flush=True)
     if (args.out / "flask.json").read_bytes() != Path("data/flask.json").read_bytes():
         run("target/release/tolmap", "lens", "suggest", "--map", str(args.out / "flask.json"),
             "--out", str(args.out / "lenses/flask-suggest"))
     (args.out / "evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    run("python3", "eval/batch_stability.py", "--out", str(args.out / "stability"))
+    run("python3", "eval/generated_mapping.py", "--out", str(args.out / "generated"))
+    if failures:
+        raise SystemExit(f"fixture gates failed: {', '.join(failures)}; see evidence.json")
 
 
 if __name__ == "__main__":

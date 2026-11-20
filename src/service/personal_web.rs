@@ -907,7 +907,7 @@ async fn map_detail(
         "freshness" => {
             let repo = state.repository(&snapshot.repository)?;
             let status = state.library.status(&repo).map_err(invalid)?;
-            Ok(Json(serde_json::json!({"indexed_commit":snapshot.commit,"requested_commit":status["checkout_commit"],"state": if status["attempt"][0] == "running" {"indexing"} else if status["attempt"][0] == "failed" {"failed"} else if status["checkout_commit"] == snapshot.commit {"complete"} else {"stale"},"failure_reason":status["attempt"][1],"failure_code":null,"retryable":true,"job_id":null})).into_response())
+            Ok(Json(serde_json::json!({"indexed_commit":snapshot.commit,"requested_commit":status["checkout_commit"],"state": if status["attempt"][0] == "running" {"indexing"} else if status["attempt"][0] == "failed" {"failed"} else if status["checkout_commit"] == snapshot.commit {"complete"} else {"stale"},"failure_reason":status["attempt"][1],"failure_code":null,"retryable":status["attempt"][0] == "failed","job_id":null})).into_response())
         },
         _ if rest.starts_with("lenses/") => Ok(Json(super::lens::resolve_at(repository, snapshot.source_path, snapshot.commit, snapshot.map_path, rest[7..].into())?).into_response()),
         _ => Err(ApiError::not_found("map detail unavailable")),

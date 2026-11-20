@@ -7,6 +7,7 @@ import { MOSTLY_SHARE_THRESHOLD } from "./districtIndex";
 import { symbolsOf } from "./geometry";
 import type { AdjMap } from "./graph";
 import { formatDirectory } from "./packageLayout";
+import type { CutRoad } from "@/lens/debt";
 import type { RoadPlan } from "./roads";
 import type { CrossFlow, StreetFlow } from "./streets";
 import { KIND_NAMES, rollReferences, rowKind, rowName, type DecodedDistrictSymbols } from "./symbolCards";
@@ -35,6 +36,8 @@ export interface HoverContentContext {
   readonly doc: MapDocument;
   readonly lens?: LensReport;
   readonly lensComparison?: LensComparison;
+  /** Issue #348: the debt lens's suggested cuts, by directed district pair. */
+  readonly lensRoads?: readonly CutRoad[];
   readonly districtPaths: ReadonlyMap<number, readonly { path: string | null; share: number; other: boolean }[]>;
   readonly roadPlan: readonly RoadPlan[];
   readonly streetCache: { readonly intra: readonly StreetFlow[]; readonly cross: readonly CrossFlow[] } | null;
@@ -99,7 +102,10 @@ export function hoverContent(key: string, context: HoverContentContext): HoverCa
     if (!plan) return null;
     const nameA = doc.names[String(a)] ?? `district ${a}`;
     const nameB = doc.names[String(b)] ?? `district ${b}`;
-    return plainCard([`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`]);
+    const name = (d: number) => (d === a ? nameA : nameB);
+    const cuts = (context.lensRoads ?? []).filter((road) => (road.from === a && road.to === b) || (road.from === b && road.to === a))
+      .map((road) => `Suggested cut: ${name(road.from)} → ${name(road.to)}, ${road.edges} edges (lower bound)`);
+    return plainCard([`${nameA} ↔ ${nameB}`, `${nameA} → ${nameB}: ${plan.ab} imports · ${nameB} → ${nameA}: ${plan.ba} imports`, ...cuts]);
   }
   // B4 scope item 4: streets. Read straight off the currently-cached
   // street plan (getStreetPlan) rather than re-aggregating doc.E, for the

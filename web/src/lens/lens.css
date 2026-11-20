@@ -74,3 +74,5 @@
 .lens-walk-stop { margin-top: 8px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 600; }
 [data-lens-walk-unresolved] { border-left: 2px dashed var(--dim); padding-left: 10px; margin-top: 8px; }
 [data-lens-walk-unresolved] p + p { color: var(--dim); margin-top: 4px; }
+.lens-body button[aria-pressed="true"] { font-weight: 600; color: var(--accent); }
+.lens-path-actions { display: flex; flex-wrap: wrap; gap: 4px 20px; }

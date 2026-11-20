@@ -3,7 +3,7 @@ import type { LensList } from "@bindings/LensList";
 import type { LensResponse } from "@bindings/LensResponse";
 import type { LensTarget } from "@bindings/LensTarget";
 import { API_BASE } from "@/api/client";
-import { isDebtLens, lensDisplayName, DEBT_LENS } from "./debt";
+import { isDebtLens, lensDisplayName, DEBT_LENS, DEBT_PATH_LABEL, debtPathKind } from "./debt";
 import "./lens.css";
 
 async function resource<T>(url: string, signal: AbortSignal): Promise<T> {
@@ -28,9 +28,11 @@ export function useLenses(owner: string, repo: string, commit: string | undefine
   return { list, resolved, data: mismatch ? undefined : resolved.data, error: ready && !commit ? new Error("Lenses require a map with a pinned service snapshot.") : mismatch ? new Error("Lens snapshot does not match this map.") : list.error ?? resolved.error };
 }
 
-export function LensPanel({ lenses, name, select, pick, mode = "full", details, compare, walk }: {
+export function LensPanel({ lenses, name, select, pick, mode = "full", details, compare, walk, focus, show }: {
   lenses: ReturnType<typeof useLenses>; name?: string; select(name?: string): void; pick(target: LensTarget): void;
   mode?: "full" | "picker" | "sheet"; details?(): void; compare?(): void; walk?(path: string): void;
+  /** Issue #348: the debt finding the map draws, and how to choose one. */
+  focus?: string; show?(path?: string): void;
 }) {
   const { list, resolved, data, error } = lenses;
   const body = <div className="lens-body">
@@ -46,14 +48,19 @@ export function LensPanel({ lenses, name, select, pick, mode = "full", details, 
     {data && compare && <button onClick={compare}>Compare this lens</button>}
     {data && mode !== "picker" && isDebtLens(name) && !data.report.areas.length && <p data-lens-state="empty">No debt findings at this snapshot. Findings are lower bounds over the map's edges.</p>}
     {data && mode !== "picker" && !(isDebtLens(name) && !data.report.areas.length) && <div data-lens-state={data.report.unresolved.length ? "unresolved" : "loaded"}>
-      {isDebtLens(name) && <p className="lens-meta" data-debt-summary>Debt findings are lower bounds over the map's edges: district cycles, misplaced files, god files, hotspots and files with no inbound edge found. Measured values are in the notes.</p>}
-      {data.report.paths.map(path => <section key={path.name}><h3>{path.name}</h3>{walk && path.stops.length > 0 && <button data-lens-walk-start={path.name} onClick={() => walk(path.name)}>Start walkthrough</button>}<ol>{path.stops.map((stop, index) => {
+      {isDebtLens(name) && <p className="lens-meta" data-debt-summary>Debt findings are lower bounds over the map's edges: district cycles, misplaced files, god files, hotspots and files with no inbound edge found. Measured values are in the notes. Red roads carry a suggested cycle cut, stronger with more cut edges, with the mark pointing along the cut; choose Show on map for one path's routes.</p>}
+      {data.report.paths.map(path => { const kind = isDebtLens(name) ? debtPathKind(path.name) : undefined; return <section key={path.name}><h3>{path.name}</h3>
+        {kind && <p className="lens-meta" data-debt-path-kind={kind}>{DEBT_PATH_LABEL[kind]}</p>}
+        {(show || (walk && path.stops.length > 0)) && <div className="lens-path-actions">
+          {show && <button aria-pressed={focus === path.name} data-lens-focus={path.name} onClick={() => show(focus === path.name ? undefined : path.name)}>Show on map</button>}
+          {walk && path.stops.length > 0 && <button data-lens-walk-start={path.name} onClick={() => walk(path.name)}>Start walkthrough</button>}
+        </div>}<ol>{path.stops.map((stop, index) => {
         const hop = path.hops.find(item => item.to === index);
         return <li key={index} data-lens-stop-row={index}>
           {hop && <p className="lens-meta">{hop.resolved ? hop.source === "declared" ? "Declared" : `Computed · ${hop.edge_kind}` : "Unresolved hop"}{hop.reason ? ` — ${hop.reason}` : ""}</p>}
           {stop.target ? <button onClick={() => pick(stop.target!)}>{stop.spec}</button> : <span>Unresolved stop: {stop.spec}</span>}
         </li>;
-      })}</ol></section>)}
+      })}</ol></section>; })}
       <p className="lens-meta">{isDebtLens(name) ? "Computed" : "Saved"} at {data.commit.slice(0, 12)} · computed paths are lower bounds from available edges.</p>
       <p className="lens-legend"><i className="lens-computed" /> Computed <i className="lens-declared" /> Declared</p>
       {data.report.areas.length > 0 && <section><h3>Areas</h3>{data.report.areas.map(area => <details key={area.label}><summary><i className="lens-swatch" style={{ background: `var(--lens-${area.color})` }} />{area.label} · {area.members.length}</summary><ul>{area.members.map((member, index) => <li key={index}><button onClick={() => pick(member.target)}>{member.spec}</button></li>)}</ul></details>)}</section>}

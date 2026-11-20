@@ -72,7 +72,7 @@ provenance=get(base+'/provenance');assert provenance['commit']==a
 export=get(base);assert export['districts']
 SOURCE_FIELDS={'version','repository','commit','path','status','text','bytes','long_line'}
 MAP_REQUIRED={'repo','q','names','districts','F','N','E','L','S','U','roads','lang'}
-MAP_ALLOWED=MAP_REQUIRED|{'C','coverage','P','footprint_centroids','file_neighbourhoods','neighbourhoods','D'}
+MAP_ALLOWED=MAP_REQUIRED|{'C','coverage','P','footprint_centroids','file_neighbourhoods','neighbourhoods','D','excluded_tests'}
 SYMBOLS_REQUIRED={'district','files','symbol_indices','symbols','edges','kinds','module_code_lines'}
 SYMBOLS_ALLOWED=SYMBOLS_REQUIRED|{'symbol_rings','module_rings','header_rings'}
 assert set(original)==SOURCE_FIELDS,original

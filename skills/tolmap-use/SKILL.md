@@ -34,8 +34,9 @@ tolmap status
 ```
 
 Read `freshness`, `checkout_commit`, `snapshot.commit`, `snapshot.map_path`,
-`attempt` and `dirty`. From elsewhere use `--repo NAME`; `tolmap repos` lists
-names and last observed state. Reads never index or fetch. `--commit SHA`
+`attempt` and `dirty`. From elsewhere use `tolmap status NAME` (or
+`tolmap status --repo NAME`); `tolmap repos` lists names and last observed
+state. Reads never index or fetch. `--commit SHA`
 selects the latest snapshot at a retained revision; `--snapshot ID` selects an exact history entry.
 `--map FILE` remains available and conflicts with database selectors. Freshness
 and dirty state are disclosed on stderr without changing compact query JSON.
@@ -65,8 +66,12 @@ tolmap where 'src/bin/generate_types.rs::main' --map "$MAP"
 tolmap route src/main.rs src/schema.rs --map "$MAP"
 ```
 
-`overview` lists districts, not entry landmarks; use manifests/source to discover
-entry paths. Paths are exact repository-relative paths, with `/`. JSON is the default;
+`overview` reports `query.excluded_tests` and `query.test_exclusion_rule`;
+a null count means unmeasured by this map, not zero. Counts cover selected source
+roots and exclude inline tests. It lists districts, not entry landmarks; use manifests/source to discover
+entry paths. Paths are exact repository-relative paths, with `/`. Missing path
+lookups report `query.missing_path` and nearest mapped `query.suggestions`;
+suggestions are not matches. JSON is the default;
 `--format text` is for people. `deps` is direct adjacency, not transitive impact.
 `route` is an **import path**, potentially reversed or undirected as its
 `edge_kind` reports, not a runtime call chain. An empty result is not evidence
@@ -86,6 +91,8 @@ several symbol candidates: inspect qualified names and line ranges.
 Null counts mean unknown or unread, never zero. `lower_bound: true` means
 unresolved or dynamic references may be missing, even with SCIP. Confirm
 important boundaries against imports/source and use LSP for exact callers.
+See [API.md's Map coverage section](../../docs/API.md#map-coverage) for the
+coverage fields, their units, and omitted values.
 
 ## Review a diff without imposing a new gate
 
@@ -99,6 +106,10 @@ Read changed files, districts, edges, `lower_bound` and `outside_graph` together
 an empty mapped impact does not make those changes safe or irrelevant.
 `--all-sources` uses detection's scope floor; explicit paired `--pkg`/`--lang`
 can select sources when needed. Keep pilot checks advisory (`--report-only`).
+Read `default_thresholds` for the default pass/fail comparison; positive
+`districts_over` / `dq_over` means over the limit, negative means remaining margin.
+For GitHub library entries, `--repo` uses retained source and requires `--head`;
+use `check . --base <commit>` without `--repo` for local clone/worktree changes.
 Exit 0 means a valid advisory report, not absence of risk; 2/3 mean input/internal
 failure. Compact queries also return 0 for no match, so read `total`.
 
@@ -113,6 +124,11 @@ tolmap debt --map "$MAP" --district 'CLI · checking' --format json
 # Use actual district names returned by overview; the name above is illustrative.
 tolmap debt diff before-debt.json after-debt.json
 ```
+
+When building from a checkout, `--name` is optional and defaults to the
+checkout directory's canonical basename. An explicit name overrides that
+default; if no usable basename can be derived, pass `--name`. The base/head
+examples below keep explicit names so their output map paths are predictable.
 
 To judge a refactor, hold both sides to the base partition. Independently
 partitioned maps churn: files change district and flags appear or vanish on
