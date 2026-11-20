@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -49,6 +50,48 @@ fn cli(cwd: &Path, data: &Path, tool: &str, args: &[&str]) -> std::process::Outp
         .args(args)
         .output()
         .unwrap()
+}
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = tolmap::source::git(repo)
+        .args([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn check_fixture(cwd: &Path) -> (PathBuf, String, String) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/service_identity");
+    let repo = cwd.join("check-fixture");
+    fs::create_dir_all(repo.join("shop")).unwrap();
+    fs::copy(source.join("pyproject.toml"), repo.join("pyproject.toml")).unwrap();
+    for file in fs::read_dir(source.join("shop")).unwrap() {
+        let file = file.unwrap();
+        if file.path().extension().is_some_and(|ext| ext == "py") {
+            fs::copy(file.path(), repo.join("shop").join(file.file_name())).unwrap();
+        }
+    }
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "base fixture"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    let cart = repo.join("shop/cart.py");
+    let original = fs::read_to_string(&cart).unwrap();
+    fs::write(cart, format!("{original}\n# committed head edit\n")).unwrap();
+    git(&repo, &["commit", "-qam", "edit cart"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    (repo, base, head)
 }
 
 #[tokio::test]
@@ -223,6 +266,57 @@ async fn stdio_tools_return_the_cli_report_bytes() {
     assert_eq!(
         response["content"][0]["text"].as_str().unwrap().as_bytes(),
         expected.stderr
+    );
+
+    let (repo, base, head) = check_fixture(&cwd);
+    let checkout = repo.to_str().unwrap();
+    let expected = cli(
+        &cwd,
+        &data,
+        "check",
+        &[
+            checkout,
+            "--base",
+            &base,
+            "--head",
+            &head,
+            "--pkg",
+            ".",
+            "--lang",
+            "py",
+            "--report-only",
+        ],
+    );
+    assert!(
+        expected.status.success(),
+        "check: {}",
+        String::from_utf8_lossy(&expected.stderr)
+    );
+    let report: Value = serde_json::from_slice(&expected.stdout).unwrap();
+    assert_eq!(report["base"], base);
+    assert_eq!(report["head"], head);
+    assert_eq!(report["thresholds"]["source"], "report_only");
+    assert!(report["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file["path"] == "shop/cart.py"));
+
+    let response = request(
+        &mut stdin,
+        &mut stdout,
+        12,
+        "tools/call",
+        json!({"name": "check", "arguments": {
+            "checkout": checkout, "base": base, "head": head, "pkg": ["."], "lang": ["py"],
+        }}),
+    )
+    .await;
+    assert_eq!(response["isError"], false, "{response}");
+    assert_eq!(response["content"][0]["type"], "text");
+    assert_eq!(
+        response["content"][0]["text"].as_str().unwrap().as_bytes(),
+        expected.stdout
     );
 
     drop(stdin);
