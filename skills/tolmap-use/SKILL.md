@@ -22,6 +22,18 @@ Use LSP, grep or the code-graph skill for exact references, renames, type-aware
 callers and symbol correctness. A map supplies structural context, not proof
 that all callers or dependencies were found.
 
+## Optional MCP setup
+
+```sh
+claude mcp add --transport stdio tolmap -- tolmap mcp
+codex mcp add tolmap -- tolmap mcp
+```
+
+The read-only stdio tools return the same JSON as the CLI and infer the repo
+from the server's working directory. Pass `repo` when operating elsewhere.
+`check` runs in report-only mode. Use the CLI for `add` and `refresh`.
+See [MCP setup and arguments](../../docs/QUERY.md#mcp-over-stdio).
+
 ## First check freshness
 
 ```sh

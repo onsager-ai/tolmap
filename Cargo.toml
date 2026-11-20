@@ -51,6 +51,7 @@ ts-rs = { version = "=12.0.1", features = ["serde-compat"] }
 #                    time-ordering, only by id.
 axum = "=0.8.9"
 tokio = { version = "=1.53.1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "fs", "signal"] }
+rmcp = { version = "=3.11.0", default-features = false, features = ["server", "transport-io"] }
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 uuid = { version = "=1.26.1", features = ["v4", "serde"] }
 # Fly.io deployment (2026-09-20): tolmap serves the built web bundle from

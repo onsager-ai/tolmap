@@ -49,6 +49,7 @@ pub struct MapRow {
 // per CLAUDE.md's "migrate forward" convention -- there is one migration
 // today, but the mechanism is the point: a second one appends to this slice
 // rather than editing the first.
+const PERSONAL_LIBRARY_SCHEMA_VERSION: i64 = 8;
 const MIGRATIONS: &[&str] = &[
     r#"
     CREATE TABLE maps (
@@ -145,6 +146,7 @@ const MIGRATIONS: &[&str] = &[
     // what the retry bound is checked against.
     "ALTER TABLE jobs ADD COLUMN class_lost INTEGER NOT NULL DEFAULT 0;",
     r#"
+    -- Version 8 introduces the personal library.
     CREATE TABLE repositories (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE,
@@ -312,6 +314,37 @@ impl Store {
         };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Query commands must never initialize or migrate the on-disk database.
+    pub(crate) fn open_for_query(path: &Path) -> Result<Self> {
+        let conn = match std::fs::metadata(path) {
+            Ok(_) => {
+                let conn =
+                    Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                        .with_context(|| format!("open sqlite store {}", path.display()))?;
+                conn.busy_timeout(std::time::Duration::from_secs(5))?;
+                let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                if version >= PERSONAL_LIBRARY_SCHEMA_VERSION {
+                    return Ok(Self {
+                        conn: Mutex::new(conn),
+                    });
+                }
+                Connection::open_in_memory()?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Connection::open_in_memory()?
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("open sqlite store {}", path.display()))
+            }
+        };
+        // A missing database or one from before the personal library has no registrations.
+        let empty = Self {
+            conn: Mutex::new(conn),
+        };
+        empty.migrate()?;
+        Ok(empty)
     }
 
     fn migrate(&self) -> Result<()> {

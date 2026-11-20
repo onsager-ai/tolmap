@@ -2155,38 +2155,57 @@ pub fn run_filtered(
     cycle_evidence: CycleEvidence,
     partition_from: Option<&std::path::Path>,
 ) -> i32 {
-    let bytes = match std::fs::read(map) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            eprintln!("tolmap debt: {}: {e}", map.display());
-            return 2;
+    match render_filtered(
+        map,
+        format,
+        kinds,
+        path,
+        district,
+        top,
+        cycle_evidence,
+        partition_from,
+    ) {
+        Ok(rendered) => {
+            print!("{rendered}");
+            0
         }
-    };
-    let doc: MapDocument = match serde_json::from_slice(&bytes) {
-        Ok(doc) => doc,
-        Err(e) => {
-            eprintln!("tolmap debt: {}: not a map document: {e}", map.display());
-            return 2;
+        Err(error) => {
+            eprintln!("tolmap debt: {error:#}");
+            2
         }
-    };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_filtered(
+    map: &std::path::Path,
+    format: &str,
+    kinds: &[String],
+    path: Option<&str>,
+    district: Option<&str>,
+    top: Option<usize>,
+    cycle_evidence: CycleEvidence,
+    partition_from: Option<&std::path::Path>,
+) -> anyhow::Result<String> {
+    let bytes = std::fs::read(map).map_err(|e| anyhow::anyhow!("{}: {e}", map.display()))?;
+    let doc: MapDocument = serde_json::from_slice(&bytes)
+        .map_err(|e| anyhow::anyhow!("{}: not a map document: {e}", map.display()))?;
     let (doc, mut report) = match partition_from {
         None => {
             let report = findings(&doc);
             (doc, report)
         }
-        Some(base) => match read_base(base) {
-            Ok((base, sha256, commit)) => findings_pinned(&doc, &base, sha256, commit),
-            Err(e) => {
-                eprintln!("tolmap debt: --partition-from {e}");
-                return 2;
-            }
-        },
+        Some(base) => {
+            let (base, sha256, commit) =
+                read_base(base).map_err(|e| anyhow::anyhow!("--partition-from {e}"))?;
+            findings_pinned(&doc, &base, sha256, commit)
+        }
     };
     apply_filters(&mut report, &doc, kinds, path, district, top);
     if format != "lens" && cycle_evidence == CycleEvidence::Compact {
         compact_cycles(&mut report);
     }
-    let rendered = match format {
+    Ok(match format {
         "json" => render_json(&report),
         "lens" => {
             let mut text = format!(
@@ -2197,9 +2216,7 @@ pub fn run_filtered(
             text
         }
         _ => render_text_with_files(&report, Some(&doc.files)),
-    };
-    print!("{rendered}");
-    0
+    })
 }
 
 fn compact_cycle(cycle: &mut DistrictCycle) {
