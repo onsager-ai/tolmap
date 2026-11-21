@@ -48,6 +48,10 @@ on:
         description: "slugs (or owner/repo@<sha> for a repo outside eval/corpus.toml, plain detection), band, all, stability, or stability:owner/repo,... (300 commits back; httpx 200)"
         required: false
         default: "all"
+      full_clone:
+        description: "Fetch full commit history and all blobs for build comparisons that require local history"
+        type: boolean
+        default: false
       extra_args:
         description: "extra tolmap build flags appended to every repo's own args"
         required: false
@@ -333,16 +337,21 @@ jobs:
       # single-use), so this is a real divergence from it, not an
       # oversight -- a runner's clone exists for one job and is deleted
       # below, so there is no reuse to amortize a fuller clone against.
-      - name: Minimal clone at pinned commit
+      - name: Fetch repository at pinned commit
         env:
           SLUG: ${{ matrix.slug }}
           COMMIT: ${{ matrix.commit }}
+          FULL_CLONE: ${{ inputs.full_clone }}
         run: |
           set -euo pipefail
           mkdir -p clone
           git -C clone init --quiet
           git -C clone remote add origin "https://github.com/${SLUG}.git"
-          git -C clone fetch --quiet --filter=blob:none --depth="$CLONE_DEPTH" origin "$COMMIT"
+          fetch_args=()
+          if [[ "$FULL_CLONE" != true ]]; then
+            fetch_args+=(--filter=blob:none --depth="$CLONE_DEPTH")
+          fi
+          git -C clone fetch --quiet "${fetch_args[@]}" origin "$COMMIT"
           git -C clone checkout --quiet --detach FETCH_HEAD
 
       - name: Install /usr/bin/time

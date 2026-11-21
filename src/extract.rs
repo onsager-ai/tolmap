@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
+use std::io::BufRead;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -6913,6 +6913,7 @@ fn finish_graph(
         symbols,
         uses: uses.into_iter().collect(),
         commits_scanned: history.commits,
+        history_moves: Some(history.moves),
         cochange: Some(cochange),
         rust_mod,
         generated,
@@ -7039,6 +7040,146 @@ struct GitHistory {
     cochange: BTreeMap<(String, String), (usize, f64)>,
     churn: BTreeMap<String, usize>,
     commits: usize,
+    /// Whether moved-line filtering ran, and how many (commit, mapped file)
+    /// pairs it dropped from churn and co-change (issue #337).
+    moves: crate::schema::HistoryMoves,
+}
+
+// Issue #337: a commit that moves code between files (a split) is not new
+// change to either file. A (commit, file) pair is dropped from churn and
+// co-change when git's moved-line detection marks at least this share of the
+// file's changed lines as moved, and the file changed at least this many
+// lines. The floor keeps ratios off tiny edits. Measured on two real splits:
+// 91-95% moved; a split that also rewrote the surrounding code: 43%, which
+// stays counted.
+const MOVED_SHARE_PERCENT: usize = 70;
+const MOVED_MIN_CHANGED_LINES: usize = 20;
+
+// SGR foreground codes for the moved-line colours pinned in
+// `git_history_command`: oldMoved, newMoved and their zebra alternatives.
+const MOVED_COLOR_CODES: [&[u8]; 4] = [b"35", b"36", b"34", b"33"];
+
+/// True unless the repository is a partial (blobless) clone. Moved-line
+/// detection reads blob content, which a `--filter=blob:none` clone fetches
+/// from the remote one round trip at a time (74.6 s vs 0.02 s for rename
+/// detection, issue #32), so the filter runs only where blobs are local.
+fn blobs_are_local(repo: &Path) -> bool {
+    let config = |args: &[&str]| {
+        crate::source::git(repo)
+            .arg("config")
+            .args(args)
+            .output()
+            .map(|output| output.status.success() && !output.stdout.is_empty())
+            .unwrap_or(false)
+    };
+    !(config(&["--get", "extensions.partialclone"])
+        || config(&["--get-regexp", r"^remote\..*\.promisor$"]))
+}
+
+fn git_history_command(repo: &Path, moves: bool) -> Command {
+    let mut command = Command::new("git");
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if moves {
+        // Moved-line detection is a function of the diff, so everything that
+        // can change the diff or its colouring is pinned here rather than
+        // left to user or repository config. The moved colours are made
+        // distinct from plain old/new so the parser can count them.
+        command.args([
+            "-c",
+            "core.quotePath=false",
+            "-c",
+            "log.showSignature=false",
+            "-c",
+            "color.diff.meta=bold",
+            "-c",
+            "color.diff.frag=white",
+            "-c",
+            "color.diff.old=red",
+            "-c",
+            "color.diff.new=green",
+            "-c",
+            "color.diff.oldMoved=magenta",
+            "-c",
+            "color.diff.newMoved=cyan",
+            "-c",
+            "color.diff.oldMovedAlternative=blue",
+            "-c",
+            "color.diff.newMovedAlternative=yellow",
+        ]);
+    }
+    command.args(["-C", &repo.to_string_lossy(), "log"]);
+    command.args(["--no-merges", "--pretty=format:@%H"]);
+    if moves {
+        command.args([
+            "-p",
+            "-U0",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--diff-algorithm=myers",
+            "--indent-heuristic",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--color=always",
+            "--color-moved=zebra",
+            "--color-moved-ws=no",
+            "--ws-error-highlight=none",
+        ]);
+    } else {
+        command.arg("--name-only");
+    }
+    command
+}
+
+fn is_commit_marker(line: &[u8]) -> bool {
+    line.first() == Some(&b'@')
+        && matches!(line.len(), 41 | 65)
+        && line[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// Splits a coloured diff line into its first SGR colour code (empty when
+/// uncoloured) and the text between its leading escape sequences and the
+/// trailing reset git appends to every coloured line (`\x1b[m`).
+fn split_color(line: &[u8]) -> (&[u8], &[u8]) {
+    let mut rest = line;
+    let mut color: &[u8] = b"";
+    while rest.starts_with(b"\x1b[") {
+        let Some(end) = rest.iter().position(|&byte| byte == b'm') else {
+            break;
+        };
+        let code = &rest[2..end];
+        if color.is_empty() && !code.is_empty() && code != b"0" {
+            color = code;
+        }
+        rest = &rest[end + 1..];
+    }
+    while let Some(start) = rest.windows(2).rposition(|pair| pair == b"\x1b[") {
+        let tail = &rest[start + 2..];
+        if tail.last() != Some(&b'm')
+            || !tail[..tail.len() - 1]
+                .iter()
+                .all(|b| b.is_ascii_digit() || *b == b';')
+        {
+            break;
+        }
+        rest = &rest[..start];
+    }
+    (color, rest)
+}
+
+/// The path of a `diff --git a/P b/P` header. With renames off and fixed
+/// prefixes both sides are the same path, so its length is determined.
+fn diff_header_path(text: &[u8]) -> Option<&[u8]> {
+    let rest = text.strip_prefix(b"diff --git a/")?;
+    let length = rest.len().checked_sub(3)? / 2;
+    let path = &rest[..length];
+    (rest.len() == 2 * length + 3
+        && rest[length..].starts_with(b" b/")
+        && rest[length + 3..] == *path)
+        .then_some(path)
 }
 
 fn git_history(
@@ -7048,33 +7189,28 @@ fn git_history(
     source: Option<&CochangeHistory>,
     progress: &crate::progress::StageCounter,
 ) -> Result<GitHistory> {
-    let mut command = Command::new("git");
-    command.args([
-        "-C",
-        &repo.to_string_lossy(),
-        "log",
-        &format!("-n{max_commits}"),
-        "--no-merges",
-        "--pretty=format:@%H",
-        "--name-only",
-        // Rename detection needs blob CONTENT, which a `--filter=blob:none`
-        // clone does not have -- `service::clone` makes exactly that kind of
-        // clone, so every blob git wants here is fetched from the remote one
-        // promisor round-trip at a time. Measured on two fresh blobless
-        // clones of encode/httpx (23 source files): 74.59s with rename
-        // detection, 0.02s without. The cost scales with history, not file
-        // count, which is why it never showed up on the fixtures' file
-        // counts and why a dify-sized index spent 712s of wall clock on 3s
-        // of CPU (issue #32).
-        //
-        // What this gives up: a renamed file is reported as delete-old +
-        // add-new instead of one path, so a rename commit contributes the
-        // old path too. Old paths are not in the current file set and are
-        // dropped downstream, so the visible effect is confined to commits
-        // that renamed a file -- see the parity evidence in #32 for what
-        // that does (or does not) change on the nine fixtures.
-        "--no-renames",
-    ]);
+    let moves = blobs_are_local(repo);
+    let mut command = git_history_command(repo, moves);
+    command.arg(format!("-n{max_commits}"));
+    // Rename detection needs blob CONTENT, which a `--filter=blob:none`
+    // clone does not have -- `service::clone` makes exactly that kind of
+    // clone, so every blob git wants here is fetched from the remote one
+    // promisor round-trip at a time. Measured on two fresh blobless
+    // clones of encode/httpx (23 source files): 74.59s with rename
+    // detection, 0.02s without. The cost scales with history, not file
+    // count, which is why it never showed up on the fixtures' file
+    // counts and why a dify-sized index spent 712s of wall clock on 3s
+    // of CPU (issue #32).
+    //
+    // What this gives up: a renamed file is reported as delete-old +
+    // add-new instead of one path, so a rename commit contributes the
+    // old path too. Old paths are not in the current file set and are
+    // dropped downstream, so the visible effect is confined to commits
+    // that renamed a file -- see the parity evidence in #32 for what
+    // that does (or does not) change on the nine fixtures.
+    if !moves {
+        command.arg("--no-renames");
+    }
     // HEAD unless the caller names another commit (issue #176). The `--`
     // keeps a revision from ever being read as a path.
     if let Some(source) = source {
@@ -7085,61 +7221,91 @@ fn git_history(
         .stderr(Stdio::piped())
         .spawn()
         .context("run git log for co-change")?;
-    let mut stdout = child.stdout.take().expect("piped git log stdout");
-    let mut output_bytes = Vec::new();
-    let mut chunk = [0u8; 65536];
-    let mut at_line_start = true;
+    let stdout = child.stdout.take().expect("piped git log stdout");
+    let mut reader = std::io::BufReader::new(stdout);
+    let file_set = files.iter().cloned().collect::<BTreeSet<_>>();
+    // A path another history knew under its old name is credited to the name
+    // it has here (issue #176: a renamed file keeps its base co-change on
+    // the head side).
+    let mapped = |path: &str| {
+        let path = source
+            .and_then(|source| source.renames.get(path))
+            .map_or(path, String::as_str);
+        file_set.contains(path).then(|| path.to_owned())
+    };
+    let mut commits = Vec::<BTreeSet<String>>::new();
+    let mut dropped = 0usize;
+    // Per file of the current commit: (changed lines, moved lines). Without
+    // the filter the counts stay zero and nothing is dropped.
+    let mut current = None::<BTreeMap<String, (usize, usize)>>;
+    let mut section = None::<String>;
+    let mut in_hunk = false;
+    let mut line = Vec::new();
+    let mut finish = |current: Option<BTreeMap<String, (usize, usize)>>| {
+        let kept = current
+            .into_iter()
+            .flatten()
+            .filter(|&(_, (changed, moved))| {
+                let moved_only = changed >= MOVED_MIN_CHANGED_LINES
+                    && moved * 100 >= changed * MOVED_SHARE_PERCENT;
+                dropped += usize::from(moved_only);
+                !moved_only
+            })
+            .map(|(file, _)| file)
+            .collect::<BTreeSet<_>>();
+        if !kept.is_empty() {
+            commits.push(kept);
+        }
+    };
     loop {
-        let count = stdout.read(&mut chunk)?;
-        if count == 0 {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
             break;
         }
-        let mut commits = 0;
-        for &byte in &chunk[..count] {
-            commits += usize::from(at_line_start && byte == b'@');
-            at_line_start = byte == b'\n';
+        while line.last() == Some(&b'\n') || line.last() == Some(&b'\r') {
+            line.pop();
         }
-        if commits > 0 {
-            progress.advance(commits as u64);
+        if is_commit_marker(&line) {
+            finish(current.take());
+            current = Some(BTreeMap::new());
+            section = None;
+            in_hunk = false;
+            progress.advance(1);
+            continue;
         }
-        output_bytes.extend_from_slice(&chunk[..count]);
+        if !moves {
+            let text = String::from_utf8_lossy(&line);
+            if !text.trim().is_empty() {
+                if let (Some(file), Some(current)) = (mapped(&text[..]), current.as_mut()) {
+                    current.entry(file).or_default();
+                }
+            }
+            continue;
+        }
+        let (color, text) = split_color(&line);
+        if let Some(path) = diff_header_path(text) {
+            in_hunk = false;
+            section = std::str::from_utf8(path).ok().and_then(&mapped);
+            if let (Some(file), Some(current)) = (&section, current.as_mut()) {
+                current.entry(file.clone()).or_default();
+            }
+        } else if text.starts_with(b"@@") {
+            in_hunk = true;
+        } else if in_hunk && matches!(text.first(), Some(b'+' | b'-')) {
+            if let (Some(file), Some(current)) = (&section, current.as_mut()) {
+                let row = current.entry(file.clone()).or_default();
+                row.0 += 1;
+                row.1 += usize::from(MOVED_COLOR_CODES.contains(&color));
+            }
+        }
     }
+    finish(current.take());
     let output = child.wait_with_output()?;
     ensure!(
         output.status.success(),
         "git log failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let file_set = files.iter().cloned().collect::<BTreeSet<_>>();
-    let mut commits = Vec::<BTreeSet<String>>::new();
-    let mut current = None::<BTreeSet<String>>;
-    for line in String::from_utf8_lossy(&output_bytes).lines() {
-        if line.starts_with('@') {
-            if let Some(previous) = current.take() {
-                if !previous.is_empty() {
-                    commits.push(previous);
-                }
-            }
-            current = Some(BTreeSet::new());
-        } else if !line.trim().is_empty() {
-            // A path another history knew under its old name is credited
-            // to the name it has here (issue #176: a renamed file keeps its
-            // base co-change on the head side).
-            let line = source
-                .and_then(|source| source.renames.get(line))
-                .map_or(line, String::as_str);
-            if file_set.contains(line) {
-                if let Some(current) = current.as_mut() {
-                    current.insert(line.to_owned());
-                }
-            }
-        }
-    }
-    if let Some(previous) = current {
-        if !previous.is_empty() {
-            commits.push(previous);
-        }
-    }
 
     let mut solo = BTreeMap::<String, usize>::new();
     let mut pairs = BTreeMap::<(String, String), usize>::new();
@@ -7170,6 +7336,10 @@ fn git_history(
         cochange,
         churn: solo,
         commits: commits.len(),
+        moves: crate::schema::HistoryMoves {
+            filtered: moves,
+            dropped,
+        },
     })
 }
 
@@ -7364,6 +7534,16 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
+    #[test]
+    fn split_color_strips_the_trailing_reset_of_a_coloured_header() {
+        let (color, text) = split_color(b"\x1b[1mdiff --git a/x.rs b/x.rs\x1b[m");
+        assert_eq!(color, b"1");
+        assert_eq!(diff_header_path(text), Some(&b"x.rs"[..]));
+        let (color, text) = split_color(b"\x1b[36m+moved\x1b[m");
+        assert_eq!((color, text), (&b"36"[..], &b"+moved"[..]));
+        assert_eq!(split_color(b"plain"), (&b""[..], &b"plain"[..]));
+    }
+
     /// Issue #343: the fan-in mass a Rust file receives from its own `mod`
     /// subtree is recorded beside, not instead of, its node fan-in.
     #[test]
@@ -7467,6 +7647,70 @@ mod tests {
             BTreeMap::from([(("b.py".to_owned(), "z.py".to_owned()), (3, 1.0))]),
             "a.py's base co-change is credited to z.py, and head's own is not read"
         );
+    }
+
+    /// Issue #337: a commit that moves 20 or more lines out of a file is not
+    /// change to either file, a normal edit still counts, and a partial
+    /// (blobless) clone skips the filter instead of fetching blobs.
+    #[test]
+    fn git_history_ignores_pure_moves_and_skips_them_on_partial_clones() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        let lines = |range: std::ops::Range<usize>| {
+            range
+                .map(|i| format!("pub fn handler_{i:02}(value: u64) -> u64 {{ value + {i} }}\n"))
+                .collect::<String>()
+        };
+        let commit = |message: &str| {
+            git_in(root, &["add", "-A"]);
+            git_in(root, &["commit", "-qm", message]);
+        };
+        git_in(root, &["init", "-q"]);
+        write(root, "a.rs", &format!("{}// edit 0\n", lines(0..60)));
+        write(root, "c.rs", "C = 0\n");
+        commit("add");
+        for round in 1..3 {
+            write(root, "a.rs", &format!("{}// edit {round}\n", lines(0..60)));
+            write(root, "c.rs", &format!("C = {round}\n"));
+            commit("edit a and c");
+        }
+        // Two splits: 25 lines each leave a.rs for b.rs, and c.rs changes in
+        // the same commit.
+        write(root, "a.rs", &format!("{}// edit 2\n", lines(25..60)));
+        write(root, "b.rs", &lines(0..25));
+        write(root, "c.rs", "C = 10\n");
+        commit("split one");
+        write(root, "a.rs", &format!("{}// edit 2\n", lines(50..60)));
+        write(root, "b.rs", &lines(0..50));
+        write(root, "c.rs", "C = 11\n");
+        commit("split two");
+        for round in 0..3 {
+            write(root, "b.rs", &format!("{}// edit {round}\n", lines(0..50)));
+            write(root, "c.rs", &format!("C = {}\n", round + 20));
+            commit("edit b and c");
+        }
+        let files = ["a.rs", "b.rs", "c.rs"].map(str::to_owned).to_vec();
+        let progress = crate::progress::Progress::silent();
+        let stage = progress.stage(crate::progress::StageId::History, None);
+        let pair = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+
+        let filtered = git_history(root, &files, COCHANGE_HISTORY_WINDOW, None, &stage).unwrap();
+        assert!(filtered.moves.filtered);
+        assert_eq!(filtered.moves.dropped, 4, "a.rs and b.rs in both splits");
+        assert_eq!(filtered.churn["a.rs"], 3);
+        assert_eq!(filtered.churn["b.rs"], 3);
+        assert_eq!(filtered.churn["c.rs"], 8, "c.rs changed in every commit");
+        assert!(!filtered.cochange.contains_key(&pair("a.rs", "b.rs")));
+        assert_eq!(filtered.cochange[&pair("a.rs", "c.rs")].0, 3);
+        assert_eq!(filtered.cochange[&pair("b.rs", "c.rs")].0, 3);
+
+        git_in(root, &["config", "remote.origin.promisor", "true"]);
+        let skipped = git_history(root, &files, COCHANGE_HISTORY_WINDOW, None, &stage).unwrap();
+        assert!(!skipped.moves.filtered);
+        assert_eq!(skipped.moves.dropped, 0);
+        assert_eq!(skipped.churn["a.rs"], 5);
+        assert_eq!(skipped.churn["b.rs"], 5);
+        assert_eq!(skipped.cochange[&pair("a.rs", "b.rs")].0, 2);
     }
 
     #[test]

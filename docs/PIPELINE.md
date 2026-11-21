@@ -28,6 +28,8 @@ path, including maps containing other generated files (finding 78).
 ```
 w(a,b) = α·static + β·cochange + γ·proximity + δ·semantic     α .45 β .35 γ .08 δ .12
 ```
+Co-change and churn come from `git log` over the last 4,000 non-merge commits. In a full clone the Rust reader runs git's moved-line detection (`--color-moved=zebra`, options pinned) and drops a file from a commit, for both churn and co-change, when that commit changed at least 20 of its lines and at least 70% were moved (a split into a new file). Partial (blobless) clones skip this to avoid fetching blobs. `coverage.history_moves` records whether the filter ran and how many (commit, file) pairs it dropped (issue #337).
+
 Each signal is scaled so its **summed mass** across all candidate edges matches its intended share — the coefficients are not influence shares (finding 1). Then prune to each node's strongest ~14 edges; a blended graph is far denser than an import graph and a dense graph has no communities to find.
 
 ## 3 · partition

@@ -4154,3 +4154,59 @@ extraction and does not run `merge_tiny`, so the failure is unrelated to this
 measurement. Its build log also reports `write_sibling` as unused. That
 function and its callers are unchanged from `origin/main`; the warning
 predates this PR.
+
+## 80. Filtering moved lines adds 0.76–2.42 seconds to history reads on four full clones (#337)
+
+The history reader drops a commit/file pair from churn and co-change when at
+least 20 lines changed and at least 70% of them are Git-marked moves. Blobless
+and partial clones keep the name-only history path, which avoids fetching blobs.
+
+[Remote build 44692312404](https://github.com/onsager-ai/tolmap/actions/runs/44692312404)
+compared `16df95da29e7b31034e543dcda477d1827c0b2da` with main
+`19eb5f94653e9486eda3d826660fbcaadc9383a2`. Each pair used a single unfiltered,
+unshallowed fetch at the `eval/corpus.toml` pin, the same checkout and source
+flags, and `--refs hand`. Every branch map recorded
+`coverage.history_moves.filtered = true`. The timings come from the build
+logs' `index_timing` event for the `history` stage.
+
+| Repository | Source commit | Commits read per build | Dropped commit/file pairs | Main (s) | Filtered (s) | Added (s) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Flask | `d73fa1cd` | 3,825 | 29 | 0.066 | 0.830 | 0.764 |
+| Django | `dd6f6b15` | 4,000 | 21 | 0.162 | 2.206 | 2.044 |
+| Prometheus | `632d5c95` | 4,000 | 58 | 0.129 | 2.552 | 2.424 |
+| Vue | `4ab865a8` | 4,000 | 58 | 0.091 | 1.577 | 1.486 |
+
+That is 12.6–19.8× the main history-stage time in this sample. Each runner
+made one timed build per binary, with the branch first and main second on the
+same checkout. File-system caches were uncontrolled, and the results neither
+measure clone time nor estimate timing for larger histories or other machines.
+Both binaries completed all four builds. The workflow failed at its subsequent
+byte-equality assertion because the maps differed, including the new coverage
+field. The timing and map artifacts uploaded successfully.
+
+### Blobless control
+
+[Fixture run 44692023009](https://github.com/onsager-ai/tolmap/actions/runs/44692023009)
+used the source pins in `data/fixtures.toml`, `--refs hand`, resolution 1.1,
+and seeded district names. All nine fixtures and the tolmap self-map had
+100% district placement and a modularity delta of 0.0000. The regenerated maps
+changed only `coverage` and `excluded_tests`. Every history report recorded
+`filtered = false` and zero dropped pairs. The unrelated reader profile
+failed on its four-second `gdb` probe. Fixture regeneration completed and
+uploaded evidence.
+
+The same job ran `eval/batch_stability.py` with seed 7, resolution 1.1,
+`--refs hand`, no extraction cache, and the same blobless clones. Retention
+matches districts by Jaccard overlap over common files. All four repeated
+cold maps were byte-identical.
+
+| Repository | Commits back | Common files | Cold retention | Warm retention | Cold q | Warm q |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Scrapy | 300 | 168 | 64.88% | 91.07% | 0.3331 | 0.3231 |
+| Django | 300 | 847 | 67.53% | 87.96% | 0.5187 | 0.5165 |
+| Celery | 300 | 161 | 67.08% | 88.20% | 0.3552 | 0.3516 |
+| HTTPX | 200 | 23 | 95.65% | 95.65% | 0.0317 | 0.0317 |
+
+[Full-clone fixture run 44692325921](https://github.com/onsager-ai/tolmap/actions/runs/44692325921)
+is pending. It checks the same fixture pins with the filter enabled and runs
+batch stability if the placement and modularity gates pass.

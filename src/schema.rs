@@ -109,6 +109,20 @@ pub struct CoverageLanguage {
     pub total_files: usize,
 }
 
+// Issue #337: whether git history was read with moved-line detection, and
+// what it removed. `filtered` is false on a partial (blobless) clone, where
+// the filter is skipped rather than fetching blobs, so two machines that
+// disagree about a map can see why. `dropped` counts (commit, mapped file)
+// pairs whose churn and co-change were discarded because at least 70% of the
+// file's changed lines in that commit (20 or more) were moved. Plain `//`
+// comments: ts-rs copies doc comments into the bindings.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+pub struct HistoryMoves {
+    pub filtered: bool,
+    pub dropped: usize,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CoverageReport {
@@ -156,6 +170,10 @@ pub struct CoverageReport {
     /// ts-rs bindings excluded because no unique authored generator was found.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub generated_excluded: usize,
+    /// Issue #337: the history reader's moved-line filter. Absent on a map
+    /// built from `--graph`, which reads no history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_moves: Option<HistoryMoves>,
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -789,6 +807,9 @@ pub struct GraphData {
     /// Serialized only when nonzero, so every graph dumped before this
     /// field existed, or without such an import, stays byte-identical.
     pub python_cross_project: usize,
+    /// Issue #337: carried to `coverage.history_moves`. Like `cochange` it
+    /// stays out of graph JSON, so `--graph` builds report it absent.
+    pub history_moves: Option<HistoryMoves>,
 }
 
 #[derive(Deserialize)]
@@ -951,6 +972,7 @@ impl<'de> Deserialize<'de> for GraphData {
             references: wire.references,
             build_output_mirror: wire.build_output_mirror,
             python_cross_project: wire.python_cross_project,
+            history_moves: None,
         })
     }
 }
@@ -1030,6 +1052,7 @@ mod tests {
             references: None,
             build_output_mirror: 0,
             python_cross_project: 0,
+            history_moves: None,
         };
 
         let bytes = serde_json::to_vec(&data).unwrap();
@@ -1088,6 +1111,7 @@ mod tests {
             references: None,
             build_output_mirror: 3,
             python_cross_project: 0,
+            history_moves: None,
         };
 
         let value: serde_json::Value =
@@ -1114,6 +1138,7 @@ mod tests {
             uses: Vec::new(),
             commits_scanned: 0,
             cochange: None,
+            history_moves: None,
             rust_mod: None,
             build_entries: None,
             generated: None,
@@ -1140,6 +1165,7 @@ mod tests {
             python_cross_project: count,
             generated_collapsed: 0,
             generated_excluded: 0,
+            history_moves: None,
         };
         assert!(serde_json::to_value(coverage(0))
             .unwrap()

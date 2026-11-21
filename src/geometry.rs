@@ -727,6 +727,7 @@ fn compact(
         python_cross_project: layout.weighted.python_cross_project,
         generated_collapsed: layout.generated_coverage.collapsed,
         generated_excluded: layout.generated_coverage.excluded,
+        history_moves: layout.weighted.history_moves,
     };
     let files = layout
         .weighted
