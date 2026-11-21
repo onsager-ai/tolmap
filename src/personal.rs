@@ -69,7 +69,7 @@ pub(crate) fn private(path: &Path) -> Result<()> {
 /// Nonblocking locks live outside removable repo directories: deleting a locked
 /// inode would let another process lock a different inode for the same repo.
 fn lock(path: &Path) -> Result<std::fs::File> {
-    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -78,11 +78,16 @@ fn lock(path: &Path) -> Result<std::fs::File> {
         .mode(0o600)
         .open(path)?;
     ensure!(
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        try_lock(&file),
         "repository or job capacity is busy; retry after the current operation"
     );
     Ok(file)
 }
+fn try_lock(file: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }) == 0
+}
+
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
     // Only the operation name is diagnostic; arguments and stderr may contain
     // repository data or network/helper secrets and must not enter job errors.
@@ -130,7 +135,7 @@ pub fn github_identity(input: &str) -> Result<String> {
 }
 
 impl Library {
-    pub fn open(data: Option<&Path>) -> Result<Self> {
+    fn config(data: Option<&Path>) -> Result<ApplicationConfig> {
         let mut config = ApplicationConfig::load(data)?;
         if config.data.is_relative() {
             config.data = std::env::current_dir()?.join(&config.data);
@@ -141,7 +146,17 @@ impl Library {
         if config.service.cache_dir.is_relative() {
             config.service.cache_dir = std::env::current_dir()?.join(&config.service.cache_dir);
         }
+        Ok(config)
+    }
 
+    pub fn open_for_query(data: Option<&Path>) -> Result<Self> {
+        let config = Self::config(data)?;
+        let store = Store::open_for_query(&config.service.db_path)?;
+        Ok(Self { config, store })
+    }
+
+    pub fn open(data: Option<&Path>) -> Result<Self> {
+        let config = Self::config(data)?;
         private(&config.data)?;
         private(&config.service.db_path.with_extension("locks"))?;
         private(&config.data.join("repositories"))?;
@@ -160,8 +175,17 @@ impl Library {
     fn repo_dir(&self, repo: &Repository) -> PathBuf {
         self.config.data.join("repositories").join(&repo.id)
     }
+    fn repo_lock_path(&self, repo: &Repository) -> PathBuf {
+        self.locks().join(format!("{}.lock", repo.id))
+    }
     fn repo_lock(&self, repo: &Repository) -> Result<std::fs::File> {
-        lock(&self.locks().join(format!("{}.lock", repo.id)))
+        lock(&self.repo_lock_path(repo))
+    }
+    fn writer_interrupted(&self, repo: &Repository) -> bool {
+        match std::fs::File::open(self.repo_lock_path(repo)) {
+            Ok(file) => try_lock(&file),
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+        }
     }
     fn slot(&self) -> Result<std::fs::File> {
         for slot in 0..self.config.service.limits.max_concurrent_jobs {
@@ -453,7 +477,7 @@ impl Library {
         let latest = self.store.personal_history(&repo.id)?.into_iter().next();
         let mut attempt = self.store.personal_attempt(&repo.id)?;
         if let Some((state, error)) = attempt.as_mut() {
-            if state == "running" && self.repo_lock(repo).is_ok() {
+            if state == "running" && self.writer_interrupted(repo) {
                 *state = "failed".into();
                 *error = Some("interrupted writer; retry refresh".into());
             }
@@ -463,7 +487,12 @@ impl Library {
                 git(Path::new(&repo.location), &["rev-parse", "HEAD^{commit}"]).ok(),
                 git(
                     Path::new(&repo.location),
-                    &["status", "--porcelain=v1", "--untracked-files=all"],
+                    &[
+                        "--no-optional-locks",
+                        "status",
+                        "--porcelain=v1",
+                        "--untracked-files=all",
+                    ],
                 )
                 .ok()
                 .map(|s| !s.is_empty()),
@@ -528,7 +557,7 @@ pub fn resolve_map(
         );
         return Ok(map.to_owned());
     }
-    let library = Library::open(data)?;
+    let library = Library::open_for_query(data)?;
     let repo = library.resolve(repo)?;
     let selected = library.snapshot(&repo, commit, snapshot)?;
     let status = library.status(&repo)?;
@@ -749,7 +778,7 @@ pub fn resolve_check(
             Some(map),
         ));
     }
-    let library = Library::open(data)?;
+    let library = Library::open_for_query(data)?;
     let repo = library.resolve(name)?;
     let snapshot = library.snapshot(&repo, commit, snapshot_id)?;
     let path = if repo.kind == "local" {

@@ -61,6 +61,26 @@ one per direction. Duplicate edges yield one row per path and direction.
 up to N inbound and N outbound rows, so a busy direction cannot hide the other.
 This is direct adjacency, not a transitive blast radius or symbol references.
 
+## MCP over stdio
+
+Register the installed `tolmap` binary with your client:
+
+```sh
+claude mcp add --transport stdio tolmap -- tolmap mcp
+codex mcp add tolmap -- tolmap mcp
+```
+
+The server uses the CLI's personal data settings and infers the repository from
+its working directory. Pass `repo` in a tool call to select a different
+registration, or pass `--data /path/to/data` at server launch to select a
+different library. Tool arguments use the CLI flag names without `--` (for
+example `base-map`), and repeatable flags take arrays.
+
+The server exposes `status`, `repos`, `overview`, `where`, `deps`, `route`,
+`debt` and advisory `check` (`--report-only`). Successful calls return the CLI's
+JSON output as MCP text, including the original row limits and truncation fields.
+Use the CLI to register repositories or refresh snapshots.
+
 ## Versioned JSON
 
 The Rust definitions in `src/query_contract.rs` are the source of truth;

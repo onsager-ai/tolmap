@@ -42,7 +42,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::io::Write as _;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -210,6 +210,15 @@ pub fn exit_code(report: &CheckReport) -> i32 {
 /// the process exit code. A panic is an internal error (3), not Rust's 101,
 /// so a consumer only ever sees the four documented codes.
 pub fn run_cli(options: &CheckOptions, format: &str) -> i32 {
+    write_report(options, format, std::io::stdout(), std::io::stderr())
+}
+
+pub fn write_report(
+    options: &CheckOptions,
+    format: &str,
+    mut stdout: impl Write,
+    mut stderr: impl Write,
+) -> i32 {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(options)));
     match outcome {
         Ok(Ok(report)) => {
@@ -218,7 +227,6 @@ pub fn run_cli(options: &CheckOptions, format: &str) -> i32 {
             } else {
                 render_text(&report)
             };
-            let mut stdout = std::io::stdout().lock();
             if stdout
                 .write_all(rendered.as_bytes())
                 .and_then(|()| stdout.flush())
@@ -229,11 +237,11 @@ pub fn run_cli(options: &CheckOptions, format: &str) -> i32 {
             exit_code(&report)
         }
         Ok(Err(error)) => {
-            eprintln!("tolmap check: {error}");
+            let _ = writeln!(stderr, "tolmap check: {error}");
             error.exit_code()
         }
         Err(_) => {
-            eprintln!("tolmap check: internal error: panicked");
+            let _ = writeln!(stderr, "tolmap check: internal error: panicked");
             3
         }
     }

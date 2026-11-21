@@ -505,11 +505,21 @@ pub fn run_with_data(
     data: Option<&Path>,
     query: impl FnOnce(&Snapshot) -> Result<QueryResponse>,
 ) -> i32 {
+    write_with_data(options, data, query, std::io::stdout(), std::io::stderr())
+}
+
+pub fn write_with_data(
+    options: &QueryOptions,
+    data: Option<&Path>,
+    query: impl FnOnce(&Snapshot) -> Result<QueryResponse>,
+    mut stdout: impl Write,
+    mut stderr: impl Write,
+) -> i32 {
     let snapshot = (|| -> Result<Snapshot> {
         if let Some(path) = options.map.as_deref() {
             return Snapshot::load(path);
         }
-        let library = crate::personal::Library::open(data)?;
+        let library = crate::personal::Library::open_for_query(data)?;
         let repository = library.resolve(options.repo.as_deref())?;
         let selected = library.snapshot(
             &repository,
@@ -528,7 +538,7 @@ pub fn run_with_data(
     let report = match snapshot.and_then(|snapshot| query(&snapshot)) {
         Ok(report) => report,
         Err(e) => {
-            eprintln!("{e:#}");
+            let _ = writeln!(stderr, "{e:#}");
             return 2;
         }
     };
@@ -537,15 +547,13 @@ pub fn run_with_data(
     } else {
         Ok(text(&report))
     };
-    match output.map_err(anyhow::Error::from).and_then(|s| {
-        std::io::stdout()
-            .lock()
-            .write_all(s.as_bytes())
-            .map_err(Into::into)
-    }) {
+    match output
+        .map_err(anyhow::Error::from)
+        .and_then(|s| stdout.write_all(s.as_bytes()).map_err(Into::into))
+    {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("write query response: {e}");
+            let _ = writeln!(stderr, "write query response: {e}");
             3
         }
     }

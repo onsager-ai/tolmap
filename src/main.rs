@@ -1,3 +1,5 @@
+mod mcp;
+
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
@@ -67,6 +69,8 @@ enum Command {
     Route(tolmap::query::RouteArgs),
     /// Inspect committed snapshot freshness without indexing.
     Status(StatusCliArgs),
+    /// Serve read-only tolmap queries over MCP on standard input and output.
+    Mcp,
     /// Explicitly refresh committed HEAD without a server or upload.
     Refresh(tolmap::personal::RefreshArgs),
     /// Build a deterministic map from a repository or extracted graph.
@@ -711,38 +715,48 @@ fn missing_build_name() -> ! {
         .exit()
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let data = cli.data.as_deref();
-    match cli.command {
-        Command::PersonalGithubCredential { operation } => {
-            tolmap::personal_github::credential(&operation)
-        }
-        Command::Route(args) => std::process::exit(tolmap::query::run_with_data(
+// The CLI and MCP share dispatch, selectors, report bytes and diagnostics.
+fn run_query(
+    command: Command,
+    data: Option<&Path>,
+    mut stdout: impl Write,
+    mut stderr: impl Write,
+) -> Result<i32> {
+    use tolmap::query::write_with_data;
+
+    let code = match command {
+        Command::Route(args) => write_with_data(
             &args.options,
             data,
             |snapshot| Ok(snapshot.route(&args.from, &args.to, args.options.limit.unwrap_or(25))),
-        )),
-        Command::Overview(options) => {
-            std::process::exit(tolmap::query::run_with_data(&options, data, |snapshot| {
-                Ok(snapshot.overview(options.limit.unwrap_or(snapshot.map.districts.len())))
-            }))
-        }
-        Command::Where(args) => std::process::exit(tolmap::query::run_with_data(
+            stdout,
+            stderr,
+        ),
+        Command::Overview(options) => write_with_data(
+            &options,
+            data,
+            |snapshot| Ok(snapshot.overview(options.limit.unwrap_or(snapshot.map.districts.len()))),
+            stdout,
+            stderr,
+        ),
+        Command::Where(args) => write_with_data(
             &args.options,
             data,
             |snapshot| snapshot.where_is(&args.target, args.options.limit.unwrap_or(25)),
-        )),
-        Command::Deps(args) => std::process::exit(tolmap::query::run_with_data(
+            stdout,
+            stderr,
+        ),
+        Command::Deps(args) => write_with_data(
             &args.options,
             data,
             |snapshot| {
                 Ok(snapshot.deps(&args.path, args.direction, args.options.limit.unwrap_or(25)))
             },
-        )),
-        Command::Add(args) => tolmap::personal::run_add(args, data),
+            stdout,
+            stderr,
+        ),
         Command::Repos { format } => {
-            let library = tolmap::personal::Library::open(data)?;
+            let library = tolmap::personal::Library::open_for_query(data)?;
             let rows = library
                 .store
                 .repositories()?
@@ -754,26 +768,152 @@ fn main() -> Result<()> {
                 })
                 .collect::<Vec<_>>();
             if format == "json" {
-                println!("{}", serde_json::to_string(&rows)?);
+                writeln!(stdout, "{}", serde_json::to_string(&rows)?)?;
             } else if !rows.is_empty() {
-                println!("{}", render_repos_text(&rows));
+                writeln!(stdout, "{}", render_repos_text(&rows))?;
+            }
+            0
+        }
+        Command::Status(args) => {
+            let library = tolmap::personal::Library::open_for_query(data)?;
+            let status = library
+                .status(&library.resolve(args.repo.as_deref().or(args.repo_flag.as_deref()))?)?;
+            let text = if args.format == "json" {
+                serde_json::to_string(&status)?
+            } else {
+                serde_json::to_string_pretty(&status)?
+            };
+            writeln!(stdout, "{text}")?;
+            0
+        }
+        Command::Debt {
+            command: None,
+            map,
+            repo,
+            commit,
+            snapshot,
+            format,
+            kind,
+            path,
+            district,
+            top,
+            cycle_evidence,
+            partition_from,
+        } => {
+            let rendered = tolmap::personal::resolve_map(
+                map.as_deref(),
+                repo.as_deref(),
+                commit.as_deref(),
+                snapshot.as_deref(),
+                data,
+            )
+            .and_then(|map| {
+                tolmap::debt::render_filtered(
+                    &map,
+                    &format,
+                    &kind,
+                    path.as_deref(),
+                    district.as_deref(),
+                    top,
+                    cycle_evidence,
+                    partition_from.as_deref(),
+                )
+            });
+            match rendered {
+                Ok(text) => {
+                    write!(stdout, "{text}")?;
+                    0
+                }
+                Err(error) => {
+                    writeln!(stderr, "tolmap debt: {error:#}")?;
+                    2
+                }
+            }
+        }
+        Command::Check {
+            checkout,
+            repo,
+            commit,
+            snapshot,
+            base,
+            head,
+            base_map,
+            pkg,
+            lang,
+            all_sources,
+            max_districts,
+            max_dq,
+            report_only,
+            format,
+        } => {
+            let resolved = tolmap::personal::resolve_check(
+                checkout,
+                repo.as_deref(),
+                commit.as_deref(),
+                snapshot.as_deref(),
+                base,
+                base_map,
+                head.as_deref(),
+                data,
+            );
+            let (repo, base, base_map) = match resolved {
+                Ok(v) => v,
+                Err(error) => {
+                    writeln!(stderr, "{error:#}")?;
+                    return Ok(2);
+                }
+            };
+            let options = tolmap::check::CheckOptions {
+                repo,
+                base,
+                head,
+                base_map,
+                pkg,
+                lang,
+                all_sources,
+                max_districts,
+                max_dq,
+                report_only,
+            };
+            // Not `?`: the exit code is the contract (0/1/2/3), and
+            // `main`'s own error path would exit 1 for every failure.
+            tolmap::check::write_report(&options, &format, stdout, stderr)
+        }
+        _ => unreachable!("only query commands reach query dispatch"),
+    };
+    Ok(code)
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let data = cli.data.as_deref();
+    match cli.command {
+        Command::PersonalGithubCredential { operation } => {
+            tolmap::personal_github::credential(&operation)
+        }
+        Command::Mcp => mcp::serve(cli.data),
+        Command::Debt {
+            command: Some(DebtCommand::Diff { before, after }),
+            ..
+        } => std::process::exit(tolmap::debt::run_diff(&before, &after)),
+        query @ (Command::Status(_)
+        | Command::Repos { .. }
+        | Command::Overview(_)
+        | Command::Where(_)
+        | Command::Deps(_)
+        | Command::Route(_)
+        | Command::Debt { .. }
+        | Command::Check { .. }) => {
+            let code = run_query(query, data, std::io::stdout(), std::io::stderr())?;
+            if code != 0 {
+                std::process::exit(code);
             }
             Ok(())
         }
+        Command::Add(args) => tolmap::personal::run_add(args, data),
         Command::Rm { name } => {
             let library = tolmap::personal::Library::open(data)?;
             library.remove(&library.resolve(Some(&name))?)
-        }
-        Command::Status(args) => {
-            let library = tolmap::personal::Library::open(data)?;
-            let status = library
-                .status(&library.resolve(args.repo.as_deref().or(args.repo_flag.as_deref()))?)?;
-            if args.format == "json" {
-                println!("{}", serde_json::to_string(&status)?);
-            } else {
-                println!("{}", serde_json::to_string_pretty(&status)?);
-            }
-            Ok(())
         }
         Command::Refresh(args) => {
             let library = tolmap::personal::Library::open(data)?;
@@ -1028,49 +1168,6 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Command::Debt {
-            command,
-            map,
-            repo,
-            commit,
-            snapshot,
-            format,
-            kind,
-            path,
-            district,
-            top,
-            cycle_evidence,
-            partition_from,
-        } => {
-            let code = match command {
-                Some(DebtCommand::Diff { before, after }) => {
-                    tolmap::debt::run_diff(&before, &after)
-                }
-                None => match tolmap::personal::resolve_map(
-                    map.as_deref(),
-                    repo.as_deref(),
-                    commit.as_deref(),
-                    snapshot.as_deref(),
-                    data,
-                ) {
-                    Ok(map) => tolmap::debt::run_filtered(
-                        &map,
-                        &format,
-                        &kind,
-                        path.as_deref(),
-                        district.as_deref(),
-                        top,
-                        cycle_evidence,
-                        partition_from.as_deref(),
-                    ),
-                    Err(error) => {
-                        eprintln!("tolmap debt: {error:#}");
-                        2
-                    }
-                },
-            };
-            std::process::exit(code)
-        }
         Command::Lens {
             command:
                 LensCommand::Check {
@@ -1142,55 +1239,6 @@ fn main() -> Result<()> {
             },
             out.as_deref(),
         )),
-        Command::Check {
-            checkout,
-            repo,
-            commit,
-            snapshot,
-            base,
-            head,
-            base_map,
-            pkg,
-            lang,
-            all_sources,
-            max_districts,
-            max_dq,
-            report_only,
-            format,
-        } => {
-            let resolved = tolmap::personal::resolve_check(
-                checkout,
-                repo.as_deref(),
-                commit.as_deref(),
-                snapshot.as_deref(),
-                base,
-                base_map,
-                head.as_deref(),
-                data,
-            );
-            let (repo, base, base_map) = match resolved {
-                Ok(v) => v,
-                Err(error) => {
-                    eprintln!("{error:#}");
-                    std::process::exit(2)
-                }
-            };
-            let options = tolmap::check::CheckOptions {
-                repo,
-                base,
-                head,
-                base_map,
-                pkg,
-                lang,
-                all_sources,
-                max_districts,
-                max_dq,
-                report_only,
-            };
-            // Not `?`: the exit code is the contract (0/1/2/3), and
-            // `main`'s own error path would exit 1 for every failure.
-            std::process::exit(tolmap::check::run_cli(&options, &format));
-        }
         Command::PolyglotReport {
             repo,
             pkg,
