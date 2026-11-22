@@ -308,6 +308,37 @@ Labels and path names carry no measured value and no district name, so lens
 comparison does not read a metric change or a renamed district as a removed
 and an added finding. Exit 0, or 2 when the map cannot be read.
 
+
+### `tolmap debt series --repo <path> --range A..B [--first-parent] [--format json|text]`
+
+Builds a cold map in a temporary Git worktree for A and each commit in `A..B`,
+using the same source detection and parcel-free build as the default `tolmap check`
+base map. A is the first point and is pinned to itself. The remaining points
+follow `git rev-list --topo-order --reverse A..B`. Pass `--first-parent` to
+follow only the first parent of merges when walking from B. The working tree
+and uncommitted changes are outside the range.
+
+Every point uses `--partition-from` placement and keeps A's district names and
+god and hotspot cutoffs. The series supplies rename matches from
+`git diff --name-status -M A <commit>`. When Git detects a rename, the new path
+inherits the old path's district from A and findings use the current path.
+Renames that Git cannot detect are treated as a deletion and an addition.
+New files take a base district by the same edge rule as `--partition-from` or
+are counted as unplaced. Each cold map uses the history available at its commit,
+so churn and hidden coupling can still change when code moves (issue #337).
+
+`--format json` emits version 1 of `DebtSeries` (`bindings/DebtSeries.ts`). The
+report includes the full `base` and `head` commit IDs, `first_parent`,
+`lower_bound: true`, and ordered `points`. Each point contains its full `commit`
+ID and the counts `cycles`, `misplaced`, `god_files`, `hotspots`,
+`hidden_coupling` (pairs) and `unreached` (files with no inbound edge found).
+`placed_new_files` and `unplaced_new_files` count indexed files without a match
+in A. `anchored_share` is the fraction of files indexed at the point that
+matched A, including detected renames. It is `null` if no files are indexed.
+The default `text` format prints the same point counts with the anchored share
+as a percentage. Repeating a run with the same repository and range yields
+byte-identical output.
+
 ### `tolmap org check <name.org.toml>` and `tolmap org build <name.org.toml> [--clones <dir>] [--maps <dir>] [--out <file>]`
 
 Organization maps (issue #255; `src/org.rs`), CLI only. The organization

@@ -73,6 +73,7 @@ fn export_to(directory: &Path) -> Result<()> {
     )?;
     // Issue #250: `tolmap debt --format json`'s report.
     tolmap::debt::DebtReport::export_all(&Config::default().with_out_dir(directory))?;
+    tolmap::debt::series::DebtSeries::export_all(&Config::default().with_out_dir(directory))?;
     // Issue #255: the organization manifest and `tolmap org build`'s document.
     tolmap::org::OrganizationManifest::export_all(&Config::default().with_out_dir(directory))?;
     tolmap::org::OrganizationDocument::export_all(&Config::default().with_out_dir(directory))?;
