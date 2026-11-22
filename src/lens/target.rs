@@ -418,3 +418,39 @@ pub(crate) fn render_target_violation(out: &mut String, prefix: &str, violation:
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mass_share_counts_each_pair_once_and_excludes_edges_within_an_owner() {
+        let lens = super::super::Lens::parse(
+            "version = 1\n[target.owners]\nA = ['a.py', 'aa.py']\nB = ['b.py']\nC = ['c.py']\n[target.allow_only]\nA = []\nB = []\n",
+        )
+        .unwrap();
+        let paths = ["a.py", "b.py", "c.py", "aa.py"].map(str::to_owned);
+        let mut cx = Cx {
+            paths: &paths,
+            symbols: &BTreeMap::new(),
+            district: &|_| 0,
+            files: paths
+                .iter()
+                .enumerate()
+                .map(|(file, path)| (path.as_str(), file))
+                .collect(),
+            unresolved: Vec::new(),
+        };
+        let report = evaluate(
+            &lens.target.unwrap(),
+            &mut cx,
+            &BTreeMap::new(),
+            &[[0, 1], [1, 0], [2, 0]],
+            &BTreeMap::new(),
+            Some(&[(0, 1, 0.2), (0, 2, 0.6), (0, 3, 0.2)]),
+        );
+        assert_eq!(report.violations.len(), 2);
+        assert_eq!(report.distance.violating_mass_share, Some(0.25));
+        assert_eq!(report.distance.distance, Some(0.25));
+    }
+}

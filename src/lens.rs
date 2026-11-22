@@ -867,16 +867,10 @@ pub fn resolve(lens: &Lens, map: &MapDocument) -> LensReport {
         })
         .collect();
 
-    let target = lens.target.as_ref().map(|target| {
-        target::evaluate(
-            target,
-            &mut cx,
-            &map.names,
-            &map.edges,
-            &map.uses,
-            map.blended_edge_mass.as_deref(),
-        )
-    });
+    let target = lens
+        .target
+        .as_ref()
+        .map(|target| target::evaluate(target, &mut cx, &map.names, &map.edges, &map.uses, None));
     LensReport {
         version: REPORT_VERSION,
         lens_version: lens.version,

@@ -670,6 +670,8 @@ fn compare(
     };
 
     let side = |mut graph, membership: &BTreeMap<&str, usize>| {
+        // Score the same generated-file projection the map pipeline blends.
+        // Evaluate before side_graph prunes edges for the modularity check.
         crate::generated::collapse(&mut graph);
         let report = target
             .map(|target| lens::resolve_graph_target(target, &graph, membership, &base_map.names))
@@ -1758,7 +1760,6 @@ pub(crate) fn lens_head_map(
         .map(|(i, path)| (path.as_str(), i))
         .collect();
     result.uses = geometry::compact_uses(&graph, &index);
-    result.blended_edge_mass = Some(pipeline::blended_edge_mass(&graph).map_err(internal)?);
     Ok(result)
 }
 

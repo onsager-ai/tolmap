@@ -190,12 +190,14 @@ was broken. A misplaced file lists its declared owner and current district.
 - `distance` is the sum of the two shares before rounding. A share with a zero
   denominator is zero. Both shares are lower bounds over the available evidence.
 
-Maps built before this feature omit `blended_edge_mass`. With such a map,
-`violating_mass_share` and the sum are `null` (unavailable), while the
-misplaced share, violations and unresolved members are still reported.
-The command exits 0 when clean, 1 for unresolved members or rules with violations,
-and 2 for unreadable input or an invalid lens. A target lens does not change the
-map. Use [`tolmap check --target`](CHECK.md#target-architecture) to compare commits.
+A saved map carries dependency evidence but omits blended weights. `lens check`
+reports violations, unresolved members and `misplaced_share`, with `null` for
+`violating_mass_share` and `distance`. Only
+[`tolmap check --target`](CHECK.md#target-architecture) reports those two values
+because it rebuilds the graphs. The saved map format stays unchanged.
+
+`lens check` exits 0 when clean, 1 for unresolved members or violations, and 2
+for unreadable input or an invalid lens.
 
 ### `tolmap lens suggest --map <map.json> [--out <dir>]`
 

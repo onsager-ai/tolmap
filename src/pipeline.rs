@@ -122,7 +122,6 @@ pub struct PipelineOutput {
     pub nodes: Vec<LayoutNode>,
     pub landmarks: Vec<Landmark>,
     pub weighted: GraphData,
-    pub blended_edge_mass: Vec<(usize, usize, f64)>,
     pub graph: WeightedGraph,
 }
 
@@ -197,7 +196,6 @@ pub fn run_with_variant_progress<P: Partitioner>(
         serde_json::to_string(&projection.coverage)?
     ));
     let blend_stage = progress.stage(crate::progress::StageId::BlendPrune, Some(1));
-    let blended_edge_mass = blended_edge_mass(&data)?;
     apply_prune_variant_inner(&mut data, prune_variant, false)?;
     blend_stage.set(1);
     blend_stage.finish();
@@ -232,7 +230,6 @@ pub fn run_with_variant_progress<P: Partitioner>(
         nodes,
         landmarks,
         weighted: data,
-        blended_edge_mass,
         graph,
     })
 }
@@ -305,6 +302,8 @@ pub fn mass_normalized_weights(data: &GraphData) -> Result<Vec<f64>> {
         .collect())
 }
 
+/// Pre-prune, mass-normalized weights for the caller's generated-file projection.
+/// A global rescale would cancel out when comparing shares.
 pub(crate) fn blended_edge_mass(data: &GraphData) -> Result<Vec<(usize, usize, f64)>> {
     if data.edges.is_empty() {
         return Ok(Vec::new());

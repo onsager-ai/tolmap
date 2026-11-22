@@ -43,8 +43,11 @@ their base districts, including detected renames. New head files use the usual
 check placement. An unplaced file counts as owned if it matches the target, but
 without a known district it does not count as misplaced. Base files that are
 later deleted still contribute to the base score and may remove violations.
-Both sides calculate blended mass from their extracted graph with co-change held
-at base, so the target check works with older stored base maps too.
+Both sides calculate mass with co-change held at base, after the same
+generated-file projection used by the map build. They use mass-normalized edge
+weights before pruning. Pruning would drop some dependencies and would change
+the share of all cross-area mass. Saved maps carry no blended weights, so only
+`check --target` reports the mass share and total distance.
 
 The optional JSON `target` field contains the `base` and `head` distances with
 both shares and `lower_bound: true`, `violations_added`, `violations_removed`,

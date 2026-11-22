@@ -404,9 +404,6 @@ pub struct MapDocument {
     // graph edges: they describe compilation reachability, not name use.
     #[serde(rename = "D", default, skip_serializing_if = "Option::is_none")]
     pub debt: Option<DebtSidecar>,
-    // Pre-pruning blended mass by unordered file pair, aligned with F.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blended_edge_mass: Option<Vec<(usize, usize, f64)>>,
 }
 
 /// Optional debt evidence, indexed against `MapDocument::files`.

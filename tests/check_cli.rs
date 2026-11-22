@@ -662,9 +662,7 @@ fn a_bad_ref_and_an_unverifiable_or_mismatched_base_map_exit_2() {
         String::from_utf8_lossy(&built.stderr)
     );
     let stored = out.join(format!("{base}.json"));
-    let map: tolmap::schema::MapDocument =
-        serde_json::from_slice(&std::fs::read(&stored).unwrap()).unwrap();
-    assert!(map.blended_edge_mass.is_some_and(|mass| !mass.is_empty()));
+    assert!(stored.is_file());
 
     // A later commit: the stored map is not its map.
     touch(&repo, "people", 1);

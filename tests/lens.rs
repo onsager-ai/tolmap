@@ -311,7 +311,7 @@ fn lens_check_exit_codes() {
 }
 
 #[test]
-fn lens_check_weights_cross_area_mass_and_reports_misplacement() {
+fn lens_check_reports_target_violations_with_mass_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let lens_path = dir.path().join("target.toml");
     let map_path = dir.path().join("map.json");
@@ -335,7 +335,7 @@ reason = "Use the shared API."
     let lens = Lens::parse(text).unwrap();
     assert_eq!(Lens::parse(&lens.to_toml()).unwrap(), lens);
     std::fs::write(&lens_path, text).unwrap();
-    let mut map = serde_json::json!({
+    let map = serde_json::json!({
         "repo": "fixture", "q": 0, "lang": "py", "districts": {}, "L": [], "roads": [],
         "names": {"0": "Frontend", "1": "Backend", "2": "Shared"},
         "F": ["ui/page.py", "db.py", "util.py", "ui/wrong.py"],
@@ -343,7 +343,6 @@ reason = "Use the shared API."
               [2,0,0,0,0,0,0,0,0,0,0], [1,0,0,0,0,0,0,0,0,0,0]],
         "S": {"1": [["Query", 1, 1, 2]]},
         "E": [[0,1], [0,2], [1,0]], "U": {"1:0": [0]},
-        "blended_edge_mass": [[0,1,0.2], [0,2,0.6], [0,3,0.2]],
     });
     let run = || {
         std::process::Command::new(env!("CARGO_BIN_EXE_tolmap"))
@@ -366,12 +365,10 @@ reason = "Use the shared API."
     assert_eq!(first.stdout, run().stdout);
     let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
     let target = &report["target"];
-    // Both directions violate and the forward edge has two kinds. Charge
-    // the pair once, and leave the within-owner edge out of the denominator.
     assert_eq!(
         target["distance"],
         serde_json::json!({
-            "violating_mass_share": 0.25, "misplaced_share": 0.25, "distance": 0.5, "lower_bound": true
+            "violating_mass_share": null, "misplaced_share": 0.25, "distance": null, "lower_bound": true
         })
     );
     let violations = target["violations"].as_array().unwrap();
@@ -392,12 +389,4 @@ reason = "Use the shared API."
         })
     );
     assert_eq!(report["unresolved"][0]["spec"], "missing.py");
-
-    map.as_object_mut().unwrap().remove("blended_edge_mass");
-    std::fs::write(&map_path, map.to_string()).unwrap();
-    let legacy = run();
-    assert_eq!(legacy.status.code(), Some(1));
-    let legacy: serde_json::Value = serde_json::from_slice(&legacy.stdout).unwrap();
-    assert!(legacy["target"]["distance"]["distance"].is_null());
-    assert_eq!(legacy["target"]["violations"], target["violations"]);
 }

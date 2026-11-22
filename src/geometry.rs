@@ -963,7 +963,6 @@ fn compact(
         file_neighbourhoods: None,
         neighbourhoods: None,
         debt,
-        blended_edge_mass: Some(layout.blended_edge_mass),
     }
 }
 
