@@ -25,6 +25,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ts_rs::TS;
 
+pub mod series;
+
 pub const DEBT_REPORT_VERSION: u32 = 10;
 
 // ---- thresholds ------------------------------------------------------------
@@ -2012,13 +2014,14 @@ const UNPLACED_DISTRICT: &str = "(unplaced)";
 
 // The head map with the base's district membership and names, so the debt
 // computation measures the change and not a repartition. Files in both maps
-// (matched by path) keep the base district; a new file takes the base
-// district holding most of its edges to such files (`check::place`, ties to
-// the lowest id), else is unplaced. Edges in a map carry no weight,
-// so each counts once. Base-only files are absent, as in the head.
+// (matched by path or by a Git rename) keep the base district. A new file
+// takes the base district holding most of its edges to such files
+// (`check::place`, ties to the lowest id), else is unplaced. Edges in a map
+// carry no weight, so each counts once. Base-only files are absent.
 fn relabel_to_base(
     head: &MapDocument,
     base: &MapDocument,
+    renamed_from: &BTreeMap<&str, &str>,
 ) -> (MapDocument, usize, usize, Vec<String>) {
     let base_district = base
         .files
@@ -2029,7 +2032,11 @@ fn relabel_to_base(
     let inherited = head
         .files
         .iter()
-        .map(|file| base_district.get(file.as_str()).copied())
+        .map(|file| {
+            let path = file.as_str();
+            let base_path = renamed_from.get(path).copied().unwrap_or(path);
+            base_district.get(base_path).copied()
+        })
         .collect::<Vec<_>>();
     let mut weights = vec![BTreeMap::<usize, f64>::new(); head.files.len()];
     for &[a, b] in &head.edges {
@@ -2087,7 +2094,17 @@ pub fn findings_pinned(
     base_sha256: String,
     base_commit: Option<String>,
 ) -> (MapDocument, DebtReport) {
-    let (relabeled, placed, unplaced, left) = relabel_to_base(head, base);
+    findings_pinned_with_renames(head, base, base_sha256, base_commit, &BTreeMap::new())
+}
+
+fn findings_pinned_with_renames(
+    head: &MapDocument,
+    base: &MapDocument,
+    base_sha256: String,
+    base_commit: Option<String>,
+    renamed_from: &BTreeMap<&str, &str>,
+) -> (MapDocument, DebtReport) {
+    let (relabeled, placed, unplaced, left) = relabel_to_base(head, base, renamed_from);
     let mut report = findings_with_unplaced(
         &relabeled,
         (!left.is_empty()).then_some(unplaced),
@@ -2122,11 +2139,12 @@ fn read_base(path: &std::path::Path) -> Result<(MapDocument, String, Option<Stri
             path.display()
         ));
     }
-    let sha256 = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(&bytes))
-    };
-    Ok((stored.map, sha256, stored.commit))
+    Ok((stored.map, map_sha256(&bytes), stored.commit))
+}
+
+fn map_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 // `tolmap debt`. Findings are informational: 0 on success, 2 on an

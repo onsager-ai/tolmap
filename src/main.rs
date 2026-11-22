@@ -24,6 +24,20 @@ struct Cli {
 enum DebtCommand {
     /// Compare two versioned debt reports.
     Diff { before: PathBuf, after: PathBuf },
+    /// Measure structural debt across commits in the range start's partition.
+    Series {
+        /// A local Git repository.
+        #[arg(long)]
+        repo: PathBuf,
+        /// Two Git refs in A..B form. A is included as the baseline.
+        #[arg(long)]
+        range: String,
+        /// Follow only first parents when walking from B.
+        #[arg(long)]
+        first_parent: bool,
+        #[arg(long, default_value = "text", value_parser = ["json", "text"])]
+        format: String,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -830,6 +844,25 @@ fn run_query(
                 }
             }
         }
+        Command::Debt {
+            command:
+                Some(DebtCommand::Series {
+                    repo,
+                    range,
+                    first_parent,
+                    format,
+                }),
+            ..
+        } => match tolmap::debt::series::render(&repo, &range, first_parent, &format) {
+            Ok(text) => {
+                write!(stdout, "{text}")?;
+                0
+            }
+            Err(error) => {
+                writeln!(stderr, "tolmap debt series: {error}")?;
+                error.exit_code()
+            }
+        },
         Command::Check {
             checkout,
             repo,
@@ -1297,6 +1330,40 @@ fn main() -> Result<()> {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn debt_series_parses_repository_and_range() {
+        let cli = Cli::try_parse_from([
+            "tolmap",
+            "debt",
+            "series",
+            "--repo",
+            ".",
+            "--range",
+            "A..B",
+            "--first-parent",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+        let Command::Debt {
+            command:
+                Some(DebtCommand::Series {
+                    repo,
+                    range,
+                    first_parent,
+                    format,
+                }),
+            ..
+        } = cli.command
+        else {
+            panic!("expected debt series");
+        };
+        assert_eq!(repo, PathBuf::from("."));
+        assert_eq!(range, "A..B");
+        assert!(first_parent);
+        assert_eq!(format, "json");
+    }
 
     #[test]
     fn version_flag_is_handled() {

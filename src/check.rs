@@ -256,15 +256,7 @@ pub fn render_json(report: &CheckReport) -> String {
 pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
     let started = Instant::now();
     let thresholds = resolve_thresholds(options)?;
-    let top = if options.head.is_some()
-        && git_stdout(&options.repo, &["rev-parse", "--is-bare-repository"])
-            .map(|s| String::from_utf8_lossy(&s).trim() == "true")
-            .unwrap_or(false)
-    {
-        options.repo.clone()
-    } else {
-        toplevel(&options.repo)?
-    };
+    let top = repository_root(&options.repo, options.head.is_some())?;
     let base = resolve_commit(&top, &options.base, "--base")?;
     let head = options
         .head
@@ -563,13 +555,7 @@ fn compare(
         .zip(&base_map.nodes)
         .map(|(file, node)| (file.as_str(), node.district()))
         .collect::<BTreeMap<_, _>>();
-    let renamed_from = changes
-        .iter()
-        .filter_map(|change| match change {
-            Change::Renamed { from, to } => Some((to.as_str(), from.as_str())),
-            _ => None,
-        })
-        .collect::<BTreeMap<_, _>>();
+    let renamed_from = renamed_from(changes);
 
     // Head nodes: a file the base map holds (under its base path, for a
     // rename) keeps its base district; anything else is new and is placed.
@@ -1138,7 +1124,7 @@ pub(crate) fn git_output(dir: &Path, args: &[&str]) -> std::io::Result<std::proc
 }
 
 /// Runs git and returns stdout, or an internal error with git's stderr.
-fn git_stdout(dir: &Path, args: &[&str]) -> Result<Vec<u8>, CheckError> {
+pub(crate) fn git_stdout(dir: &Path, args: &[&str]) -> Result<Vec<u8>, CheckError> {
     let output = git_output(dir, args)
         .map_err(|error| internal(anyhow::anyhow!("run git {}: {error}", args.join(" "))))?;
     if !output.status.success() {
@@ -1149,6 +1135,18 @@ fn git_stdout(dir: &Path, args: &[&str]) -> Result<Vec<u8>, CheckError> {
         )));
     }
     Ok(output.stdout)
+}
+
+pub(crate) fn repository_root(repo: &Path, allow_bare: bool) -> Result<PathBuf, CheckError> {
+    if allow_bare
+        && git_stdout(repo, &["rev-parse", "--is-bare-repository"])
+            .map(|s| String::from_utf8_lossy(&s).trim() == "true")
+            .unwrap_or(false)
+    {
+        Ok(repo.to_owned())
+    } else {
+        toplevel(repo)
+    }
 }
 
 fn toplevel(repo: &Path) -> Result<PathBuf, CheckError> {
@@ -1167,7 +1165,11 @@ fn toplevel(repo: &Path) -> Result<PathBuf, CheckError> {
     Ok(PathBuf::from(path))
 }
 
-fn resolve_commit(top: &Path, reference: &str, flag: &str) -> Result<String, CheckError> {
+pub(crate) fn resolve_commit(
+    top: &Path,
+    reference: &str,
+    flag: &str,
+) -> Result<String, CheckError> {
     if reference.is_empty() || reference.starts_with('-') {
         return Err(input(format!("{flag} {reference:?} is not a git ref")));
     }
@@ -1227,6 +1229,16 @@ fn load_base_map(path: &Path, base: &str) -> Result<MapDocument, CheckError> {
         )));
     }
     Ok(document)
+}
+
+pub(crate) fn renamed_from(changes: &[Change]) -> BTreeMap<&str, &str> {
+    changes
+        .iter()
+        .filter_map(|change| match change {
+            Change::Renamed { from, to } => Some((to.as_str(), from.as_str())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `git diff --name-status -M` between base and head, following renames;
@@ -1560,7 +1572,23 @@ fn extract_head_graph(
         .map_err(|error| internal(error.context(format!("extract {}", dir.display()))))
 }
 
+// The same cold, parcel-free build used for check's base map.
+pub(crate) fn build_cold_map(repo: &Path, commit: &str) -> Result<Vec<u8>, CheckError> {
+    let mut scratch = Scratch::new(repo)?;
+    let dir = scratch.worktree(commit, "snapshot")?;
+    let source = detect_source(&dir)?;
+    let graph = extract_graph(&dir, &[source])?;
+    let (_, raw) = build_base_map_bytes(graph, &scratch.root.join("out"))?;
+    Ok(raw)
+}
+
 fn build_base_map(graph: GraphData, out: &Path) -> Result<MapDocument, CheckError> {
+    let (path, raw) = build_base_map_bytes(graph, out)?;
+    serde_json::from_slice(&raw)
+        .map_err(|error| internal(anyhow::anyhow!("parse {}: {error}", path.display())))
+}
+
+fn build_base_map_bytes(graph: GraphData, out: &Path) -> Result<(PathBuf, Vec<u8>), CheckError> {
     let path = geometry::build_from_graph(
         graph,
         "base".to_owned(),
@@ -1578,8 +1606,7 @@ fn build_base_map(graph: GraphData, out: &Path) -> Result<MapDocument, CheckErro
     .map_err(|error| internal(error.context("build the base map")))?;
     let raw = std::fs::read(&path)
         .map_err(|error| internal(anyhow::anyhow!("read {}: {error}", path.display())))?;
-    serde_json::from_slice(&raw)
-        .map_err(|error| internal(anyhow::anyhow!("parse {}: {error}", path.display())))
+    Ok((path, raw))
 }
 
 #[cfg(test)]
