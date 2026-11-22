@@ -40,8 +40,10 @@ rules](API.md#tolmap-lens-check-lenstoml---map-mapjson---format-textjson).
 
 Both sides use the district names from the base map. Surviving head files keep
 their base districts, including detected renames. New head files use the usual
-check placement. An unplaced file counts as owned if it matches the target, but
-without a known district it does not count as misplaced. Base files that are
+check placement. An unplaced file with an existing owner district contributes
+to the placement denominator. A file whose owner has no base district is pending
+and excluded from both the placement numerator and denominator. Pending files
+still contribute to directed dependency checks. Base files that are
 later deleted still contribute to the base score and may remove violations.
 Both sides calculate mass with co-change held at base, after the same
 generated-file projection used by the map build. They use mass-normalized edge
@@ -50,11 +52,20 @@ the share of all cross-area mass. Saved maps carry no blended weights, so only
 `check --target` reports the mass share and total distance.
 
 The optional JSON `target` field contains the `base` and `head` distances with
-both shares and `lower_bound: true`, `violations_added`, `violations_removed`,
-and `unresolved_base` and `unresolved_head`. Violation diffs match detected
-renames by file identity. Removed findings print base paths and added findings
-print head paths. Target findings are advisory and the existing thresholds still
-determine the verdict and exit code.
+both shares, `pending_files`, `pending_owners` and `lower_bound: true`. `delta`
+subtracts each base score from its head score. A delta is `null` when either
+score is unavailable. `violations_added`, `violations_removed` and `standing`
+use the same violation identity, including across detected file renames.
+`standing` counts violations present on both sides. Removed findings print base
+paths and added findings print head paths.
+
+`coverage_gaps.unmatched_owner_members` lists owner members unresolved at head.
+`coverage_gaps.unanalyzed` lists sorted, distinct lowercase extensions, without a
+leading dot, for head changes already reported as `unsupported_language` in
+`outside_graph`. Both fields use evidence already gathered by check. Existing
+`unresolved_base` and `unresolved_head` provide detailed diagnostics for each
+side. Target findings are advisory and the existing thresholds still determine
+the verdict and exit code.
 
 ## Default thresholds
 
@@ -163,7 +174,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 | `default_thresholds` | `{verdict, max_districts, max_dq, districts_over, dq_over}` | added in version 1; present under `--report-only`, compares the reported numbers against the defaults with signed margins; does not affect exit status |
 | `verdict` | `"pass" \| "fail"` | `fail` exactly when the exit code is 1 |
 | `lower_bound` | `true` | always |
-| `target` | `CheckTarget` (optional) | target distance at base and head, violation changes and unresolved members, as defined above |
+| `target` | `CheckTarget` (optional) | target distance at base and head, deltas, standing and changed violations, and coverage gaps, as defined above |
 | `spread` | `{files_touched, districts_touched, outside_usual, cochange_expected, percentile_districts}` | advisory counts and comparisons with the base history, as defined above |
 
 ## Text format

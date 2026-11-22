@@ -319,7 +319,8 @@ fn lens_check_reports_target_violations_with_mass_unavailable() {
 version = 1
 
 [target.owners]
-Frontend = ["ui/**", "missing.py"]
+Frontend = ["ui/**", "missing/**"]
+Warehouse = ["warehouse.py"]
 Backend = ["db.py#Query"]
 Shared = ["util.py"]
 
@@ -335,7 +336,7 @@ reason = "Use the shared API."
     let lens = Lens::parse(text).unwrap();
     assert_eq!(Lens::parse(&lens.to_toml()).unwrap(), lens);
     std::fs::write(&lens_path, text).unwrap();
-    let map = serde_json::json!({
+    let mut map = serde_json::json!({
         "repo": "fixture", "q": 0, "lang": "py", "districts": {}, "L": [], "roads": [],
         "names": {"0": "Frontend", "1": "Backend", "2": "Shared"},
         "F": ["ui/page.py", "db.py", "util.py", "ui/wrong.py"],
@@ -368,7 +369,8 @@ reason = "Use the shared API."
     assert_eq!(
         target["distance"],
         serde_json::json!({
-            "violating_mass_share": null, "misplaced_share": 0.25, "distance": null, "lower_bound": true
+            "violating_mass_share": null, "misplaced_share": 0.25, "distance": null,
+            "lower_bound": true, "pending_files": 0, "pending_owners": ["Warehouse"]
         })
     );
     let violations = target["violations"].as_array().unwrap();
@@ -388,5 +390,33 @@ reason = "Use the shared API."
             "kind": "misplaced", "file": "ui/wrong.py", "owner": "Frontend", "district": "Backend"
         })
     );
-    assert_eq!(report["unresolved"][0]["spec"], "missing.py");
+    assert_eq!(report["unresolved"][0]["spec"], "missing/**");
+    assert_eq!(
+        target["coverage_gaps"],
+        serde_json::json!({
+            "unmatched_owner_members": [
+                {"location": "target.owners.Frontend[1]", "spec": "missing/**"},
+                {"location": "target.owners.Warehouse[0]", "spec": "warehouse.py"},
+            ],
+            "unanalyzed": [],
+        })
+    );
+
+    map["F"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!("warehouse.py"));
+    map["N"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+    std::fs::write(&map_path, map.to_string()).unwrap();
+    let head = run();
+    let report: serde_json::Value = serde_json::from_slice(&head.stdout).unwrap();
+    assert_eq!(report["target"]["distance"]["pending_files"], 1);
+    assert_eq!(
+        report["target"]["distance"]["misplaced_share"],
+        target["distance"]["misplaced_share"]
+    );
+    assert_eq!(report["target"]["violations"], target["violations"]);
 }

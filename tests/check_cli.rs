@@ -1009,6 +1009,12 @@ fn target_reports_a_forbidden_import_added_and_removed() {
     assert_eq!(edge["edge_kinds"][0], "import");
     assert_eq!(target["violations_removed"], serde_json::json!([]));
     assert_eq!(target["base"]["violating_mass_share"], 0.0);
+    assert_eq!(target["standing"], 0);
+    for metric in ["violating_mass_share", "misplaced_share", "distance"] {
+        let expected =
+            target["head"][metric].as_f64().unwrap() - target["base"][metric].as_f64().unwrap();
+        assert!((target["delta"][metric].as_f64().unwrap() - expected).abs() < 1e-9);
+    }
     assert!(
         target["head"]["distance"].as_f64().unwrap() > target["base"]["distance"].as_f64().unwrap()
     );
@@ -1046,4 +1052,69 @@ fn target_reports_a_forbidden_import_added_and_removed() {
     assert!(
         target["head"]["distance"].as_f64().unwrap() < target["base"]["distance"].as_f64().unwrap()
     );
+}
+
+#[test]
+fn target_reports_pending_files_coverage_gaps_and_standing_violations() {
+    let (dir, repo, _) = fixture();
+    let lens = include_str!("fixtures/target_lens/forbidden.toml").replace(
+        "People = [\"town/people/**\"]",
+        "People = [\"town/people/**\", \"missing/**\"]\nWarehouse = [\"town/warehouse/**\"]",
+    );
+    write(dir.path(), "target.toml", &lens);
+    let lens_path = dir.path().join("target.toml");
+    let file = "town/billing/invoice.py";
+    let original = std::fs::read_to_string(repo.join(file)).unwrap();
+    write(
+        &repo,
+        file,
+        &format!("from ..people.account import Account\n{original}"),
+    );
+    git(&repo, &["commit", "-qam", "add standing forbidden import"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    write(
+        &repo,
+        "town/warehouse/bin.py",
+        "from ..billing.invoice import Invoice\n\nstock = Invoice()\n",
+    );
+    write(&repo, "notes.txt", "Notes\n");
+    let args = [
+        "--base",
+        &base,
+        "--target",
+        lens_path.to_str().unwrap(),
+        "--report-only",
+    ];
+    let run = check(&repo, &[args.as_slice(), &["--format", "json"]].concat());
+    expect_code(&run, 0);
+    let report = run.json();
+    let target = &report["target"];
+    assert_eq!(target["base"]["pending_files"], 0);
+    assert_eq!(target["head"]["pending_files"], 1);
+    assert_eq!(
+        target["head"]["pending_owners"],
+        serde_json::json!(["Warehouse"])
+    );
+    assert_eq!(
+        target["head"]["misplaced_share"],
+        target["base"]["misplaced_share"]
+    );
+    assert_eq!(target["delta"]["misplaced_share"], 0.0);
+    assert_eq!(target["standing"], 1);
+    assert_eq!(target["violations_added"], serde_json::json!([]));
+    assert_eq!(target["violations_removed"], serde_json::json!([]));
+    assert_eq!(
+        target["coverage_gaps"],
+        serde_json::json!({
+            "unmatched_owner_members": [{"location": "target.owners.People[1]", "spec": "missing/**"}],
+            "unanalyzed": ["txt"],
+        })
+    );
+
+    let text = check(&repo, &args);
+    expect_code(&text, 0);
+    assert!(text.stdout.contains("pending owners: Warehouse (1 files)"));
+    assert!(text.stdout.contains("target delta:"));
+    assert!(text.stdout.contains("0 added, 0 removed, 1 standing"));
+    assert!(text.stdout.contains("unanalyzed: txt"));
 }

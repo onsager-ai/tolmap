@@ -75,6 +75,28 @@ pub struct TargetDistance {
     pub misplaced_share: f64,
     pub distance: Option<f64>,
     pub lower_bound: bool,
+    pub pending_files: usize,
+    pub pending_owners: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct TargetDelta {
+    pub violating_mass_share: Option<f64>,
+    pub misplaced_share: f64,
+    pub distance: Option<f64>,
+}
+
+impl TargetDelta {
+    fn between(base: &TargetDistance, head: &TargetDistance) -> Self {
+        let delta = |base: Option<f64>, head: Option<f64>| {
+            base.zip(head).map(|(base, head)| round_to(head - base, 6))
+        };
+        Self {
+            violating_mass_share: delta(base.violating_mass_share, head.violating_mass_share),
+            misplaced_share: round_to(head.misplaced_share - base.misplaced_share, 6),
+            distance: delta(base.distance, head.distance),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, TS, PartialEq, Eq, PartialOrd, Ord)]
@@ -107,6 +129,19 @@ pub enum TargetViolation {
 pub struct TargetReport {
     pub distance: TargetDistance,
     pub violations: Vec<TargetViolation>,
+    pub coverage_gaps: TargetCoverageGaps,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct TargetCoverageGaps {
+    pub unmatched_owner_members: Vec<UnmatchedOwnerMember>,
+    pub unanalyzed: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct UnmatchedOwnerMember {
+    pub location: String,
+    pub spec: String,
 }
 
 pub(super) fn evaluate(
@@ -119,10 +154,27 @@ pub(super) fn evaluate(
 ) -> TargetReport {
     let paths = cx.paths;
     let mut claims = BTreeMap::<&str, (usize, BTreeSet<&str>)>::new();
+    let district_names = names.values().map(String::as_str).collect::<BTreeSet<_>>();
+    let pending_owners = target
+        .owners
+        .keys()
+        .map(String::as_str)
+        .filter(|owner| !district_names.contains(owner))
+        .collect::<BTreeSet<_>>();
+    let mut coverage_gaps = TargetCoverageGaps::default();
     for (owner, members) in &target.owners {
         for (index, spec) in members.iter().enumerate() {
             let location = format!("target.owners.{owner}[{index}]");
-            for member in cx.resolve_spec(spec, &location, true) {
+            let resolved = cx.resolve_spec(spec, &location, true);
+            if resolved.is_empty() {
+                coverage_gaps
+                    .unmatched_owner_members
+                    .push(UnmatchedOwnerMember {
+                        location,
+                        spec: spec.clone(),
+                    });
+            }
+            for member in resolved {
                 claims
                     .entry(paths[member.file].as_str())
                     .or_insert_with(|| (member.file, BTreeSet::new()))
@@ -135,6 +187,7 @@ pub(super) fn evaluate(
     let mut violations = Vec::new();
     let mut misplaced = 0;
     let mut owned = 0;
+    let mut pending_files = 0;
     for (path, (file, claims)) in claims {
         if claims.len() > 1 {
             cx.fail(
@@ -150,6 +203,10 @@ pub(super) fn evaluate(
         }
         let owner = *claims.first().expect("every claimed file has an owner");
         owners[file] = Some(owner);
+        if pending_owners.contains(owner) {
+            pending_files += 1;
+            continue;
+        }
         owned += 1;
         let district = (cx.district)(file);
         if let Some(district) = names
@@ -244,8 +301,11 @@ pub(super) fn evaluate(
             misplaced_share: round_to(misplaced_share, 6),
             distance: violating_mass_share.map(|share| round_to(share + misplaced_share, 6)),
             lower_bound: true,
+            pending_files,
+            pending_owners: pending_owners.into_iter().map(str::to_owned).collect(),
         },
         violations,
+        coverage_gaps,
     }
 }
 
@@ -349,6 +409,9 @@ pub(crate) fn compare_target(
         .map(head_key)
         .collect::<BTreeSet<_>>();
     CheckTarget {
+        delta: TargetDelta::between(&base.distance, &head.distance),
+        standing: base_keys.intersection(&head_keys).count(),
+        coverage_gaps: head.coverage_gaps,
         base: base.distance,
         head: head.distance,
         violations_added: head
@@ -376,6 +439,29 @@ pub(crate) fn render_target_distance(out: &mut String, label: &str, distance: &T
         value(distance.violating_mass_share),
         distance.misplaced_share
     );
+    if !distance.pending_owners.is_empty() {
+        let _ = writeln!(
+            out,
+            "  pending owners: {} ({} files)",
+            distance.pending_owners.join(", "),
+            distance.pending_files
+        );
+    }
+}
+
+pub(crate) fn render_target_coverage(out: &mut String, gaps: &TargetCoverageGaps) {
+    let _ = writeln!(
+        out,
+        "target coverage gaps: {} unmatched owner members, {} unanalyzed file kinds",
+        gaps.unmatched_owner_members.len(),
+        gaps.unanalyzed.len()
+    );
+    for member in &gaps.unmatched_owner_members {
+        let _ = writeln!(out, "  {} {:?}", member.location, member.spec);
+    }
+    if !gaps.unanalyzed.is_empty() {
+        let _ = writeln!(out, "  unanalyzed: {}", gaps.unanalyzed.join(", "));
+    }
 }
 
 pub(crate) fn render_target_violation(out: &mut String, prefix: &str, violation: &TargetViolation) {
@@ -422,6 +508,34 @@ pub(crate) fn render_target_violation(out: &mut String, prefix: &str, violation:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delta_keeps_mass_and_distance_unavailable_when_either_side_has_no_mass() {
+        let base = TargetDistance {
+            violating_mass_share: None,
+            misplaced_share: 0.25,
+            distance: None,
+            lower_bound: true,
+            pending_files: 0,
+            pending_owners: Vec::new(),
+        };
+        let head = TargetDistance {
+            violating_mass_share: Some(0.5),
+            misplaced_share: 0.5,
+            distance: Some(1.0),
+            ..base.clone()
+        };
+        for (base, head, misplaced_share) in [(&base, &head, 0.25), (&head, &base, -0.25)] {
+            assert_eq!(
+                TargetDelta::between(base, head),
+                TargetDelta {
+                    violating_mass_share: None,
+                    misplaced_share,
+                    distance: None,
+                }
+            );
+        }
+    }
 
     #[test]
     fn mass_share_counts_each_pair_once_and_excludes_edges_within_an_owner() {
