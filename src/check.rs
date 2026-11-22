@@ -54,9 +54,9 @@ use crate::geometry::{self, BuildFeatures};
 use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
 use crate::schema::{
-    CheckDefaultThresholds, CheckDistrict, CheckEdge, CheckEdgeCause, CheckFile, CheckFileStatus,
-    CheckLandmark, CheckOutsideGraph, CheckReport, CheckThresholdSource, CheckThresholds,
-    CheckVerdict, GraphData, MapDocument, NodeRow,
+    CheckCochangeExpected, CheckDefaultThresholds, CheckDistrict, CheckEdge, CheckEdgeCause,
+    CheckFile, CheckFileStatus, CheckLandmark, CheckOutsideGraph, CheckReport, CheckSpread,
+    CheckThresholdSource, CheckThresholds, CheckVerdict, GraphData, MapDocument, NodeRow,
 };
 
 /// `CheckReport::version`. Bumped on any change to a field's meaning or
@@ -77,6 +77,9 @@ pub const TEXT_EDGE_LIMIT: usize = 20;
 
 /// Pruning-caused edges listed in the text format, after their count.
 pub const TEXT_PRUNE_LIMIT: usize = 3;
+
+/// Expected co-change pairs shown in text; JSON lists all of them.
+const TEXT_COCHANGE_LIMIT: usize = 5;
 
 /// Landmark kinds reported as context (issue #170: hazard and bridge).
 const TOUCHED_LANDMARKS: [&str; 2] = ["bridge", "hazard"];
@@ -288,19 +291,12 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
         sources.len()
     );
     let stage = Instant::now();
-    let base_graph = if let Some(map) = recorded_scope {
-        extract::build_snapshot_graph(
-            &base_dir,
-            &map.files,
-            &CochangeHistory {
-                revision: base.clone(),
-                renames: BTreeMap::new(),
-            },
-        )
-        .map_err(internal)?
-    } else {
-        extract_graph(&base_dir, &sources)?
-    };
+    let (base_graph, base_history) = extract::build_check_base_graph(
+        &base_dir,
+        &sources,
+        recorded_scope.map(|map| map.files.as_slice()),
+    )
+    .map_err(|error| internal(error.context(format!("extract {}", base_dir.display()))))?;
     let recorded_files = recorded_scope.map(|map| map.files.clone());
     let base_graph_s = stage.elapsed().as_secs_f64();
     let stage = Instant::now();
@@ -376,7 +372,13 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
     drop(scratch);
 
     let report = compare(
-        base, head, &changes, &base_map, base_graph, head_graph, thresholds,
+        base,
+        head,
+        &changes,
+        &base_map,
+        (base_graph, Some(&base_history)),
+        head_graph,
+        thresholds,
     )?;
     // Timings go to stderr only: the report is byte-identical run to run.
     eprintln!(
@@ -540,7 +542,7 @@ fn compare(
     head: Option<String>,
     changes: &[Change],
     base_map: &MapDocument,
-    base_graph: GraphData,
+    base_graph_and_history: (GraphData, Option<&str>),
     head_graph: GraphData,
     thresholds: CheckThresholds,
 ) -> Result<CheckReport, CheckError> {
@@ -556,6 +558,7 @@ fn compare(
         .map(|(file, node)| (file.as_str(), node.district()))
         .collect::<BTreeMap<_, _>>();
     let renamed_from = renamed_from(changes);
+    let (base_graph, base_history) = base_graph_and_history;
 
     // Head nodes: a file the base map holds (under its base path, for a
     // rename) keeps its base district; anything else is new and is placed.
@@ -631,6 +634,22 @@ fn compare(
         .filter(|(_, kept)| **kept)
         .map(|(file, _)| file.clone())
         .collect::<BTreeSet<_>>();
+
+    let mut spread = if base_history.is_some() {
+        let pairs = base_graph
+            .cochange
+            .iter()
+            .flat_map(|pairs| pairs.keys())
+            .map(|&(a, b)| {
+                (
+                    base_graph.nodes[a as usize].file.as_str(),
+                    base_graph.nodes[b as usize].file.as_str(),
+                )
+            });
+        cochange_spread(changes, pairs)
+    } else {
+        CheckSpread::default()
+    };
 
     let base_side = side_graph(base_graph)?;
     let head_side = side_graph(head_graph)?;
@@ -806,6 +825,9 @@ fn compare(
     landmark_touches.dedup();
 
     let districts_crossed = districts.len();
+    spread.districts_touched = districts_crossed;
+    spread.percentile_districts =
+        base_history.and_then(|log| district_percentile(log, &base_membership, districts_crossed));
     let base_districts = base_map
         .nodes
         .iter()
@@ -842,6 +864,7 @@ fn compare(
             CheckVerdict::Pass
         },
         lower_bound: true,
+        spread,
     })
 }
 
@@ -929,11 +952,83 @@ fn sorted_edges(mut edges: Vec<CheckEdge>) -> Vec<CheckEdge> {
     edges
 }
 
+fn cochange_spread<'a>(
+    changes: &[Change],
+    cochange: impl Iterator<Item = (&'a str, &'a str)>,
+) -> CheckSpread {
+    let mut touched = BTreeMap::<&str, Vec<String>>::new();
+    let mut by_base_path = BTreeMap::<&str, &str>::new();
+    for change in changes {
+        let (path, base_path) = match change {
+            Change::Added(path) => (path, None),
+            Change::Modified(path) | Change::Deleted(path) => (path, Some(path)),
+            Change::Renamed { from, to } => (to, Some(from)),
+        };
+        touched.entry(path).or_default();
+        if let Some(base_path) = base_path {
+            by_base_path.insert(base_path, path);
+        }
+    }
+    let mut usual = BTreeSet::new();
+    for (a, b) in cochange {
+        match (by_base_path.get(a), by_base_path.get(b)) {
+            (Some(&left), Some(&right)) if left != right => usual.extend([left, right]),
+            (Some(&path), None) => touched.get_mut(path).unwrap().push(b.to_owned()),
+            (None, Some(&path)) => touched.get_mut(path).unwrap().push(a.to_owned()),
+            _ => {}
+        }
+    }
+    let files_touched = touched.len();
+    let outside_usual = if files_touched > 1 {
+        touched
+            .keys()
+            .filter(|path| !usual.contains(*path))
+            .map(|path| (*path).to_owned())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let cochange_expected = touched
+        .into_iter()
+        .map(|(path, mut neighbors)| {
+            neighbors.sort_unstable();
+            neighbors.dedup();
+            CheckCochangeExpected {
+                path: path.to_owned(),
+                neighbors,
+            }
+        })
+        .collect();
+
+    CheckSpread {
+        files_touched,
+        outside_usual,
+        cochange_expected,
+        ..CheckSpread::default()
+    }
+}
+
+fn district_percentile(
+    base_history: &str,
+    base_membership: &BTreeMap<&str, usize>,
+    districts_touched: usize,
+) -> Option<f64> {
+    let mut historical_districts = BTreeSet::new();
+    let (mut total, mut fewer) = (0, 0);
+    for paths in extract::history_commit_paths(base_history) {
+        historical_districts.clear();
+        historical_districts.extend(paths.filter_map(|path| base_membership.get(path).copied()));
+        total += 1;
+        fewer += usize::from(historical_districts.len() < districts_touched);
+    }
+    (total > 0).then(|| round(100.0 * fewer as f64 / total as f64))
+}
+
 // ---------------------------------------------------------------------
 // Text format
 // ---------------------------------------------------------------------
 
-/// Three lines (districts crossed, Δq, verdict), then the top
+/// Districts crossed, Δq, verdict and spread, then the top
 /// [`TEXT_EDGE_LIMIT`] code-caused cross-district edges by weight, then the
 /// count and top [`TEXT_PRUNE_LIMIT`] pruning-caused ones, context lines, and
 /// the lower-bound note.
@@ -971,6 +1066,36 @@ pub fn render_text(report: &CheckReport) -> String {
     if let Some(defaults) = &report.default_thresholds {
         let _ = writeln!(out, "{}", default_thresholds_line(defaults));
     }
+
+    let spread = &report.spread;
+    let rank = spread.percentile_districts.map_or_else(
+        || "no base history".to_owned(),
+        |rank| format!("p{rank:.0} of history"),
+    );
+    let _ = write!(
+        out,
+        "spread: {} files, {} districts ({rank}), {} outside usual co-change",
+        spread.files_touched,
+        spread.districts_touched,
+        spread.outside_usual.len(),
+    );
+    let mut expected = spread
+        .cochange_expected
+        .iter()
+        .flat_map(|file| file.neighbors.iter().map(|neighbor| (&file.path, neighbor)));
+    for (index, (path, neighbor)) in expected.by_ref().take(TEXT_COCHANGE_LIMIT).enumerate() {
+        out.push_str(if index == 0 {
+            ". Expected co-change: "
+        } else {
+            ", "
+        });
+        let _ = write!(out, "{path:?} -> {neighbor:?}");
+    }
+    let remaining = expected.count();
+    if remaining > 0 {
+        let _ = write!(out, ", ... {remaining} more in --format json");
+    }
+    out.push('\n');
 
     let _ = writeln!(
         out,
@@ -1511,7 +1636,7 @@ pub(crate) fn lens_head_map(
         Some(head.into()),
         &changes,
         base_map,
-        base_graph,
+        (base_graph, None),
         graph.clone(),
         CheckThresholds {
             max_districts: None,
@@ -1630,6 +1755,32 @@ mod tests {
             (5, 3, 1.0),
             (2, 3, 1.0),
         ]
+    }
+
+    #[test]
+    fn spread_percentile_counts_distinct_base_districts_and_excludes_ties() {
+        let log = "\x1eempty\n\n\x1eone\n\na.py\nb.py\n\x1etwo\n\na.py\n@mapped.py\n\x1ethree\n\na.py\n@mapped.py\nd.py";
+        let base = BTreeMap::from([("a.py", 0), ("b.py", 0), ("@mapped.py", 1), ("d.py", 2)]);
+        assert_eq!(district_percentile(log, &base, 2), Some(50.0));
+        assert_eq!(district_percentile("", &base, 2), None);
+    }
+
+    #[test]
+    fn cochange_uses_old_paths_for_renames_and_deleted_files() {
+        let changes = [
+            Change::Renamed {
+                from: "a.py".into(),
+                to: "z.py".into(),
+            },
+            Change::Deleted("c.py".into()),
+        ];
+        let spread = cochange_spread(
+            &changes,
+            [("a.py", "c.py"), ("a.py", "d.py"), ("a.py", "b.py")].into_iter(),
+        );
+        assert!(spread.outside_usual.is_empty());
+        assert_eq!(spread.cochange_expected[1].path, "z.py");
+        assert_eq!(spread.cochange_expected[1].neighbors, ["b.py", "d.py"]);
     }
 
     #[test]

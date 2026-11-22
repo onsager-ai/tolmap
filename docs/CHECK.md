@@ -1,6 +1,6 @@
 # `tolmap check`
 
-`tolmap check` tells you what a change does to the map. It reports two numbers: how many districts the change crosses, and how much it changes modularity when the base partition is held fixed. It also lists the cross-district edges behind those numbers. It is meant to run in CI, and in the tools that orchestrate and verify agent work (Ostrom, Duhem), so its contract is its exit code and its versioned JSON. This document is that contract. Issue #170 is the plan it implements; HANDOFF.md item 2 is why it exists.
+`tolmap check` tells you what a change does to the map. It reports two numbers: how many districts the change crosses, and how much it changes modularity when the base partition is held fixed. It also lists the cross-district edges behind those numbers and compares the change spread with the base history. It is meant to run in CI, and in the tools that orchestrate and verify agent work (Ostrom, Duhem), so its contract is its exit code and its versioned JSON. This document is that contract. Issue #170 is the plan it implements; HANDOFF.md item 2 is why it exists.
 
 ```
 tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
@@ -89,6 +89,13 @@ This is a correction (issue #176, finding 61). Until then the head graph read he
   - **`cause`** says why the edge is on one side only. `code`: the pair is not a candidate edge (before pruning) on the other side, so the code or history changed it. `prune`: the pair is a candidate on both sides and blending or pruning kept it on one side only. A `prune` edge may reflect no change to its files, so read `code` edges first. The text format lists `code` edges, then gives a count and the top three `prune` edges. `delta_q`, `districts_crossed` and the exit code do not depend on `cause`.
 - **`landmark_touches`**: changed files that are base-map landmarks of kind `hazard` or `bridge`. They are context only and never count toward a threshold.
 
+- **`spread`** is advisory and uses the base commit's co-change history.
+  - **`files_touched`** counts distinct diff paths, including paths outside the graph and unplaced files. A rename counts once under its destination path and looks up co-change under its base path. A deletion uses its base path and an addition has no history.
+  - **`districts_touched`** equals `districts_crossed`.
+  - **`outside_usual`** lists touched paths in lexical order when no other touched file is a qualifying co-change neighbor. By definition the list is empty for a single-file diff.
+  - **`cochange_expected`** has one `{path, neighbors}` entry per touched path, including entries with no neighbors. It lists only qualifying base neighbors that the diff left untouched. Both paths and neighbor lists are in lexical order. A pair qualifies under extraction's existing rules, before blending and pruning. Each file must appear in at least `COCHANGE_MIN_COUNT` (3) commits and the pair must appear together at least twice in commits that touch 2 to 40 files in the extraction scope.
+  - **`percentile_districts`** is 100 times the fraction of historical commits that touched strictly fewer districts than the diff. Ties contribute zero. Use the same window of up to 4000 non-merge commits already read for base co-change, counting each commit's distinct districts by looking up its changed paths in the base map. Commits without mapped changes count as touching zero districts. The result is `null` if the window contains no commits and is rounded to six decimal places otherwise.
+
 **Every number is a lower bound.** tolmap's graph holds only the references it can resolve. It misses calls through variables, dynamic imports and reflection, so a change couples at least as much as reported. The JSON says so in `lower_bound: true`, and the text says so in its last line.
 
 ## The base map
@@ -109,7 +116,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 - **`version` is 1.** Any change to an existing field's meaning or type, and any removal, bumps it. Adding a field does not, so a consumer should ignore fields it does not know, and refuse a version it does not know.
 - **Stable output.** Key order is fixed, and every float is rounded to 6 decimal places. `delta_q` is computed before rounding, and the thresholds compare the rounded values that are printed. The same inputs give a byte-identical report (CLAUDE.md's determinism rule); it holds no timings and no temporary paths.
 - **`head`** is `null` for the working tree.
-- **Added in version 1.** `edges_*[].cause` (issue #336). `base_files`, `base_districts` and `thresholds.source` and `outside_graph` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
+- **Added in version 1.** `spread` (issue #373), `edges_*[].cause` (issue #336). `base_files`, `base_districts` and `thresholds.source` and `outside_graph` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
 
 | field | type | meaning |
 |---|---|---|
@@ -129,10 +136,11 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 | `default_thresholds` | `{verdict, max_districts, max_dq, districts_over, dq_over}` | added in version 1; present under `--report-only`, compares the reported numbers against the defaults with signed margins; does not affect exit status |
 | `verdict` | `"pass" \| "fail"` | `fail` exactly when the exit code is 1 |
 | `lower_bound` | `true` | always |
+| `spread` | `{files_touched, districts_touched, outside_usual, cochange_expected, percentile_districts}` | advisory counts and comparisons with the base history, as defined above |
 
 ## Text format
 
-The text format starts with three lines: districts crossed, Δq and the verdict. Then comes the edge list: added (`+`) and removed (`−`) cross-district edges merged, heaviest first, with at most 20 shown. Then come context lines for unplaced files and touched landmarks, and last the lower-bound note. JSON lists every edge.
+The text format starts with three lines: districts crossed, Δq and the verdict. The spread line follows the verdict and any default-threshold comparison. It shows the percentile rounded to a whole number and at most five expected co-change pairs. Then comes the edge list: added (`+`) and removed (`−`) cross-district edges merged, heaviest first, with at most 20 shown. Then come context lines for unplaced files and touched landmarks, and last the lower-bound note. JSON lists every edge.
 
 ## Polyglot scope example
 
@@ -152,7 +160,7 @@ This is a schema excerpt, not a complete report. Previously the excerpt had only
 
 ## Examples
 
-Both examples are real output, not illustrations. They come from GitHub Actions ([remote-build run 36326976734](https://github.com/onsager-ai/tolmap/actions/runs/36326976734), `command=check`, `extra_args=--base HEAD~30`). The repository is django at its corpus pin `dd6f6b1` (the working tree), checked against 30 commits earlier (`5f0293b`), under the default thresholds.
+These examples predate the addition of `spread`. They come from GitHub Actions ([remote-build run 36326976734](https://github.com/onsager-ai/tolmap/actions/runs/36326976734), `command=check`, `extra_args=--base HEAD~30`). The repository is django at its corpus pin `dd6f6b1` (the working tree), checked against 30 commits earlier (`5f0293b`), under the default thresholds.
 
 Three things in them are worth reading closely:
 
@@ -379,7 +387,7 @@ $ tolmap check django --base HEAD~30 --format json
 
 The check has no incremental build (HANDOFF.md item 3). It extracts both sides and builds the base map, skipping geometry and parcels, unless `--base-map` is given. Head needs extraction and blend only. The time a run spent on each stage is printed to stderr. `remote-build.yml`'s `check` command times it on corpus repositories on GitHub Actions: the pinned commit against its parent, or against the `--base` given in `extra_args`.
 
-On django (851 files, co-change over its last 4000 commits), the example above took 5.8 s wall time with a 55 MB peak RSS, on a standard GitHub-hosted runner. The stages were base graph 1.8 s, base map 0.5 s and head graph 1.8 s; the rest was git and the two worktrees. Against the pinned commit's parent, the same run took 3.7 s.
+On django (851 files, co-change over its last 4000 commits), the example above took 5.8 s wall time with a 55 MB peak RSS, on a standard GitHub-hosted runner. The stages were base graph 1.8 s, base map 0.5 s and head graph 1.8 s; the rest was git and the two worktrees. Against the pinned commit's parent, the same run took 3.7 s. These timings predate spread, which counts districts from the existing base log without another Git command.
 
 The calibration replay (finding 60) timed 600 single-commit checks on the same runners: the median was 5.8 s on django, 5.3 s on prometheus (444 files) and 1.5 s on vuejs/core (239 files), and no check took longer than 6.4 s.
 

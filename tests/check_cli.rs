@@ -251,7 +251,10 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
     assert_eq!(file["placed"], false);
     assert!(file["district"].is_u64());
 
-    // The text format: three lines, the edge list, the lower-bound note.
+    assert_eq!(report["spread"]["files_touched"], 1);
+    assert_eq!(report["spread"]["outside_usual"], serde_json::json!([]));
+
+    // The text format: verdict, spread, edge list and lower-bound note.
     let run = check(&repo, &["--base", &base]);
     expect_code(&run, 0);
     let lines = run.stdout.lines().collect::<Vec<_>>();
@@ -267,6 +270,10 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
         "{}",
         run.stdout
     );
+    assert_eq!(
+        lines[3],
+        "spread: 1 files, 1 districts (p0 of history), 0 outside usual co-change"
+    );
     assert!(
         lines
             .last()
@@ -274,6 +281,64 @@ fn an_in_district_edit_crosses_one_district_and_leaves_q_alone() {
             .starts_with("numbers are a lower bound"),
         "{}",
         run.stdout
+    );
+}
+
+#[test]
+fn spread_uses_base_cochange_and_lists_unrelated_paths() {
+    let (_dir, repo, _) = fixture();
+    let billing = PACKAGES[0].1;
+    // The initial two commits touched both modules. A third touch for each
+    // meets COCHANGE_MIN_COUNT and leaves the joint count at two.
+    for (index, module) in billing.iter().take(2).enumerate() {
+        write(
+            &repo,
+            &format!("town/billing/{module}.py"),
+            &module_source("billing", &billing, index, 3),
+        );
+        git(&repo, &["commit", "-qam", &format!("tune {module} again")]);
+    }
+    write(&repo, "README.md", "# Town\n");
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-qm", "add README"]);
+    let args = ["--base", "HEAD", "--report-only", "--format", "json"];
+    touch(&repo, "billing", 0);
+    touch(&repo, "billing", 1);
+    let pair = check(&repo, &args);
+    expect_code(&pair, 0);
+    assert_eq!(
+        pair.json()["spread"],
+        serde_json::json!({
+            "files_touched": 2,
+            "districts_touched": 1,
+            "outside_usual": [],
+            "cochange_expected": [
+                {"path": "town/billing/invoice.py", "neighbors": []},
+                {"path": "town/billing/ledger.py", "neighbors": []}
+            ],
+            "percentile_districts": 11.111111
+        })
+    );
+    let repeated = check(&repo, &args);
+    expect_code(&repeated, 0);
+    assert_eq!(pair.stdout, repeated.stdout);
+
+    git(&repo, &["restore", "town/billing/ledger.py"]);
+    write(&repo, "README.md", "# About Town\n");
+    let mixed = check(&repo, &args);
+    expect_code(&mixed, 0);
+    assert_eq!(
+        mixed.json()["spread"],
+        serde_json::json!({
+            "files_touched": 2,
+            "districts_touched": 1,
+            "outside_usual": ["README.md", "town/billing/invoice.py"],
+            "cochange_expected": [
+                {"path": "README.md", "neighbors": []},
+                {"path": "town/billing/invoice.py", "neighbors": ["town/billing/ledger.py"]}
+            ],
+            "percentile_districts": 11.111111
+        })
     );
 }
 
@@ -712,6 +777,10 @@ fn the_diffs_own_commit_adds_no_cochange_to_the_head_side() {
     );
     expect_code(&run, 0);
     let report = run.json();
+    assert_eq!(
+        report["spread"]["outside_usual"],
+        serde_json::json!(["town/billing/tax.py", "town/catalog/category.py"])
+    );
     assert_eq!(report["districts_crossed"], 2, "{report:#}");
     assert_eq!(report["delta_q"].as_f64(), Some(0.0), "{report:#}");
     assert!(
