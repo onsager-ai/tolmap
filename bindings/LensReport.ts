@@ -2,6 +2,7 @@
 import type { ResolvedArea } from "./ResolvedArea";
 import type { ResolvedNote } from "./ResolvedNote";
 import type { ResolvedPath } from "./ResolvedPath";
+import type { TargetReport } from "./TargetReport";
 import type { Unresolved } from "./Unresolved";
 
-export type LensReport = { version: number, lens_version: number, title: string | null, repo: string, lower_bound: boolean, areas: Array<ResolvedArea>, paths: Array<ResolvedPath>, notes: Array<ResolvedNote>, unresolved: Array<Unresolved>, };
+export type LensReport = { version: number, lens_version: number, title: string | null, repo: string, lower_bound: boolean, areas: Array<ResolvedArea>, paths: Array<ResolvedPath>, notes: Array<ResolvedNote>, unresolved: Array<Unresolved>, target?: TargetReport | null, };

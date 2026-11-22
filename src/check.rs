@@ -51,6 +51,7 @@ use std::time::Instant;
 use crate::detect::{self, Confidence};
 use crate::extract::{self, round_to, CochangeHistory, InstallMode, LanguageKind, RefsMode};
 use crate::geometry::{self, BuildFeatures};
+use crate::lens::{self, Lens, LensTargetArchitecture};
 use crate::naming::{self, NamerKind};
 use crate::pipeline::{self, PruneVariant};
 use crate::schema::{
@@ -115,6 +116,7 @@ pub struct CheckOptions {
     pub base: String,
     pub head: Option<String>,
     pub base_map: Option<PathBuf>,
+    pub target: Option<PathBuf>,
     pub pkg: Vec<String>,
     pub lang: Vec<String>,
     pub all_sources: bool,
@@ -259,6 +261,23 @@ pub fn render_json(report: &CheckReport) -> String {
 pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
     let started = Instant::now();
     let thresholds = resolve_thresholds(options)?;
+    let target = options
+        .target
+        .as_deref()
+        .map(|path| {
+            let text = std::fs::read_to_string(path)
+                .map_err(|error| input(format!("{}: {error}", path.display())))?;
+            Lens::parse(&text)
+                .map_err(|error| input(format!("{}: {error}", path.display())))?
+                .target
+                .ok_or_else(|| {
+                    input(format!(
+                        "{}: target lens needs a [target] section",
+                        path.display()
+                    ))
+                })
+        })
+        .transpose()?;
     let top = repository_root(&options.repo, options.head.is_some())?;
     let base = resolve_commit(&top, &options.base, "--base")?;
     let head = options
@@ -372,13 +391,13 @@ pub fn run(options: &CheckOptions) -> Result<CheckReport, CheckError> {
     drop(scratch);
 
     let report = compare(
-        base,
-        head,
+        (base, head),
         &changes,
         &base_map,
         (base_graph, Some(&base_history)),
         head_graph,
         thresholds,
+        target.as_ref(),
     )?;
     // Timings go to stderr only: the report is byte-identical run to run.
     eprintln!(
@@ -421,7 +440,6 @@ struct SideGraph {
 }
 
 fn side_graph(mut data: GraphData) -> Result<SideGraph, CheckError> {
-    crate::generated::collapse(&mut data);
     let index = file_index(&data);
     let mut candidates = BTreeSet::new();
     for edge in &data.edges {
@@ -538,13 +556,13 @@ fn round(value: f64) -> f64 {
 
 /// Everything after the graphs exist. Pure: no git, no filesystem.
 fn compare(
-    base: String,
-    head: Option<String>,
+    (base, head): (String, Option<String>),
     changes: &[Change],
     base_map: &MapDocument,
     base_graph_and_history: (GraphData, Option<&str>),
     head_graph: GraphData,
     thresholds: CheckThresholds,
+    target: Option<&LensTargetArchitecture>,
 ) -> Result<CheckReport, CheckError> {
     if base_map.files.len() != base_map.nodes.len() {
         return Err(input(
@@ -651,8 +669,32 @@ fn compare(
         CheckSpread::default()
     };
 
-    let base_side = side_graph(base_graph)?;
-    let head_side = side_graph(head_graph)?;
+    let side = |mut graph, membership: &BTreeMap<&str, usize>| {
+        // Score the same generated-file projection the map pipeline blends.
+        // Evaluate before side_graph prunes edges for the modularity check.
+        crate::generated::collapse(&mut graph);
+        let report = target
+            .map(|target| lens::resolve_graph_target(target, &graph, membership, &base_map.names))
+            .transpose()
+            .map_err(internal)?;
+        Ok::<_, CheckError>((side_graph(graph)?, report))
+    };
+    let target_head_membership = if target.is_some() {
+        head_files
+            .iter()
+            .zip(&head_district)
+            .filter_map(|(file, district)| district.map(|id| (file.as_str(), id)))
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
+    // Target scores keep every mapped base file so deleting a file can
+    // remove its violations. The modularity metric below uses survivors.
+    let (base_side, base_target) = side(base_graph, &base_membership)?;
+    let (head_side, head_target) = side(head_graph, &target_head_membership)?;
+    let target = base_target
+        .zip(head_target)
+        .map(|(base, head)| lens::compare_target(base, head, &renamed_from));
     let base_district = base_side
         .files
         .iter()
@@ -865,6 +907,7 @@ fn compare(
         },
         lower_bound: true,
         spread,
+        target,
     })
 }
 
@@ -1096,6 +1139,34 @@ pub fn render_text(report: &CheckReport) -> String {
         let _ = write!(out, ", ... {remaining} more in --format json");
     }
     out.push('\n');
+    if let Some(target) = &report.target {
+        lens::render_target_distance(&mut out, "target base distance", &target.base);
+        lens::render_target_distance(&mut out, "target head distance", &target.head);
+        let _ = writeln!(
+            out,
+            "target violations: {} added, {} removed",
+            target.violations_added.len(),
+            target.violations_removed.len()
+        );
+        for violation in &target.violations_added {
+            lens::render_target_violation(&mut out, "+", violation);
+        }
+        for violation in &target.violations_removed {
+            lens::render_target_violation(&mut out, "-", violation);
+        }
+        for (side, items) in [
+            ("base", &target.unresolved_base),
+            ("head", &target.unresolved_head),
+        ] {
+            for item in items {
+                let _ = writeln!(
+                    out,
+                    "  {side} unresolved {} {:?}: {}",
+                    item.location, item.spec, item.detail
+                );
+            }
+        }
+    }
 
     let _ = writeln!(
         out,
@@ -1632,8 +1703,7 @@ pub(crate) fn lens_head_map(
     let graph = extract::build_snapshot_graph(&head_dir, &head_snapshot.files, &history)
         .map_err(internal)?;
     let report = compare(
-        base.into(),
-        Some(head.into()),
+        (base.into(), Some(head.into())),
         &changes,
         base_map,
         (base_graph, None),
@@ -1643,6 +1713,7 @@ pub(crate) fn lens_head_map(
             max_dq: None,
             source: CheckThresholdSource::ReportOnly,
         },
+        None,
     )?;
     let mut result = base_map.clone();
     result.files = graph.nodes.iter().map(|node| node.file.clone()).collect();
@@ -1682,6 +1753,13 @@ pub(crate) fn lens_head_map(
                 .map(|rows| (i.to_string(), rows.clone()))
         })
         .collect();
+    let index = result
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, path)| (path.as_str(), i))
+        .collect();
+    result.uses = geometry::compact_uses(&graph, &index);
     Ok(result)
 }
 
@@ -1933,6 +2011,7 @@ mod tests {
             base: "HEAD".to_owned(),
             head: None,
             base_map: None,
+            target: None,
             pkg: vec![],
             lang: vec![],
             all_sources: false,

@@ -1,0 +1,10 @@
+version = 1
+
+[target.owners]
+Billing = ["town/billing/**"]
+People = ["town/people/**"]
+
+[[target.forbid]]
+from = "Billing"
+to = "People"
+reason = "Billing should work without account implementation details."

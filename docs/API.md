@@ -144,6 +144,61 @@ Each job runs `tolmap worker` with a JSON spec on stdin and versioned progress e
 
 `GET /api/healthz` returns `{"ok":true}`. Unmatched API paths return JSON errors and never the SPA fallback. Static assets support gzip. The organization HTTP endpoint is retired; use `tolmap org check/build`.
 
+### `tolmap lens check <lens.toml> --map <map.json> [--format text|json]`
+
+A version 1 lens can declare an intended architecture alongside its existing
+areas, paths and notes. The optional `[target]` section defines owners and
+rules for directed dependencies between them.
+
+```toml
+version = 1
+
+[target.owners]
+"Web UI" = ["web/src/**"]
+"Service API" = ["src/api.rs", "src/service.rs#Service"]
+Storage = ["src/storage/**"]
+
+[target.allow_only]
+"Web UI" = ["Service API"]
+
+[[target.forbid]]
+from = "Web UI"
+to = "Storage"
+reason = "Use the service API for storage access."
+```
+
+Each owner is named for its intended map district. Members use repository-relative
+paths, globs, `path#Symbol` or `path#Symbol@line`. A symbol claims its containing
+file. Multiple matches for one owner count once. A file claimed by several owners
+is reported as ambiguous and excluded from the score. Missing members appear in
+`unresolved`. An owner can list any number of `allow_only` destinations, including
+zero. Without a list, its outgoing cross-area dependencies are permitted unless
+explicitly forbidden. `forbid` rules require a reason and apply independently of
+`allow_only`. Dependencies within one owner are always allowed.
+
+The JSON report adds `target.distance` and `target.violations`. A directed edge
+violation lists source and destination files, their owners, any observed `import`
+and `symbol_use` kinds, the forbid reason when present, and whether `allow_only`
+was broken. A misplaced file lists its declared owner and current district.
+
+- `violating_mass_share` is the blended mass of violating pairs divided by all
+  cross-area blended mass between owned files, before pruning. An unordered pair
+  contributes its mass once, even when both directions violate. Undirected signals
+  contribute to mass but do not establish a direction.
+- `misplaced_share` is the number of owned files in a differently named district
+  divided by the number of resolved, unambiguously owned files.
+- `distance` is the sum of the two shares before rounding. A share with a zero
+  denominator is zero. Both shares are lower bounds over the available evidence.
+
+A saved map carries dependency evidence but omits blended weights. `lens check`
+reports violations, unresolved members and `misplaced_share`, with `null` for
+`violating_mass_share` and `distance`. Only
+[`tolmap check --target`](CHECK.md#target-architecture) reports those two values
+because it rebuilds the graphs. The saved map format stays unchanged.
+
+`lens check` exits 0 when clean, 1 for unresolved members or violations, and 2
+for unreadable input or an invalid lens.
+
 ### `tolmap lens suggest --map <map.json> [--out <dir>]`
 
 Starting lenses proposed from a stored map's landmarks and edges (issue #249;

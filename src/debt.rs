@@ -1627,6 +1627,7 @@ pub fn to_lens(report: &DebtReport, map: &MapDocument) -> Lens {
         areas,
         paths,
         notes,
+        target: None,
     }
 }
 

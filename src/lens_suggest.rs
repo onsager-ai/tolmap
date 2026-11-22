@@ -321,6 +321,7 @@ fn entry_routes(cx: &Cx, names: &mut BTreeSet<String>) -> (Option<Lens>, Vec<Str
         areas: vec![],
         paths,
         notes,
+        target: None,
     };
     (Some(lens), messages)
 }
@@ -381,6 +382,7 @@ fn district_tour(cx: &Cx) -> Option<Lens> {
         areas,
         paths: vec![],
         notes,
+        target: None,
     })
 }
 
@@ -484,6 +486,7 @@ fn crossings(cx: &Cx, names: &mut BTreeSet<String>) -> (Option<Lens>, Vec<String
         areas: vec![],
         paths,
         notes,
+        target: None,
     };
     (Some(lens), messages)
 }

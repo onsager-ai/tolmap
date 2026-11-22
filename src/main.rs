@@ -285,9 +285,12 @@ enum Command {
         head: Option<String>,
         /// A stored map of --base, named `<full commit id>.json` as the
         /// service store names it, instead of building the base map. The
-        /// base graph is still extracted: a map keeps no edge weights.
+        /// base graph is still extracted against the base commit's history.
         #[arg(long, alias = "map", conflicts_with = "repo")]
         base_map: Option<PathBuf>,
+        /// Compare base and head against the [target] section of this lens TOML.
+        #[arg(long, value_name = "LENS")]
+        target: Option<PathBuf>,
         /// Select all sources above build's detection floor.
         #[arg(long, conflicts_with_all = ["pkg", "lang"])]
         all_sources: bool,
@@ -417,10 +420,9 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum LensCommand {
     /// Resolves a lens file against a stored map and prints the resolution
-    /// report. Exits 0 when everything resolved, 1 when anything is
-    /// unresolved (missing path, empty glob, unknown or ambiguous symbol,
-    /// unknown district, computed hop with no route), 2 when the lens or the
-    /// map cannot be read or the lens is invalid. The map is never changed.
+    /// report. Exits 0 when clean, 1 for unresolved references or target
+    /// violations, 2 when the lens or map cannot be read or the lens is
+    /// invalid. The map is never changed.
     Check {
         lens: PathBuf,
         /// A map JSON: a service store file or an exported map.
@@ -871,6 +873,7 @@ fn run_query(
             base,
             head,
             base_map,
+            target,
             pkg,
             lang,
             all_sources,
@@ -901,6 +904,7 @@ fn run_query(
                 base,
                 head,
                 base_map,
+                target,
                 pkg,
                 lang,
                 all_sources,

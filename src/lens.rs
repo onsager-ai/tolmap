@@ -21,6 +21,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use ts_rs::TS;
 
+mod target;
+pub(crate) use target::{
+    compare_target, render_target_distance, render_target_violation, resolve_graph_target,
+};
+pub use target::{
+    LensTargetArchitecture, TargetDistance, TargetEdgeKind, TargetForbid, TargetReport,
+    TargetViolation,
+};
+
 pub const LENS_VERSION: u32 = 1;
 pub const REPORT_VERSION: u32 = 1;
 
@@ -105,6 +114,8 @@ pub struct Lens {
     pub paths: Vec<LensPath>,
     #[serde(default)]
     pub notes: Vec<LensNote>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<LensTargetArchitecture>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -144,6 +155,9 @@ impl Lens {
                 "unsupported lens version {}, expected {LENS_VERSION}",
                 self.version
             ));
+        }
+        if let Some(target) = &self.target {
+            target.validate()?;
         }
         let mut labels = std::collections::BTreeSet::new();
         for area in &self.areas {
@@ -458,7 +472,7 @@ pub fn report_renames(report: &mut LensReport, renames: &[FileRename]) {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 pub struct LensReport {
     pub version: u32,
@@ -472,10 +486,12 @@ pub struct LensReport {
     pub notes: Vec<ResolvedNote>,
     // In lens order, so the same lens and map always print the same list.
     pub unresolved: Vec<Unresolved>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetReport>,
 }
 
 // What `GET /api/maps/{owner}/{repo}/lenses/{name}` returns.
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 pub struct LensResponse {
     pub repository: String,
@@ -565,7 +581,9 @@ impl Routes {
 // ---- resolution ------------------------------------------------------------
 
 struct Cx<'a> {
-    map: &'a MapDocument,
+    paths: &'a [String],
+    symbols: &'a BTreeMap<String, Vec<crate::schema::SymbolRow>>,
+    district: &'a dyn Fn(usize) -> usize,
     files: BTreeMap<&'a str, usize>,
     unresolved: Vec<Unresolved>,
 }
@@ -574,8 +592,8 @@ impl Cx<'_> {
     fn target(&self, file: usize, symbol: Option<SymbolTarget>) -> LensTarget {
         LensTarget {
             file,
-            path: self.map.files[file].clone(),
-            district: self.map.nodes[file].district(),
+            path: self.paths[file].clone(),
+            district: (self.district)(file),
             symbol,
         }
     }
@@ -643,7 +661,6 @@ impl Cx<'_> {
                     return vec![];
                 };
                 let rows = self
-                    .map
                     .symbols
                     .get(&i.to_string())
                     .map(Vec::as_slice)
@@ -696,7 +713,9 @@ impl Cx<'_> {
 
 pub fn resolve(lens: &Lens, map: &MapDocument) -> LensReport {
     let mut cx = Cx {
-        map,
+        paths: &map.files,
+        symbols: &map.symbols,
+        district: &|file| map.nodes[file].district(),
         files: map
             .files
             .iter()
@@ -848,6 +867,10 @@ pub fn resolve(lens: &Lens, map: &MapDocument) -> LensReport {
         })
         .collect();
 
+    let target = lens
+        .target
+        .as_ref()
+        .map(|target| target::evaluate(target, &mut cx, &map.names, &map.edges, &map.uses, None));
     LensReport {
         version: REPORT_VERSION,
         lens_version: lens.version,
@@ -858,6 +881,7 @@ pub fn resolve(lens: &Lens, map: &MapDocument) -> LensReport {
         paths,
         notes,
         unresolved: cx.unresolved,
+        target,
     }
 }
 
@@ -893,6 +917,13 @@ pub fn render_text(report: &LensReport) -> String {
                 "  {} -> {}: {how}, {status}",
                 path.stops[hop.from].spec, path.stops[hop.to].spec
             );
+        }
+    }
+    if let Some(target) = &report.target {
+        render_target_distance(&mut out, "target distance", &target.distance);
+        let _ = writeln!(out, "{} target violations:", target.violations.len());
+        for violation in &target.violations {
+            render_target_violation(&mut out, " ", violation);
         }
     }
     if report.unresolved.is_empty() {
@@ -932,7 +963,12 @@ pub fn run_check(lens: &std::path::Path, map: &std::path::Path, format: &str) ->
                 render_text(&report)
             };
             print!("{rendered}");
-            i32::from(!report.unresolved.is_empty())
+            i32::from(
+                !report.unresolved.is_empty()
+                    || report
+                        .target
+                        .is_some_and(|target| !target.violations.is_empty()),
+            )
         }
         Err(message) => {
             eprintln!("tolmap lens check: {message}");

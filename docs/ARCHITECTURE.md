@@ -151,6 +151,10 @@ specifications after the composition contract is stable.
 
 The map JSON is the contract between indexer and viewer. Define it once as Rust types and generate the TypeScript from them (`ts-rs` or `typeshare`) rather than maintaining two hand-written definitions. The current shape is in `data/*.json`; the compact index-addressed layout (`F`, `N`, `E`, `L`, `S`, `U`) exists because nine maps had to fit in one HTML page, and can be relaxed now that data is fetched. Optional `D` sidecars retain debt evidence. In older maps, `D.generated` records file-indexed header detection, with an optional ts-rs generator-file index only for a unique `#[derive(... TS ...)]` Rust struct or enum match. New map builds consume that evidence before blending: uniquely matched ts-rs bindings collapse onto authored Rust generators, and ts-rs bindings without a unique generator are excluded. Other generated files remain in the map and retain their remapped `D.generated` rows; the optional `ts_rs` header flag distinguishes unmatched bindings from other generated files. An empty `D.generated` still records that detection ran. `coverage.generated_collapsed` and `coverage.generated_excluded` count ts-rs projection results and are omitted when zero. Legacy debt reports exclude all generated endpoints from hidden coupling, misplaced and unreached findings, while cycle reporting keeps its generator projection. `D.package_roots` records sorted Cargo, npm, Go and Python package directories, so debt cycles can be projected onto build units without changing the map.
 
+The saved map carries dependency evidence for target lens violations. Blended
+edge mass is computed only by `check --target` from the rebuilt graph after
+generated-file projection and before pruning.
+
 ## Current application boundaries
 
 `personal` owns registry resolution, acquisition and operations. `personal_index`

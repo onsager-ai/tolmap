@@ -28,7 +28,7 @@ pub struct LensDelta {
     pub districts: Vec<usize>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export)]
 pub struct LensComparison {
     pub version: u32,

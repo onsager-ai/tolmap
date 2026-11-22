@@ -124,6 +124,7 @@ fn run_in_domain(
         base: base.clone(),
         head: Some(head.clone()),
         base_map: Some(inputs.base_map.to_owned()),
+        target: None,
         max_districts: query.max_districts,
         max_dq: query.max_dq,
         report_only: query.report_only,

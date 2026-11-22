@@ -6,6 +6,7 @@ import type { CheckFile } from "./CheckFile";
 import type { CheckLandmark } from "./CheckLandmark";
 import type { CheckOutsideGraph } from "./CheckOutsideGraph";
 import type { CheckSpread } from "./CheckSpread";
+import type { CheckTarget } from "./CheckTarget";
 import type { CheckThresholds } from "./CheckThresholds";
 import type { CheckVerdict } from "./CheckVerdict";
 
@@ -13,4 +14,4 @@ export type CheckReport = { version: number, base: string, head: string | null, 
 /**
  * Advisory comparison; never changes the applied verdict or exit code.
  */
-default_thresholds?: CheckDefaultThresholds | null, verdict: CheckVerdict, lower_bound: boolean, spread: CheckSpread, };
+default_thresholds?: CheckDefaultThresholds | null, verdict: CheckVerdict, lower_bound: boolean, spread: CheckSpread, target?: CheckTarget | null, };

@@ -302,6 +302,36 @@ pub fn mass_normalized_weights(data: &GraphData) -> Result<Vec<f64>> {
         .collect())
 }
 
+/// Pre-prune, mass-normalized weights for the caller's generated-file projection.
+/// A global rescale would cancel out when comparing shares.
+pub(crate) fn blended_edge_mass(data: &GraphData) -> Result<Vec<(usize, usize, f64)>> {
+    if data.edges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let index = data
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, node)| (node.file.as_str(), i))
+        .collect::<BTreeMap<_, _>>();
+    let mut rows = data
+        .edges
+        .iter()
+        .zip(mass_normalized_weights(data)?)
+        .map(|(edge, mass)| {
+            let a = *index
+                .get(edge.a.as_str())
+                .ok_or_else(|| anyhow::anyhow!("edge references missing file {}", edge.a))?;
+            let b = *index
+                .get(edge.b.as_str())
+                .ok_or_else(|| anyhow::anyhow!("edge references missing file {}", edge.b))?;
+            Ok((a.min(b), a.max(b), mass))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    rows.sort_by_key(|&(a, b, _)| (a, b));
+    Ok(rows)
+}
+
 fn signal_masses(data: &GraphData) -> (f64, f64, f64, f64) {
     let raw_static = data
         .edges

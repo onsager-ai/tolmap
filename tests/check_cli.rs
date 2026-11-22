@@ -967,3 +967,83 @@ fn polyglot_scope_and_stored_map_include_typescript_or_explain_its_omission() {
         expect_code(&check(&repo, &args), 2);
     }
 }
+
+#[test]
+fn target_reports_a_forbidden_import_added_and_removed() {
+    let (dir, repo, base) = fixture();
+    write(
+        dir.path(),
+        "target.toml",
+        include_str!("fixtures/target_lens/forbidden.toml"),
+    );
+    let lens = dir.path().join("target.toml");
+    let lens = lens.to_str().unwrap();
+    let file = "town/billing/invoice.py";
+    let original = std::fs::read_to_string(repo.join(file)).unwrap();
+    write(
+        &repo,
+        file,
+        &format!("from ..people.account import Account\n{original}"),
+    );
+    let run = check(
+        &repo,
+        &[
+            "--base",
+            &base,
+            "--target",
+            lens,
+            "--format",
+            "json",
+            "--report-only",
+        ],
+    );
+    expect_code(&run, 0);
+    let report = run.json();
+    let target = &report["target"];
+    let added = target["violations_added"].as_array().unwrap();
+    assert_eq!(added.len(), 1, "{target:#}");
+    let edge = &added[0];
+    assert_eq!(edge["kind"], "edge");
+    assert_eq!(edge["from"], file);
+    assert_eq!(edge["to"], "town/people/account.py");
+    assert_eq!(edge["edge_kinds"][0], "import");
+    assert_eq!(target["violations_removed"], serde_json::json!([]));
+    assert_eq!(target["base"]["violating_mass_share"], 0.0);
+    assert!(
+        target["head"]["distance"].as_f64().unwrap() > target["base"]["distance"].as_f64().unwrap()
+    );
+    assert_eq!(
+        target["base"]["misplaced_share"],
+        target["head"]["misplaced_share"]
+    );
+    assert_eq!(target["head"]["lower_bound"], true);
+
+    git(&repo, &["commit", "-qam", "add forbidden import"]);
+    let violating = git(&repo, &["rev-parse", "HEAD"]);
+    write(&repo, file, &original);
+    git(&repo, &["commit", "-qam", "remove forbidden import"]);
+    let fixed = git(&repo, &["rev-parse", "HEAD"]);
+    let run = check(
+        &repo,
+        &[
+            "--base",
+            &violating,
+            "--head",
+            &fixed,
+            "--target",
+            lens,
+            "--format",
+            "json",
+            "--report-only",
+        ],
+    );
+    expect_code(&run, 0);
+    let report = run.json();
+    let target = &report["target"];
+    assert_eq!(target["violations_added"], serde_json::json!([]));
+    assert_eq!(target["violations_removed"], serde_json::json!([edge]));
+    assert_eq!(target["head"]["violating_mass_share"], 0.0);
+    assert!(
+        target["head"]["distance"].as_f64().unwrap() < target["base"]["distance"].as_f64().unwrap()
+    );
+}
