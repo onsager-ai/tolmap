@@ -309,12 +309,13 @@ comparison does not read a metric change or a renamed district as a removed
 and an added finding. Exit 0, or 2 when the map cannot be read.
 
 
-### `tolmap debt series --repo <path> --range A..B [--first-parent] [--format json|text]`
+### `tolmap debt series <checkout> --range A..B [--first-parent] [--format json|text]`
 
-Builds a cold map in a temporary Git worktree for A and each commit in `A..B`,
-using the same source detection and parcel-free build as the default `tolmap check`
-base map. A is the first point and is pinned to itself. The remaining points
-follow `git rev-list --topo-order --reverse A..B`. Pass `--first-parent` to
+`<checkout>` is any directory inside the Git repository. The series runs from
+its top level and builds a cold map in a temporary Git worktree for A and each
+commit in `A..B`. It uses the same source detection and parcel-free build as the
+default `tolmap check` base map. A is the first point and is pinned to itself.
+The remaining points follow `git rev-list --topo-order --reverse A..B`. Pass `--first-parent` to
 follow only the first parent of merges when walking from B. The working tree
 and uncommitted changes are outside the range.
 
@@ -335,9 +336,22 @@ ID and the counts `cycles`, `misplaced`, `god_files`, `hotspots`,
 `placed_new_files` and `unplaced_new_files` count indexed files without a match
 in A. `anchored_share` is the fraction of files indexed at the point that
 matched A, including detected renames. It is `null` if no files are indexed.
+
+Each point lists `added` and `removed` finding identities relative to the
+previous point in series order. A lists all its findings in `added` and an
+empty `removed` list. Each list of finding identities is sorted by `(kind, key)`.
+
+- `kind` is `cycle`, `misplaced`, `god`, `hotspot`, `hidden_coupling`, or
+  `unreached`.
+- `key` is the current file path for file findings. For `hidden_coupling` it is
+  the two paths in sorted order joined with ` <-> `. For `cycle` it is the
+  district names on the report's directed cycle route, rotated to the
+  lexicographically smallest sequence and joined with ` -> `.
+
 The default `text` format prints the same point counts with the anchored share
-as a percentage. Repeating a run with the same repository and range yields
-byte-identical output.
+as a percentage. Beneath each point it prints indented `+ kind key` and
+`- kind key` lines for added and removed findings. Repeating a run with the same
+repository and range yields byte-identical output.
 
 ### `tolmap org check <name.org.toml>` and `tolmap org build <name.org.toml> [--clones <dir>] [--maps <dir>] [--out <file>]`
 
