@@ -17,4 +17,4 @@ excluded_tests?: number | null, q: number, names: { [key in string]: string }, d
  * Index aligned with F; N remains the original layout position so a
  * later warm start cannot accidentally feed displayed geometry back in.
  */
-footprint_centroids?: Array<[number, number]> | null, file_neighbourhoods?: Array<string> | null, neighbourhoods?: { [key in string]: Neighbourhood } | null, D?: DebtSidecar | null, };
+footprint_centroids?: Array<[number, number]> | null, file_neighbourhoods?: Array<string> | null, neighbourhoods?: { [key in string]: Neighbourhood } | null, D?: DebtSidecar | null, blended_edge_mass?: Array<[number, number, number]> | null, };

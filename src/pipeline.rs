@@ -122,6 +122,7 @@ pub struct PipelineOutput {
     pub nodes: Vec<LayoutNode>,
     pub landmarks: Vec<Landmark>,
     pub weighted: GraphData,
+    pub blended_edge_mass: Vec<(usize, usize, f64)>,
     pub graph: WeightedGraph,
 }
 
@@ -196,6 +197,7 @@ pub fn run_with_variant_progress<P: Partitioner>(
         serde_json::to_string(&projection.coverage)?
     ));
     let blend_stage = progress.stage(crate::progress::StageId::BlendPrune, Some(1));
+    let blended_edge_mass = blended_edge_mass(&data)?;
     apply_prune_variant_inner(&mut data, prune_variant, false)?;
     blend_stage.set(1);
     blend_stage.finish();
@@ -230,6 +232,7 @@ pub fn run_with_variant_progress<P: Partitioner>(
         nodes,
         landmarks,
         weighted: data,
+        blended_edge_mass,
         graph,
     })
 }
@@ -300,6 +303,34 @@ pub fn mass_normalized_weights(data: &GraphData) -> Result<Vec<f64>> {
             mass_normalized_weight(edge, raw_static, raw_cochange, raw_proximity, raw_semantic)
         })
         .collect())
+}
+
+pub(crate) fn blended_edge_mass(data: &GraphData) -> Result<Vec<(usize, usize, f64)>> {
+    if data.edges.is_empty() {
+        return Ok(Vec::new());
+    }
+    let index = data
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, node)| (node.file.as_str(), i))
+        .collect::<BTreeMap<_, _>>();
+    let mut rows = data
+        .edges
+        .iter()
+        .zip(mass_normalized_weights(data)?)
+        .map(|(edge, mass)| {
+            let a = *index
+                .get(edge.a.as_str())
+                .ok_or_else(|| anyhow::anyhow!("edge references missing file {}", edge.a))?;
+            let b = *index
+                .get(edge.b.as_str())
+                .ok_or_else(|| anyhow::anyhow!("edge references missing file {}", edge.b))?;
+            Ok((a.min(b), a.max(b), mass))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    rows.sort_by_key(|&(a, b, _)| (a, b));
+    Ok(rows)
 }
 
 fn signal_masses(data: &GraphData) -> (f64, f64, f64, f64) {

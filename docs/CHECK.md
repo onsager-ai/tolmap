@@ -5,7 +5,8 @@
 ```
 tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
              [--all-sources | --pkg PATH --lang LANG ...]
-             [--max-districts N] [--max-dq X | --report-only] [--format text|json]
+             [--target <lens.toml>] [--max-districts N] [--max-dq X | --report-only]
+             [--format text|json]
 ```
 
 For a registered GitHub repository, `--repo OWNER/NAME` selects its stored snapshot
@@ -24,10 +25,33 @@ the missing-head error includes the selected snapshot's exact base commit.
 | `--base-map <map.json>` | a stored map of `--base`, used as the base partition instead of building one. See "The base map" below |
 | `--all-sources` | select sources using the same file-count/share floor as `build --all-sources`, on base; conflicts with `--pkg`/`--lang` |
 | `--pkg PATH`, `--lang LANG` | build-style source selection (`py`, `go`, `rs`, `ts`). Repeat both equally and pair positionally. With one flag, detect the omitted language or root on base |
+| `--target <lens.toml>` | compare architecture distance and violations using the same target lens on base and head |
 | `--max-districts N` | fail (exit 1) when the change crosses more than `N` districts |
 | `--max-dq X` | fail (exit 1) when modularity drops by more than `X`, that is when `delta_q < -X`. `X` is a number ≥ 0 |
 | `--report-only` | apply no threshold: report, and exit 0 whatever the numbers. Cannot be combined with `--max-districts` or `--max-dq` (exit 2) |
 | `--format text\|json` | `text` (the default) or `json` on stdout. Progress and timings go to stderr |
+
+## Target architecture
+
+`--target <lens.toml>` reads a local lens path relative to the caller's working
+directory. A missing or invalid lens, or a lens without `[target]`, is an input
+error. The same target rules apply to both sides. See the [lens format and scoring
+rules](API.md#tolmap-lens-check-lenstoml---map-mapjson---format-textjson).
+
+Both sides use the district names from the base map. Surviving head files keep
+their base districts, including detected renames. New head files use the usual
+check placement. An unplaced file counts as owned if it matches the target, but
+without a known district it does not count as misplaced. Base files that are
+later deleted still contribute to the base score and may remove violations.
+Both sides calculate blended mass from their extracted graph with co-change held
+at base, so the target check works with older stored base maps too.
+
+The optional JSON `target` field contains the `base` and `head` distances with
+both shares and `lower_bound: true`, `violations_added`, `violations_removed`,
+and `unresolved_base` and `unresolved_head`. Violation diffs match detected
+renames by file identity. Removed findings print base paths and added findings
+print head paths. Target findings are advisory and the existing thresholds still
+determine the verdict and exit code.
 
 ## Default thresholds
 
@@ -102,7 +126,7 @@ This is a correction (issue #176, finding 61). Until then the head graph read he
 
 Without `--base-map`, `tolmap check` checks `--base` out into a temporary `git worktree` and builds its map there, cold, the way `tolmap build` would. It uses the same detection, resolution, prune and namer as `tolmap build`, but draws no parcels, since parcels never change membership. The worktree is used with hooks off and is removed afterwards. The user's checkout is never touched, and neither is its index. A worktree is used rather than an archive because extraction's co-change signal reads the base commit's `git log`. A second worktree holds `--head` when it is given; it reads the same base history through the object store the worktrees share.
 
-With `--base-map`, the stored map supplies the partition, and the base graph is still extracted, because a map keeps no edge weights. Unless source flags override it, extraction uses the map's recorded `F` file list, including all recorded languages, rather than detecting a single dominant language. At head it follows recorded files through renames and removes deleted files. New or renamed files can enter the graph when the normal source collector accepts them under the recovered roots and languages; existing files omitted from the snapshot remain outside. Maps do not record package-root metadata, so roots are recovered from recorded paths using the same logic as lens snapshot comparisons (language detection where it encloses all recorded files, repository root otherwise). The map document records no commit (docs/ARCHITECTURE.md: the compact schema has no commit field). The service store records it in the file name, `<cache_dir>/maps/<owner>/<repo>/<commit>.json`, and so does the check:
+With `--base-map`, the stored map supplies the partition, and the base graph is still extracted so both graphs can be compared in the same source scope and co-change frame. Unless source flags override it, extraction uses the map's recorded `F` file list, including all recorded languages, rather than detecting a single dominant language. At head it follows recorded files through renames and removes deleted files. New or renamed files can enter the graph when the normal source collector accepts them under the recovered roots and languages; existing files omitted from the snapshot remain outside. Maps do not record package-root metadata, so roots are recovered from recorded paths using the same logic as lens snapshot comparisons (language detection where it encloses all recorded files, repository root otherwise). The map document records no commit (docs/ARCHITECTURE.md: the compact schema has no commit field). The service store records it in the file name, `<cache_dir>/maps/<owner>/<repo>/<commit>.json`, and so does the check:
 
 - The file must be named `<full commit id>.json`.
 - That id must equal the commit `--base` resolves to.
@@ -116,7 +140,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 - **`version` is 1.** Any change to an existing field's meaning or type, and any removal, bumps it. Adding a field does not, so a consumer should ignore fields it does not know, and refuse a version it does not know.
 - **Stable output.** Key order is fixed, and every float is rounded to 6 decimal places. `delta_q` is computed before rounding, and the thresholds compare the rounded values that are printed. The same inputs give a byte-identical report (CLAUDE.md's determinism rule); it holds no timings and no temporary paths.
 - **`head`** is `null` for the working tree.
-- **Added in version 1.** `spread` (issue #373), `edges_*[].cause` (issue #336). `base_files`, `base_districts` and `thresholds.source` and `outside_graph` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
+- **Added in version 1.** `target` (issue #374), `spread` (issue #373), `edges_*[].cause` (issue #336). `base_files`, `base_districts` and `thresholds.source` and `outside_graph` were added after the first release of the report (issue #170 PR 2). They are additions, so `version` stayed 1.
 
 | field | type | meaning |
 |---|---|---|
@@ -136,6 +160,7 @@ Any other name exits 2 rather than trusting an unverified map. A map from the se
 | `default_thresholds` | `{verdict, max_districts, max_dq, districts_over, dq_over}` | added in version 1; present under `--report-only`, compares the reported numbers against the defaults with signed margins; does not affect exit status |
 | `verdict` | `"pass" \| "fail"` | `fail` exactly when the exit code is 1 |
 | `lower_bound` | `true` | always |
+| `target` | `CheckTarget` (optional) | target distance at base and head, violation changes and unresolved members, as defined above |
 | `spread` | `{files_touched, districts_touched, outside_usual, cochange_expected, percentile_districts}` | advisory counts and comparisons with the base history, as defined above |
 
 ## Text format

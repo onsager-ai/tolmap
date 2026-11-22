@@ -2,5 +2,6 @@
 import type { LensArea } from "./LensArea";
 import type { LensNote } from "./LensNote";
 import type { LensPath } from "./LensPath";
+import type { LensTargetArchitecture } from "./LensTargetArchitecture";
 
-export type Lens = { version: number, title: string | null, areas: Array<LensArea>, paths: Array<LensPath>, notes: Array<LensNote>, };
+export type Lens = { version: number, title: string | null, areas: Array<LensArea>, paths: Array<LensPath>, notes: Array<LensNote>, target?: LensTargetArchitecture | null, };

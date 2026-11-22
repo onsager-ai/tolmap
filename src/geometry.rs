@@ -806,7 +806,7 @@ fn compact(
             (!rows.is_empty()).then_some((index.to_string(), rows))
         })
         .collect::<BTreeMap<_, _>>();
-    let uses = compact_uses(&layout, &file_index);
+    let uses = compact_uses(&layout.weighted, &file_index);
     let static_pairs = edges
         .iter()
         .map(|&[a, b]| (a.min(b), a.max(b)))
@@ -963,15 +963,16 @@ fn compact(
         file_neighbourhoods: None,
         neighbourhoods: None,
         debt,
+        blended_edge_mass: Some(layout.blended_edge_mass),
     }
 }
 
-fn compact_uses(
-    layout: &pipeline::PipelineOutput,
+pub(crate) fn compact_uses(
+    graph: &GraphData,
     file_index: &BTreeMap<&str, usize>,
 ) -> BTreeMap<String, Vec<usize>> {
     let mut symbol_index = BTreeMap::<usize, BTreeMap<String, usize>>::new();
-    for (file, symbols) in &layout.weighted.symbols {
+    for (file, symbols) in &graph.symbols {
         let Some(&index) = file_index.get(file.as_str()) else {
             continue;
         };
@@ -984,7 +985,7 @@ fn compact_uses(
         symbol_index.insert(index, names);
     }
     let mut outgoing = BTreeMap::<(usize, String), BTreeSet<usize>>::new();
-    for (source, target, name) in &layout.weighted.uses {
+    for (source, target, name) in &graph.uses {
         outgoing
             .entry((*source as usize, name.clone()))
             .or_default()
@@ -992,7 +993,7 @@ fn compact_uses(
     }
     let mut cache = BTreeMap::<(usize, String), Option<(usize, usize)>>::new();
     let mut result = BTreeMap::<String, BTreeSet<usize>>::new();
-    for (source, target, name) in &layout.weighted.uses {
+    for (source, target, name) in &graph.uses {
         let source = *source as usize;
         let target = *target as usize;
         let key = (target, name.clone());

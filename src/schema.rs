@@ -404,6 +404,9 @@ pub struct MapDocument {
     // graph edges: they describe compilation reachability, not name use.
     #[serde(rename = "D", default, skip_serializing_if = "Option::is_none")]
     pub debt: Option<DebtSidecar>,
+    // Pre-pruning blended mass by unordered file pair, aligned with F.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blended_edge_mass: Option<Vec<(usize, usize, f64)>>,
 }
 
 /// Optional debt evidence, indexed against `MapDocument::files`.
@@ -542,6 +545,18 @@ pub struct CheckReport {
     pub lower_bound: bool,
     #[serde(default)]
     pub spread: CheckSpread,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<CheckTarget>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
+pub struct CheckTarget {
+    pub base: crate::lens::TargetDistance,
+    pub head: crate::lens::TargetDistance,
+    pub violations_added: Vec<crate::lens::TargetViolation>,
+    pub violations_removed: Vec<crate::lens::TargetViolation>,
+    pub unresolved_base: Vec<crate::lens::Unresolved>,
+    pub unresolved_head: Vec<crate::lens::Unresolved>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq)]

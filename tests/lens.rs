@@ -309,3 +309,95 @@ fn lens_check_exit_codes() {
     assert_eq!(run_cli(&invalid, &[]).0, 2);
     assert_eq!(run_cli(&dir.path().join("absent.toml"), &[]).0, 2);
 }
+
+#[test]
+fn lens_check_weights_cross_area_mass_and_reports_misplacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let lens_path = dir.path().join("target.toml");
+    let map_path = dir.path().join("map.json");
+    let text = r#"
+version = 1
+
+[target.owners]
+Frontend = ["ui/**", "missing.py"]
+Backend = ["db.py#Query"]
+Shared = ["util.py"]
+
+[target.allow_only]
+Frontend = ["Shared"]
+Backend = []
+
+[[target.forbid]]
+from = "Frontend"
+to = "Backend"
+reason = "Use the shared API."
+"#;
+    let lens = Lens::parse(text).unwrap();
+    assert_eq!(Lens::parse(&lens.to_toml()).unwrap(), lens);
+    std::fs::write(&lens_path, text).unwrap();
+    let mut map = serde_json::json!({
+        "repo": "fixture", "q": 0, "lang": "py", "districts": {}, "L": [], "roads": [],
+        "names": {"0": "Frontend", "1": "Backend", "2": "Shared"},
+        "F": ["ui/page.py", "db.py", "util.py", "ui/wrong.py"],
+        "N": [[0,0,0,0,0,0,0,0,0,0,0], [1,0,0,0,0,0,0,0,0,0,0],
+              [2,0,0,0,0,0,0,0,0,0,0], [1,0,0,0,0,0,0,0,0,0,0]],
+        "S": {"1": [["Query", 1, 1, 2]]},
+        "E": [[0,1], [0,2], [1,0]], "U": {"1:0": [0]},
+        "blended_edge_mass": [[0,1,0.2], [0,2,0.6], [0,3,0.2]],
+    });
+    let run = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tolmap"))
+            .args(["lens", "check"])
+            .arg(&lens_path)
+            .arg("--map")
+            .arg(&map_path)
+            .args(["--format", "json"])
+            .output()
+            .unwrap()
+    };
+    std::fs::write(&map_path, map.to_string()).unwrap();
+    let first = run();
+    assert_eq!(
+        first.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(first.stdout, run().stdout);
+    let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let target = &report["target"];
+    // Both directions violate and the forward edge has two kinds. Charge
+    // the pair once, and leave the within-owner edge out of the denominator.
+    assert_eq!(
+        target["distance"],
+        serde_json::json!({
+            "violating_mass_share": 0.25, "misplaced_share": 0.25, "distance": 0.5, "lower_bound": true
+        })
+    );
+    let violations = target["violations"].as_array().unwrap();
+    assert_eq!(violations.len(), 3);
+    assert_eq!(violations[0]["from"], "db.py");
+    assert_eq!(violations[0]["outside_allow_only"], true);
+    assert!(violations[0]["forbid_reason"].is_null());
+    assert_eq!(
+        violations[1]["edge_kinds"],
+        serde_json::json!(["import", "symbol_use"])
+    );
+    assert_eq!(violations[1]["outside_allow_only"], true);
+    assert_eq!(violations[1]["forbid_reason"], "Use the shared API.");
+    assert_eq!(
+        violations[2],
+        serde_json::json!({
+            "kind": "misplaced", "file": "ui/wrong.py", "owner": "Frontend", "district": "Backend"
+        })
+    );
+    assert_eq!(report["unresolved"][0]["spec"], "missing.py");
+
+    map.as_object_mut().unwrap().remove("blended_edge_mass");
+    std::fs::write(&map_path, map.to_string()).unwrap();
+    let legacy = run();
+    assert_eq!(legacy.status.code(), Some(1));
+    let legacy: serde_json::Value = serde_json::from_slice(&legacy.stdout).unwrap();
+    assert!(legacy["target"]["distance"]["distance"].is_null());
+    assert_eq!(legacy["target"]["violations"], target["violations"]);
+}
