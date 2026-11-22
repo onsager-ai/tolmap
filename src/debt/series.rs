@@ -1,12 +1,13 @@
 //! Per-commit structural debt measured in one base partition (issue #372).
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{findings_pinned_with_renames, map_sha256, DebtReport};
+use super::{findings_pinned_with_renames, map_sha256, DebtReport, DistrictCycle};
 use crate::check::{self, CheckError};
 use crate::schema::MapDocument;
 
@@ -33,6 +34,101 @@ pub struct DebtSeriesPoint {
     pub placed_new_files: usize,
     pub unplaced_new_files: usize,
     pub anchored_share: Option<f64>,
+    pub added: Vec<DebtFindingIdentity>,
+    pub removed: Vec<DebtFindingIdentity>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+pub struct DebtFindingIdentity {
+    pub kind: DebtFindingKind,
+    pub key: String,
+}
+
+// Declaration order matches the lexical order of the serialized kinds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DebtFindingKind {
+    Cycle,
+    God,
+    HiddenCoupling,
+    Hotspot,
+    Misplaced,
+    Unreached,
+}
+
+impl DebtFindingKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Cycle => "cycle",
+            Self::God => "god",
+            Self::HiddenCoupling => "hidden_coupling",
+            Self::Hotspot => "hotspot",
+            Self::Misplaced => "misplaced",
+            Self::Unreached => "unreached",
+        }
+    }
+}
+
+fn cycle_key(cycle: &DistrictCycle) -> String {
+    let mut names = cycle
+        .route
+        .iter()
+        .map(|id| {
+            cycle
+                .districts
+                .iter()
+                .find(|district| district.id == *id)
+                .expect("cycle route stays inside its districts")
+                .name
+                .as_str()
+        })
+        .collect::<Vec<_>>();
+    let rotation = |start: usize| names[start..].iter().chain(&names[..start]);
+    let start = (0..names.len())
+        .min_by(|&a, &b| rotation(a).cmp(rotation(b)))
+        .expect("district cycle has a route");
+    names.rotate_left(start);
+    names.join(" -> ")
+}
+
+fn finding_identities(report: &DebtReport) -> BTreeSet<DebtFindingIdentity> {
+    use DebtFindingKind::{Cycle, God, HiddenCoupling, Hotspot, Misplaced, Unreached};
+
+    let identity = |kind, key| DebtFindingIdentity { kind, key };
+    report
+        .cycles
+        .iter()
+        .map(|cycle| identity(Cycle, cycle_key(cycle)))
+        .chain(
+            report
+                .god_files
+                .iter()
+                .map(|f| identity(God, f.path.clone())),
+        )
+        .chain(report.hidden_coupling.iter().map(|pair| {
+            let mut paths = [pair.left.as_str(), pair.right.as_str()];
+            paths.sort_unstable();
+            identity(HiddenCoupling, paths.join(" <-> "))
+        }))
+        .chain(
+            report
+                .hotspots
+                .iter()
+                .map(|f| identity(Hotspot, f.path.clone())),
+        )
+        .chain(
+            report
+                .misplaced
+                .iter()
+                .map(|f| identity(Misplaced, f.path.clone())),
+        )
+        .chain(
+            report
+                .unreached
+                .iter()
+                .map(|f| identity(Unreached, f.path.clone())),
+        )
+        .collect()
 }
 
 fn commits(
@@ -96,6 +192,7 @@ fn build(repo: &Path, range: &str, first_parent: bool) -> Result<DebtSeries, Che
     let base_sha256 = map_sha256(&raw);
     drop(raw);
     let mut points = Vec::with_capacity(commits.len());
+    let mut previous = BTreeSet::new();
     for commit in commits {
         let head_map;
         let map = if commit == base {
@@ -105,6 +202,7 @@ fn build(repo: &Path, range: &str, first_parent: bool) -> Result<DebtSeries, Che
             &head_map
         };
         let (_, report) = pinned_report(&repo, &base, &commit, &base_map, map, &base_sha256)?;
+        let current = finding_identities(&report);
         let pin = report.pinned.expect("pinned report records placement");
         let anchored = report.files - pin.placed_new_files - pin.unplaced_new_files;
         points.push(DebtSeriesPoint {
@@ -118,7 +216,10 @@ fn build(repo: &Path, range: &str, first_parent: bool) -> Result<DebtSeries, Che
             placed_new_files: pin.placed_new_files,
             unplaced_new_files: pin.unplaced_new_files,
             anchored_share: (report.files != 0).then(|| anchored as f64 / report.files as f64),
+            added: current.difference(&previous).cloned().collect(),
+            removed: previous.difference(&current).cloned().collect(),
         });
+        previous = current;
     }
     Ok(DebtSeries {
         version: 1,
@@ -165,6 +266,11 @@ pub fn render(
             point.unplaced_new_files
         )
         .unwrap();
+        for (sign, findings) in [('+', point.added), ('-', point.removed)] {
+            for finding in findings {
+                writeln!(text, "  {sign} {} {}", finding.kind.as_str(), finding.key).unwrap();
+            }
+        }
     }
     Ok(text)
 }
@@ -227,9 +333,44 @@ mod tests {
         let repo = dir.path();
         let range = format!("{base}..{renamed}");
         let json = render(repo, &range, false, "json").unwrap();
-        assert_eq!(json, render(repo, &range, false, "json").unwrap());
+        assert_eq!(
+            json,
+            render(&repo.join("fixture"), &range, false, "json").unwrap()
+        );
         let series: DebtSeries = serde_json::from_str(&json).unwrap();
-        assert_eq!(series.points.len(), 3);
+        let [baseline, unchanged, renamed_point] = &series.points[..] else {
+            panic!("expected three points");
+        };
+        let identity = |path: &str| DebtFindingIdentity {
+            kind: DebtFindingKind::Unreached,
+            key: path.to_owned(),
+        };
+        assert!(baseline.added.contains(&identity("fixture/old.py")));
+        assert!(!baseline.added.contains(&identity("fixture/renamed.py")));
+        assert!(baseline.removed.is_empty());
+        assert!(unchanged.added.is_empty());
+        assert!(unchanged.removed.is_empty());
+        assert_eq!(baseline.unreached, renamed_point.unreached);
+        assert!(renamed_point
+            .added
+            .contains(&identity("fixture/renamed.py")));
+        assert!(renamed_point.removed.contains(&identity("fixture/old.py")));
+        for point in &series.points {
+            assert!(point.added.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(point.removed.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+        let baseline_count = baseline.cycles
+            + baseline.misplaced
+            + baseline.god_files
+            + baseline.hotspots
+            + baseline.hidden_coupling
+            + baseline.unreached;
+        assert_eq!(baseline.added.len(), baseline_count);
+
+        let text = render(repo, &range, false, "text").unwrap();
+        let renamed_text = text.split_once(&format!("\n{renamed}\t")).unwrap().1;
+        assert!(renamed_text.contains("\n  + unreached fixture/renamed.py\n"));
+        assert!(renamed_text.contains("\n  - unreached fixture/old.py\n"));
         for (point, commit) in series.points.iter().zip([&base, &docs, &renamed]) {
             assert_eq!(&point.commit, commit);
             assert_eq!(point.anchored_share, Some(1.0));
@@ -284,6 +425,28 @@ mod tests {
             misplaced.sort_unstable();
             assert_eq!(misplaced, ["fixture/anchor.py", path]);
         }
+    }
+
+    #[test]
+    fn cycle_identity_uses_the_smallest_rotation_of_the_directed_route() {
+        let map: MapDocument = serde_json::from_value(serde_json::json!({
+            "repo": "fixture", "q": 0.0, "names": {"0": "beta", "1": "alpha", "2": "gamma"},
+            "districts": {}, "F": ["a.py", "b.py", "c.py"],
+            "N": (0..3).map(|i| serde_json::json!([
+                i, 0.0, 0.0, 10, 1, 1, 0.0, 0.0, 0.0, 0.0, 0.0
+            ])).collect::<Vec<_>>(),
+            "E": [[0, 1], [1, 2], [2, 0]], "L": [], "S": {}, "U": {}, "roads": [],
+            "lang": "python",
+        }))
+        .unwrap();
+        let mut report = super::super::findings(&map);
+        let expected = DebtFindingIdentity {
+            kind: DebtFindingKind::Cycle,
+            key: "alpha -> gamma -> beta".to_owned(),
+        };
+        assert!(finding_identities(&report).contains(&expected));
+        report.cycles[0].route.rotate_left(1);
+        assert!(finding_identities(&report).contains(&expected));
     }
 
     #[test]

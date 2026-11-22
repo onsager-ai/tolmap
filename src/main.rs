@@ -26,9 +26,9 @@ enum DebtCommand {
     Diff { before: PathBuf, after: PathBuf },
     /// Measure structural debt across commits in the range start's partition.
     Series {
-        /// A local Git repository.
-        #[arg(long)]
-        repo: PathBuf,
+        /// Any path inside the git repository; the series runs on its top
+        /// level.
+        checkout: PathBuf,
         /// Two Git refs in A..B form. A is included as the baseline.
         #[arg(long)]
         range: String,
@@ -847,13 +847,13 @@ fn run_query(
         Command::Debt {
             command:
                 Some(DebtCommand::Series {
-                    repo,
+                    checkout,
                     range,
                     first_parent,
                     format,
                 }),
             ..
-        } => match tolmap::debt::series::render(&repo, &range, first_parent, &format) {
+        } => match tolmap::debt::series::render(&checkout, &range, first_parent, &format) {
             Ok(text) => {
                 write!(stdout, "{text}")?;
                 0
@@ -1332,12 +1332,11 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn debt_series_parses_repository_and_range() {
+    fn debt_series_parses_checkout_and_range() {
         let cli = Cli::try_parse_from([
             "tolmap",
             "debt",
             "series",
-            "--repo",
             ".",
             "--range",
             "A..B",
@@ -1349,7 +1348,7 @@ mod tests {
         let Command::Debt {
             command:
                 Some(DebtCommand::Series {
-                    repo,
+                    checkout,
                     range,
                     first_parent,
                     format,
@@ -1359,10 +1358,14 @@ mod tests {
         else {
             panic!("expected debt series");
         };
-        assert_eq!(repo, PathBuf::from("."));
+        assert_eq!(checkout, PathBuf::from("."));
         assert_eq!(range, "A..B");
         assert!(first_parent);
         assert_eq!(format, "json");
+        assert!(Cli::try_parse_from([
+            "tolmap", "debt", "series", "--repo", ".", "--range", "A..B"
+        ])
+        .is_err());
     }
 
     #[test]
