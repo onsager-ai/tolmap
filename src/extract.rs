@@ -528,7 +528,7 @@ pub fn build_multi_source_with_progress(
         false,
         RefsMode::Hand,
         &InstallMode::Off,
-        None,
+        HistorySource::Checkout,
         progress,
     )?
     .0)
@@ -551,7 +551,7 @@ pub fn build_multi_source_with_refs(
         false,
         refs,
         &InstallMode::Off,
-        None,
+        HistorySource::Checkout,
         &crate::progress::Progress::silent(),
     )?
     .0)
@@ -574,6 +574,33 @@ pub struct CochangeHistory {
     pub renames: BTreeMap<String, String>,
 }
 
+enum HistorySource<'a> {
+    Checkout,
+    Revision(&'a CochangeHistory),
+    Capture(&'a mut String),
+}
+
+/// Build the check's base graph and retain the same history for district spread.
+pub(crate) fn build_check_base_graph(
+    repo: &Path,
+    sources: &[(String, LanguageKind)],
+    recorded_files: Option<&[String]>,
+) -> Result<(GraphData, String)> {
+    let mut log = String::new();
+    let selected = recorded_files.map(snapshot_files).transpose()?;
+    let (graph, _) = build_selected_sources(
+        repo,
+        sources,
+        false,
+        RefsMode::default(),
+        &InstallMode::Off,
+        HistorySource::Capture(&mut log),
+        &crate::progress::Progress::silent(),
+        selected.as_ref(),
+    )?;
+    Ok((graph, log))
+}
+
 /// As [`build_multi_source_with_refs`], with co-change read from
 /// `history` instead of the checkout's own `git log` (see
 /// [`CochangeHistory`]). Everything else -- parsing, resolution, semantic,
@@ -590,7 +617,7 @@ pub fn build_multi_source_with_history(
         false,
         refs,
         &InstallMode::Off,
-        Some(history),
+        HistorySource::Revision(history),
         &crate::progress::Progress::silent(),
     )?
     .0)
@@ -607,7 +634,7 @@ pub(crate) fn build_with_symbols(
         true,
         RefsMode::Hand,
         &InstallMode::Off,
-        None,
+        HistorySource::Checkout,
         &crate::progress::Progress::silent(),
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -627,7 +654,7 @@ pub(crate) fn build_with_symbols_progress(
         true,
         refs,
         install,
-        None,
+        HistorySource::Checkout,
         progress,
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -643,7 +670,7 @@ pub(crate) fn build_multi_source_with_symbols(
         true,
         RefsMode::Hand,
         &InstallMode::Off,
-        None,
+        HistorySource::Checkout,
         &crate::progress::Progress::silent(),
     )?;
     Ok((graph, spool.expect("symbol collection requested")))
@@ -656,8 +683,15 @@ pub(crate) fn build_multi_source_with_symbols_progress(
     install: &InstallMode,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, crate::symbols::SymbolSpool)> {
-    let (graph, spool) =
-        build_multi_source_inner(repo, sources, true, refs, install, None, progress)?;
+    let (graph, spool) = build_multi_source_inner(
+        repo,
+        sources,
+        true,
+        refs,
+        install,
+        HistorySource::Checkout,
+        progress,
+    )?;
     Ok((graph, spool.expect("symbol collection requested")))
 }
 
@@ -667,7 +701,7 @@ fn build_multi_source_inner(
     collect_symbols: bool,
     refs: RefsMode,
     install: &InstallMode,
-    history: Option<&CochangeHistory>,
+    history: HistorySource<'_>,
     progress: &crate::progress::Progress,
 ) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
     build_selected_sources(
@@ -710,7 +744,7 @@ pub(crate) fn build_scoped_snapshot_graph(
         false,
         RefsMode::Hand,
         &InstallMode::Off,
-        Some(history),
+        HistorySource::Revision(history),
         &crate::progress::Progress::silent(),
         Some(&selected),
     )?
@@ -765,7 +799,7 @@ fn build_selected_sources(
     collect_symbols: bool,
     refs: RefsMode,
     install: &InstallMode,
-    history: Option<&CochangeHistory>,
+    history: HistorySource<'_>,
     progress: &crate::progress::Progress,
     selected: Option<&BTreeMap<String, Vec<String>>>,
 ) -> Result<(GraphData, Option<crate::symbols::SymbolSpool>)> {
@@ -6657,7 +6691,7 @@ fn normalize_relative(directory: &str, import: &str) -> String {
 fn finish_graph(
     repo: &Path,
     merged: MergedSources,
-    history: Option<&CochangeHistory>,
+    history: HistorySource<'_>,
     progress: &crate::progress::Progress,
 ) -> Result<GraphData> {
     let MergedSources {
@@ -7045,9 +7079,14 @@ fn git_history(
     repo: &Path,
     files: &[String],
     max_commits: usize,
-    source: Option<&CochangeHistory>,
+    history: HistorySource<'_>,
     progress: &crate::progress::StageCounter,
 ) -> Result<GitHistory> {
+    let (source, capture) = match history {
+        HistorySource::Checkout => (None, None),
+        HistorySource::Revision(source) => (Some(source), None),
+        HistorySource::Capture(log) => (None, Some(log)),
+    };
     let mut command = Command::new("git");
     command.args([
         "-C",
@@ -7055,7 +7094,9 @@ fn git_history(
         "log",
         &format!("-n{max_commits}"),
         "--no-merges",
-        "--pretty=format:@%H",
+        // Git quotes control characters in name-only paths. This marker
+        // cannot be mistaken for a pathname beginning with `@`.
+        "--pretty=format:%x1e%H",
         "--name-only",
         // Rename detection needs blob CONTENT, which a `--filter=blob:none`
         // clone does not have -- `service::clone` makes exactly that kind of
@@ -7096,7 +7137,7 @@ fn git_history(
         }
         let mut commits = 0;
         for &byte in &chunk[..count] {
-            commits += usize::from(at_line_start && byte == b'@');
+            commits += usize::from(at_line_start && byte == b'\x1e');
             at_line_start = byte == b'\n';
         }
         if commits > 0 {
@@ -7110,41 +7151,28 @@ fn git_history(
         "git log failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let file_set = files.iter().cloned().collect::<BTreeSet<_>>();
-    let mut commits = Vec::<BTreeSet<String>>::new();
-    let mut current = None::<BTreeSet<String>>;
-    for line in String::from_utf8_lossy(&output_bytes).lines() {
-        if line.starts_with('@') {
-            if let Some(previous) = current.take() {
-                if !previous.is_empty() {
-                    commits.push(previous);
-                }
-            }
-            current = Some(BTreeSet::new());
-        } else if !line.trim().is_empty() {
-            // A path another history knew under its old name is credited
-            // to the name it has here (issue #176: a renamed file keeps its
-            // base co-change on the head side).
-            let line = source
-                .and_then(|source| source.renames.get(line))
-                .map_or(line, String::as_str);
-            if file_set.contains(line) {
-                if let Some(current) = current.as_mut() {
-                    current.insert(line.to_owned());
-                }
-            }
-        }
-    }
-    if let Some(previous) = current {
-        if !previous.is_empty() {
-            commits.push(previous);
-        }
-    }
-
+    let log = String::from_utf8(output_bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    let file_set = files.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let mut commits = 0;
     let mut solo = BTreeMap::<String, usize>::new();
     let mut pairs = BTreeMap::<(String, String), usize>::new();
-    for commit in &commits {
-        for file in commit {
+    for paths in history_commit_paths(&log) {
+        let commit = paths
+            // On the head side, credit a renamed file's history to its new path.
+            .map(|path| {
+                source
+                    .and_then(|source| source.renames.get(path))
+                    .map_or(path, String::as_str)
+            })
+            .filter(|path| file_set.contains(path))
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        if commit.is_empty() {
+            continue;
+        }
+        commits += 1;
+        for file in &commit {
             *solo.entry(file.clone()).or_default() += 1;
         }
         if !(2..=40).contains(&commit.len()) {
@@ -7159,6 +7187,9 @@ fn git_history(
             }
         }
     }
+    if let Some(capture) = capture {
+        *capture = log;
+    }
     let mut cochange = BTreeMap::new();
     for ((a, b), count) in pairs {
         let denominator = solo[&a].min(solo[&b]);
@@ -7169,7 +7200,17 @@ fn git_history(
     Ok(GitHistory {
         cochange,
         churn: solo,
-        commits: commits.len(),
+        commits,
+    })
+}
+
+/// Each commit in the existing co-change log, including those with no mapped paths.
+pub(crate) fn history_commit_paths(log: &str) -> impl Iterator<Item = impl Iterator<Item = &str>> {
+    log.split('\x1e').skip(1).map(|commit| {
+        commit
+            .lines()
+            .skip(1)
+            .filter(|path| !path.trim().is_empty())
     })
 }
 
@@ -7441,7 +7482,14 @@ mod tests {
         let progress = crate::progress::Progress::silent();
         let stage = progress.stage(crate::progress::StageId::History, None);
 
-        let own = git_history(root, &files, COCHANGE_HISTORY_WINDOW, None, &stage).unwrap();
+        let own = git_history(
+            root,
+            &files,
+            COCHANGE_HISTORY_WINDOW,
+            HistorySource::Checkout,
+            &stage,
+        )
+        .unwrap();
         // Every commit touching a mapped file: three rounds (b.py), the
         // rename (z.py) and three later rounds.
         assert_eq!(own.commits, 7);
@@ -7457,7 +7505,7 @@ mod tests {
             root,
             &files,
             COCHANGE_HISTORY_WINDOW,
-            Some(&history),
+            HistorySource::Revision(&history),
             &stage,
         )
         .unwrap();

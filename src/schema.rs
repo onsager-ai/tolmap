@@ -540,6 +540,23 @@ pub struct CheckReport {
     pub default_thresholds: Option<CheckDefaultThresholds>,
     pub verdict: CheckVerdict,
     pub lower_bound: bool,
+    #[serde(default)]
+    pub spread: CheckSpread,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq)]
+pub struct CheckSpread {
+    pub files_touched: usize,
+    pub districts_touched: usize,
+    pub outside_usual: Vec<String>,
+    pub cochange_expected: Vec<CheckCochangeExpected>,
+    pub percentile_districts: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct CheckCochangeExpected {
+    pub path: String,
+    pub neighbors: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq)]
