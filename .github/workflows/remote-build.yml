@@ -57,7 +57,7 @@ on:
         required: false
         default: ""
       command:
-        description: "operation: build, dump-blend, stability, sequential name-eval, check (issue #170: `tolmap check` of the pinned commit against its parent, or against extra_args such as `--base HEAD~30`, timed), check-calibrate (issue #170 PR 2: `tolmap check` over the last 200 first-parent commits of django, prometheus and vuejs/core, or repos=check-calibration:owner/repo,...), scip-spike (issue #110 P0), scip-ingest (P1a), scip-install (P1c) or rust-scip-spike (issue #126); the scip-*/rust-scip-spike commands ignore repos/extra_args/compare_ref"
+        description: "operation: build, dump-blend, stability, sequential name-eval, check (issue #170: `tolmap check` of the pinned commit against its parent, or against extra_args such as `--base HEAD~30`, timed), check-calibrate (issue #170 PR 2: `tolmap check` over the last 200 first-parent commits of django, prometheus and vuejs/core, or repos=check-calibration:owner/repo,...), scip-spike (issue #110 P0), scip-ingest (P1a), scip-install (P1c) or rust-scip-spike (issue #126); churn-backtest runs the pinned #375 study; the scip-*/rust-scip-spike commands ignore repos/extra_args/compare_ref"
         required: false
         type: choice
         options:
@@ -69,6 +69,7 @@ on:
           - name-eval
           - check
           - check-calibrate
+          - churn-backtest
           - scip-spike
           - scip-ingest
           - scip-install
@@ -130,7 +131,7 @@ jobs:
       - name: Checkout tolmap ref (primary)
         uses: actions/checkout@v4
         with:
-          ref: ${{ (inputs.command == 'agent-pilot' || inputs.command == 'agent-sweep') && github.sha || inputs.ref }}
+          ref: ${{ (inputs.command == 'agent-pilot' || inputs.command == 'agent-sweep' || inputs.command == 'churn-backtest') && github.sha || inputs.ref }}
           path: repo-primary
 
       - name: Checkout tolmap ref (compare)
@@ -248,7 +249,7 @@ jobs:
           if [ "$COMMAND" = "check-calibrate" ] && [[ "$REPOS_INPUT" != check-calibration* ]]; then
             REPOS_INPUT="check-calibration"
           fi
-          if [ "$COMMAND" = "agent-pilot" ] || [ "$COMMAND" = "agent-sweep" ]; then
+          if [ "$COMMAND" = "agent-pilot" ] || [ "$COMMAND" = "agent-sweep" ] || [ "$COMMAND" = "churn-backtest" ]; then
             matrix='{"include":[{"slug":"onsager-ai/tolmap"}]}'
           else
             matrix="$(python3 eval/remote_matrix.py --repos "$REPOS_INPUT")"
@@ -263,7 +264,7 @@ jobs:
   build:
     name: build ${{ matrix.slug }}
     needs: setup
-    if: inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot' && inputs.command != 'agent-sweep'
+    if: inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot' && inputs.command != 'agent-sweep' && inputs.command != 'churn-backtest'
     runs-on: ubuntu-24.04
     # Under 6h (see header comment) with a lot of margin: issue #59's own
     # baseline measured aws/aws-sdk-go-v2 (26,520 files, this corpus's
@@ -696,7 +697,7 @@ jobs:
   summary:
     name: combine results
     needs: build
-    if: always() && inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot' && inputs.command != 'agent-sweep'
+    if: always() && inputs.command != 'name-eval' && inputs.command != 'check-calibrate' && inputs.command != 'scip-spike' && inputs.command != 'scip-ingest' && inputs.command != 'scip-install' && inputs.command != 'rust-scip-spike' && inputs.command != 'agent-pilot' && inputs.command != 'agent-sweep' && inputs.command != 'churn-backtest'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -722,6 +723,41 @@ jobs:
           path: |
             results.json
             eta_accuracy.json
+
+  # The pre-registered #375 corpus and score are fixed in the harness.
+  churn-backtest:
+    name: Churn prediction backtest (#375)
+    needs: setup
+    if: inputs.command == 'churn-backtest'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-binary-primary
+          path: backtest-bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: tolmap-leiden-lib
+          path: leiden-lib
+      - name: Run pinned first-parent backtest
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/leiden-lib
+        run: |
+          chmod +x backtest-bin/tolmap
+          python3 -I eval/churn_backtest.py --binary backtest-bin/tolmap --out "$RUNNER_TEMP/churn-backtest"
+          cat "$RUNNER_TEMP/churn-backtest/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: churn-backtest
+          path: ${{ runner.temp }}/churn-backtest/
+          if-no-files-found: error
+          retention-days: 30
 
   # Explicit dispatch only; build HEAD's binary and measure pinned main source.
   # command=agent-pilot ignores ref/repos/extra_args for measurement; leave
