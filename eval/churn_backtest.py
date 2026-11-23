@@ -226,12 +226,14 @@ def evaluate_cutoff(binary, repo, name, spec, history, index, empty_tree, work):
 
     def score(baseline, tolmap, count, threshold):
         scored = {"threshold": threshold, "precision_at_10": {}}
+        # Issue #375, Amendment 1: zero future touches never count as relevant.
+        relevance_threshold = max(threshold, 1)
         for arm, ranking in (("baseline", baseline), ("tolmap", tolmap)):
             rows = []
             for value in ranking:
                 future_count = count(value)
                 rows.append({"candidate": value, "future_count": future_count,
-                             "relevant": future_count >= threshold})
+                             "relevant": future_count >= relevance_threshold})
             scored[arm] = rows
             scored["precision_at_10"][arm] = sum(row["relevant"] for row in rows) / TOP
         return scored
