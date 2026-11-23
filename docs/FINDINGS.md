@@ -4154,3 +4154,50 @@ extraction and does not run `merge_tiny`, so the failure is unrelated to this
 measurement. Its build log also reports `write_sibling` as unused. That
 function and its callers are unchanged from `origin/main`; the warning
 predates this PR.
+
+## 80. Raw history beats both churn-prediction rankings (#375)
+
+The [pre-registered backtest](https://github.com/onsager-ai/tolmap/issues/375#pre-registered-backtest-fixed-2026-11-23-before-any-run)
+failed for both files and pairs. [Actions run 45178407444](https://github.com/onsager-ai/tolmap/actions/runs/45178407444)
+used the harness and tolmap at `a6a15003596c569c0783b09980696ab277ea571c`.
+It evaluated 50 cutoffs, five each across 10 repositories. The earlier
+[run 45177996151](https://github.com/onsager-ai/tolmap/actions/runs/45177996151)
+was cancelled before it finished and before anyone saw results. The completed
+run applied Amendment 1, which requires at least one future touch for relevance.
+
+| Signal | Baseline precision@10 | tolmap precision@10 | Mean difference (tolmap − baseline) | Paired 95% CI | Repos won or tied | Result |
+| --- | ---: | ---: | ---: | --- | ---: | --- |
+| Files | 0.708 | 0.454 | −0.254 | [−0.318, −0.192] | 0/10 | FAIL |
+| Pairs | 0.594 | 0.222 | −0.372 | [−0.456, −0.288] | 0/10 | FAIL |
+
+A pass required a mean gain of at least 0.05, a positive lower bound from
+10,000 paired bootstrap resamples over repository and cutoff (seed 7), and a
+win or tie on at least half the repositories. The file baseline ranked by raw
+churn and the pair baseline by raw co-change, both from the 100 first-parent
+commits preceding the cutoff. The tolmap file rank weighted adjusted fan-in,
+co-change over that window and native hidden coupling equally. The tolmap pair
+rank came from native hidden coupling. Native map and debt evidence were built
+at the cutoff. Ground truth used the next 50 first-parent commits.
+
+The top-decile threshold reached zero in 8 file cutoffs and 42 pair cutoffs.
+The artifact confirms that no zero-touch prediction was counted as relevant.
+Both arms scored 1.0 together once for files and once for pairs. Both scored
+0.0 together three times for pairs and never for files. Tolmap returned fewer
+than ten candidates at one file cutoff and nine pair cutoffs. Unfilled slots
+counted as misses. The artifact records the score and ranked candidates for
+every cutoff. Flask used the repository root at its first three cutoffs and
+httpx at its first because their pinned package paths did not yet exist.
+
+| Repository | Pinned commit | First-parent commits | Cutoffs |
+| --- | --- | ---: | --- |
+| celery | `208a803655672d63cf2a257d30f39c672a5b4bcf` | 8,025 | 5 |
+| django | `a3f0642f69277f01611d0d3e829fc3b85aded2ec` | 33,976 | 5 |
+| flask | `d73fa1cdcbd8b1465c151db8924ba58b1dd14e35` | 2,276 | 5 |
+| httpx | `b5addb64f0161ff6bfe94c124ef76f6a1fba5254` | 1,415 | 5 |
+| prometheus | `296080c0a504ea0e72941ef16143f0a9702b137b` | 8,475 | 5 |
+| rich | `9d8f9a372cc5916fd4781fec207ced7ddac2f08f` | 1,735 | 5 |
+| scrapy | `fe30c1882a12651c19c5a94d71e9f14e442456c7` | 5,582 | 5 |
+| semon | `fe77ddb157581d818efb5822b6520b5e063391aa` | 415 | 5 |
+| sqlalchemy | `4883307858ea3def775b5a1cc1c01a5be6dfe213` | 13,929 | 5 |
+| tolmap | `c62a96869a86940dcdb8eaa251f43e31b481c181` | 98 | Skipped, fewer than the 155 needed for five cutoffs |
+| vue | `4ab865a848a1da3d10fb674f857e5fff13094644` | 6,477 | 5 |
