@@ -692,7 +692,7 @@ fn compare(
     // remove its violations. The modularity metric below uses survivors.
     let (base_side, base_target) = side(base_graph, &base_membership)?;
     let (head_side, head_target) = side(head_graph, &target_head_membership)?;
-    let target = base_target
+    let mut target = base_target
         .zip(head_target)
         .map(|(base, head)| lens::compare_target(base, head, &renamed_from));
     let base_district = base_side
@@ -799,6 +799,19 @@ fn compare(
             .then_with(|| a.base_path.cmp(&b.base_path))
     });
     outside_graph.dedup();
+    if let Some(target) = &mut target {
+        target.coverage_gaps.unanalyzed = outside_graph
+            .iter()
+            .filter(|file| {
+                file.status != CheckFileStatus::Deleted && file.reason == "unsupported_language"
+            })
+            .filter_map(|file| Path::new(&file.path).extension()?.to_str())
+            .filter(|extension| !extension.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+    }
     files.sort_by(|left, right| {
         left.path
             .cmp(&right.path)
@@ -1142,11 +1155,23 @@ pub fn render_text(report: &CheckReport) -> String {
     if let Some(target) = &report.target {
         lens::render_target_distance(&mut out, "target base distance", &target.base);
         lens::render_target_distance(&mut out, "target head distance", &target.head);
+        let delta = |value: Option<f64>| {
+            value.map_or_else(|| "unavailable".to_owned(), |n| format!("{n:+.6}"))
+        };
         let _ = writeln!(
             out,
-            "target violations: {} added, {} removed",
+            "target delta: {} (violating mass {}, misplaced {:+.6})",
+            delta(target.delta.distance),
+            delta(target.delta.violating_mass_share),
+            target.delta.misplaced_share
+        );
+        lens::render_target_coverage(&mut out, &target.coverage_gaps);
+        let _ = writeln!(
+            out,
+            "target violations: {} added, {} removed, {} standing",
             target.violations_added.len(),
-            target.violations_removed.len()
+            target.violations_removed.len(),
+            target.standing
         );
         for violation in &target.violations_added {
             lens::render_target_violation(&mut out, "+", violation);

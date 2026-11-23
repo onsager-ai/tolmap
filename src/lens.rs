@@ -23,11 +23,12 @@ use ts_rs::TS;
 
 mod target;
 pub(crate) use target::{
-    compare_target, render_target_distance, render_target_violation, resolve_graph_target,
+    compare_target, render_target_coverage, render_target_distance, render_target_violation,
+    resolve_graph_target,
 };
 pub use target::{
-    LensTargetArchitecture, TargetDistance, TargetEdgeKind, TargetForbid, TargetReport,
-    TargetViolation,
+    LensTargetArchitecture, TargetCoverageGaps, TargetDelta, TargetDistance, TargetEdgeKind,
+    TargetForbid, TargetReport, TargetViolation, UnmatchedOwnerMember,
 };
 
 pub const LENS_VERSION: u32 = 1;
@@ -921,6 +922,7 @@ pub fn render_text(report: &LensReport) -> String {
     }
     if let Some(target) = &report.target {
         render_target_distance(&mut out, "target distance", &target.distance);
+        render_target_coverage(&mut out, &target.coverage_gaps);
         let _ = writeln!(out, "{} target violations:", target.violations.len());
         for violation in &target.violations {
             render_target_violation(&mut out, " ", violation);

@@ -176,7 +176,8 @@ zero. Without a list, its outgoing cross-area dependencies are permitted unless
 explicitly forbidden. `forbid` rules require a reason and apply independently of
 `allow_only`. Dependencies within one owner are always allowed.
 
-The JSON report adds `target.distance` and `target.violations`. A directed edge
+The JSON report adds `target.distance`, `target.violations` and
+`target.coverage_gaps`. A directed edge
 violation lists source and destination files, their owners, any observed `import`
 and `symbol_use` kinds, the forbid reason when present, and whether `allow_only`
 was broken. A misplaced file lists its declared owner and current district.
@@ -186,9 +187,18 @@ was broken. A misplaced file lists its declared owner and current district.
   contributes its mass once, even when both directions violate. Undirected signals
   contribute to mass but do not establish a direction.
 - `misplaced_share` is the number of owned files in a differently named district
-  divided by the number of resolved, unambiguously owned files.
+  divided by the number of resolved, unambiguously owned files whose owner names
+  a map district. The report lists owners without a district in `pending_owners`
+  and counts their unambiguously owned files in `pending_files`. Pending files
+  are excluded from both parts of `misplaced_share` and still contribute to
+  directed dependency checks.
 - `distance` is the sum of the two shares before rounding. A share with a zero
   denominator is zero. Both shares are lower bounds over the available evidence.
+
+`coverage_gaps.unmatched_owner_members` lists each unresolved owner member as
+`{location, spec}`, with locations such as `target.owners.Storage[0]`. For a
+saved map, `coverage_gaps.unanalyzed` is empty because saved coverage describes
+files already represented in the graph.
 
 A saved map carries dependency evidence but omits blended weights. `lens check`
 reports violations, unresolved members and `misplaced_share`, with `null` for

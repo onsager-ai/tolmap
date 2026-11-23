@@ -1009,6 +1009,12 @@ fn target_reports_a_forbidden_import_added_and_removed() {
     assert_eq!(edge["edge_kinds"][0], "import");
     assert_eq!(target["violations_removed"], serde_json::json!([]));
     assert_eq!(target["base"]["violating_mass_share"], 0.0);
+    assert_eq!(target["standing"], 0);
+    for metric in ["violating_mass_share", "misplaced_share", "distance"] {
+        let expected =
+            target["head"][metric].as_f64().unwrap() - target["base"][metric].as_f64().unwrap();
+        assert!((target["delta"][metric].as_f64().unwrap() - expected).abs() < 1e-9);
+    }
     assert!(
         target["head"]["distance"].as_f64().unwrap() > target["base"]["distance"].as_f64().unwrap()
     );
@@ -1046,4 +1052,117 @@ fn target_reports_a_forbidden_import_added_and_removed() {
     assert!(
         target["head"]["distance"].as_f64().unwrap() < target["base"]["distance"].as_f64().unwrap()
     );
+}
+
+#[test]
+fn target_reports_pending_files_coverage_gaps_and_standing_violations() {
+    let (dir, repo, _) = fixture();
+    write(
+        dir.path(),
+        "target.toml",
+        r#"version = 1
+
+[target.owners]
+Billing = ["town/billing/invoice.py"]
+People = ["town/people/**", "missing/**"]
+Warehouse = ["town/billing/warehouse.py"]
+
+[[target.forbid]]
+from = "Billing"
+to = "People"
+reason = "Billing should work without account implementation details."
+"#,
+    );
+    let lens_path = dir.path().join("target.toml");
+    let file = "town/billing/invoice.py";
+    let original = std::fs::read_to_string(repo.join(file)).unwrap();
+    write(
+        &repo,
+        file,
+        &format!("from ..people.account import Account\n{original}"),
+    );
+    git(&repo, &["commit", "-qam", "add standing forbidden import"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+    let out = dir.path().join("maps");
+    let mut build = Command::new(TOLMAP);
+    build
+        .arg("build")
+        .arg(&repo)
+        .args(["--name", &base, "--out"])
+        .arg(&out);
+    for key in DEFAULTS_ONLY {
+        build.env_remove(key);
+    }
+    let built = build.output().unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let base_map = out.join(format!("{base}.json"));
+    let mut map: tolmap::schema::MapDocument =
+        serde_json::from_slice(&std::fs::read(&base_map).unwrap()).unwrap();
+    // The test controls target owner names independently of the district namer.
+    let district = |path: &str| {
+        let file = map.files.iter().position(|file| file == path).unwrap();
+        map.nodes[file].district().to_string()
+    };
+    let billing = district(file);
+    let people = district("town/people/account.py");
+    assert_ne!(billing, people);
+    map.names.insert(billing, "Billing".to_owned());
+    map.names.insert(people, "People".to_owned());
+    std::fs::write(&base_map, serde_json::to_vec(&map).unwrap()).unwrap();
+
+    write(
+        &repo,
+        "town/billing/warehouse.py",
+        "from .invoice import Invoice\n\nstock = Invoice()\n",
+    );
+    write(&repo, "notes.txt", "Notes\n");
+    let args = [
+        "--base",
+        &base,
+        "--base-map",
+        base_map.to_str().unwrap(),
+        "--target",
+        lens_path.to_str().unwrap(),
+        "--report-only",
+    ];
+    let run = check(&repo, &[args.as_slice(), &["--format", "json"]].concat());
+    expect_code(&run, 0);
+    let report = run.json();
+    assert_eq!(
+        file_entry(&report, "town/billing/warehouse.py")["placed"],
+        true
+    );
+    let target = &report["target"];
+    assert_eq!(target["base"]["pending_files"], 0);
+    assert_eq!(target["head"]["pending_files"], 1);
+    assert_eq!(
+        target["head"]["pending_owners"],
+        serde_json::json!(["Warehouse"])
+    );
+    assert_eq!(
+        target["head"]["misplaced_share"],
+        target["base"]["misplaced_share"]
+    );
+    assert_eq!(target["delta"]["misplaced_share"], 0.0);
+    assert_eq!(target["standing"], 1);
+    assert_eq!(target["violations_added"], serde_json::json!([]));
+    assert_eq!(target["violations_removed"], serde_json::json!([]));
+    assert_eq!(
+        target["coverage_gaps"],
+        serde_json::json!({
+            "unmatched_owner_members": [{"location": "target.owners.People[1]", "spec": "missing/**"}],
+            "unanalyzed": ["txt"],
+        })
+    );
+
+    let text = check(&repo, &args);
+    expect_code(&text, 0);
+    assert!(text.stdout.contains("pending owners: Warehouse (1 files)"));
+    assert!(text.stdout.contains("target delta:"));
+    assert!(text.stdout.contains("0 added, 0 removed, 1 standing"));
+    assert!(text.stdout.contains("unanalyzed: txt"));
 }

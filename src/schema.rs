@@ -550,6 +550,9 @@ pub struct CheckReport {
 pub struct CheckTarget {
     pub base: crate::lens::TargetDistance,
     pub head: crate::lens::TargetDistance,
+    pub delta: crate::lens::TargetDelta,
+    pub standing: usize,
+    pub coverage_gaps: crate::lens::TargetCoverageGaps,
     pub violations_added: Vec<crate::lens::TargetViolation>,
     pub violations_removed: Vec<crate::lens::TargetViolation>,
     pub unresolved_base: Vec<crate::lens::Unresolved>,
