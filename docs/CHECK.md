@@ -63,7 +63,9 @@ standing findings use head paths. Text reports prefix standing findings with `=`
 `coverage_gaps.unmatched_owner_members` lists owner members unresolved at head.
 `coverage_gaps.out_of_scope_owner_members` gives `{location, spec, paths}` for
 unmatched members whose only matching head changes in `outside_graph` have reason
-`not_in_scope`. Each entry lists the sorted matching paths. `coverage_gaps.unanalyzed`
+`not_in_scope`. Each entry lists the sorted matching paths. `outside_graph` holds
+only files the diff changes, so an out-of-scope file that the diff leaves
+untouched stays listed only under `unmatched_owner_members`. `coverage_gaps.unanalyzed`
 lists sorted, distinct lowercase extensions, without a leading dot, for head
 changes reported as `unsupported_language` in `outside_graph`.
 `unresolved_base` and `unresolved_head` provide detailed diagnostics for each
