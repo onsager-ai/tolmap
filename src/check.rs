@@ -800,6 +800,9 @@ fn compare(
     });
     outside_graph.dedup();
     if let Some(target) = &mut target {
+        target
+            .coverage_gaps
+            .record_out_of_scope_owner_members(&outside_graph);
         target.coverage_gaps.unanalyzed = outside_graph
             .iter()
             .filter(|file| {
@@ -1178,6 +1181,9 @@ pub fn render_text(report: &CheckReport) -> String {
         }
         for violation in &target.violations_removed {
             lens::render_target_violation(&mut out, "-", violation);
+        }
+        for violation in &target.violations_standing {
+            lens::render_target_violation(&mut out, "=", violation);
         }
         for (side, items) in [
             ("base", &target.unresolved_base),

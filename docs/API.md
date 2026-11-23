@@ -196,9 +196,9 @@ was broken. A misplaced file lists its declared owner and current district.
   denominator is zero. Both shares are lower bounds over the available evidence.
 
 `coverage_gaps.unmatched_owner_members` lists each unresolved owner member as
-`{location, spec}`, with locations such as `target.owners.Storage[0]`. For a
-saved map, `coverage_gaps.unanalyzed` is empty because saved coverage describes
-files already represented in the graph.
+`{location, spec}`, with locations such as `target.owners.Storage[0]`. Saved-map
+reports leave `coverage_gaps.unanalyzed` and `coverage_gaps.out_of_scope_owner_members`
+empty. `check --target` fills them using its list of changed files outside the graph.
 
 A saved map carries dependency evidence but omits blended weights. `lens check`
 reports violations, unresolved members and `misplaced_share`, with `null` for

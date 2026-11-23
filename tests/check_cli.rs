@@ -1010,6 +1010,7 @@ fn target_reports_a_forbidden_import_added_and_removed() {
     assert_eq!(target["violations_removed"], serde_json::json!([]));
     assert_eq!(target["base"]["violating_mass_share"], 0.0);
     assert_eq!(target["standing"], 0);
+    assert_eq!(target["violations_standing"], serde_json::json!([]));
     for metric in ["violating_mass_share", "misplaced_share", "distance"] {
         let expected =
             target["head"][metric].as_f64().unwrap() - target["base"][metric].as_f64().unwrap();
@@ -1064,7 +1065,7 @@ fn target_reports_pending_files_coverage_gaps_and_standing_violations() {
 
 [target.owners]
 Billing = ["town/billing/invoice.py"]
-People = ["town/people/**", "missing/**"]
+People = ["town/people/**", "missing/**", "artifacts/*.js", "artifacts/*"]
 Warehouse = ["town/billing/warehouse.py"]
 
 [[target.forbid]]
@@ -1119,7 +1120,9 @@ reason = "Billing should work without account implementation details."
         "town/billing/warehouse.py",
         "from .invoice import Invoice\n\nstock = Invoice()\n",
     );
-    write(&repo, "notes.txt", "Notes\n");
+    write(&repo, "artifacts/z.min.js", "export const z = 1;\n");
+    write(&repo, "artifacts/a.min.js", "export const a = 1;\n");
+    write(&repo, "artifacts/notes.txt", "Notes\n");
     let args = [
         "--base",
         &base,
@@ -1148,14 +1151,28 @@ reason = "Billing should work without account implementation details."
         target["base"]["misplaced_share"]
     );
     assert_eq!(target["delta"]["misplaced_share"], 0.0);
-    assert_eq!(target["standing"], 1);
+    let standing = target["violations_standing"].as_array().unwrap();
+    assert_eq!(standing.len(), 1, "{target:#}");
+    assert_eq!(target["standing"], standing.len());
+    assert_eq!(standing[0]["kind"], "edge");
+    assert_eq!(standing[0]["from"], file);
+    assert_eq!(standing[0]["to"], "town/people/account.py");
+    assert_eq!(standing[0]["edge_kinds"][0], "import");
     assert_eq!(target["violations_added"], serde_json::json!([]));
     assert_eq!(target["violations_removed"], serde_json::json!([]));
     assert_eq!(
         target["coverage_gaps"],
         serde_json::json!({
-            "unmatched_owner_members": [{"location": "target.owners.People[1]", "spec": "missing/**"}],
+            "unmatched_owner_members": [
+                {"location": "target.owners.People[1]", "spec": "missing/**"},
+                {"location": "target.owners.People[2]", "spec": "artifacts/*.js"},
+                {"location": "target.owners.People[3]", "spec": "artifacts/*"},
+            ],
             "unanalyzed": ["txt"],
+            "out_of_scope_owner_members": [{
+                "location": "target.owners.People[2]", "spec": "artifacts/*.js",
+                "paths": ["artifacts/a.min.js", "artifacts/z.min.js"],
+            }],
         })
     );
 
@@ -1164,5 +1181,11 @@ reason = "Billing should work without account implementation details."
     assert!(text.stdout.contains("pending owners: Warehouse (1 files)"));
     assert!(text.stdout.contains("target delta:"));
     assert!(text.stdout.contains("0 added, 0 removed, 1 standing"));
+    assert!(text
+        .stdout
+        .contains("= town/billing/invoice.py -> town/people/account.py"));
+    assert!(text.stdout.contains(
+        "out of scope target.owners.People[2] \"artifacts/*.js\": [\"artifacts/a.min.js\", \"artifacts/z.min.js\"]"
+    ));
     assert!(text.stdout.contains("unanalyzed: txt"));
 }
