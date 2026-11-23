@@ -1,6 +1,8 @@
-use super::{check_spec, Cx, LensError, Unresolved, UnresolvedKind};
+use super::{
+    check_spec, glob_matches, parse_spec, Cx, LensError, Spec, Unresolved, UnresolvedKind,
+};
 use crate::extract::round_to;
-use crate::schema::{CheckTarget, GraphData};
+use crate::schema::{CheckFileStatus, CheckOutsideGraph, CheckTarget, GraphData};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -136,12 +138,49 @@ pub struct TargetReport {
 pub struct TargetCoverageGaps {
     pub unmatched_owner_members: Vec<UnmatchedOwnerMember>,
     pub unanalyzed: Vec<String>,
+    #[serde(default)]
+    pub out_of_scope_owner_members: Vec<OutOfScopeOwnerMember>,
+}
+
+impl TargetCoverageGaps {
+    pub(crate) fn record_out_of_scope_owner_members(
+        &mut self,
+        outside_graph: &[CheckOutsideGraph],
+    ) {
+        for member in &self.unmatched_owner_members {
+            let spec = parse_spec(&member.spec);
+            let matches = outside_graph
+                .iter()
+                .filter(|file| file.status != CheckFileStatus::Deleted)
+                .filter(|file| match spec {
+                    Spec::Glob(pattern) => glob_matches(pattern, &file.path),
+                    Spec::File(path) | Spec::Symbol { file: path, .. } => path == file.path,
+                })
+                .collect::<Vec<_>>();
+            if matches.is_empty() || matches.iter().any(|file| file.reason != "not_in_scope") {
+                continue;
+            }
+            let paths = matches.into_iter().map(|file| file.path.clone()).collect();
+            self.out_of_scope_owner_members.push(OutOfScopeOwnerMember {
+                location: member.location.clone(),
+                spec: member.spec.clone(),
+                paths,
+            });
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
 pub struct UnmatchedOwnerMember {
     pub location: String,
     pub spec: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct OutOfScopeOwnerMember {
+    pub location: String,
+    pub spec: String,
+    pub paths: Vec<String>,
 }
 
 pub(super) fn evaluate(
@@ -408,22 +447,23 @@ pub(crate) fn compare_target(
         .iter()
         .map(head_key)
         .collect::<BTreeSet<_>>();
+    let (violations_standing, violations_added): (Vec<_>, Vec<_>) = head
+        .violations
+        .into_iter()
+        .partition(|v| base_keys.contains(&head_key(v)));
     CheckTarget {
         delta: TargetDelta::between(&base.distance, &head.distance),
-        standing: base_keys.intersection(&head_keys).count(),
+        standing: violations_standing.len(),
         coverage_gaps: head.coverage_gaps,
         base: base.distance,
         head: head.distance,
-        violations_added: head
-            .violations
-            .into_iter()
-            .filter(|v| !base_keys.contains(&head_key(v)))
-            .collect(),
+        violations_added,
         violations_removed: base
             .violations
             .into_iter()
             .filter(|v| !head_keys.contains(&key(v, str::to_owned)))
             .collect(),
+        violations_standing,
         unresolved_base,
         unresolved_head,
     }
@@ -458,6 +498,13 @@ pub(crate) fn render_target_coverage(out: &mut String, gaps: &TargetCoverageGaps
     );
     for member in &gaps.unmatched_owner_members {
         let _ = writeln!(out, "  {} {:?}", member.location, member.spec);
+    }
+    for member in &gaps.out_of_scope_owner_members {
+        let _ = writeln!(
+            out,
+            "  out of scope {} {:?}: {:?}",
+            member.location, member.spec, member.paths
+        );
     }
     if !gaps.unanalyzed.is_empty() {
         let _ = writeln!(out, "  unanalyzed: {}", gaps.unanalyzed.join(", "));

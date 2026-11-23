@@ -555,6 +555,8 @@ pub struct CheckTarget {
     pub coverage_gaps: crate::lens::TargetCoverageGaps,
     pub violations_added: Vec<crate::lens::TargetViolation>,
     pub violations_removed: Vec<crate::lens::TargetViolation>,
+    #[serde(default)]
+    pub violations_standing: Vec<crate::lens::TargetViolation>,
     pub unresolved_base: Vec<crate::lens::Unresolved>,
     pub unresolved_head: Vec<crate::lens::Unresolved>,
 }

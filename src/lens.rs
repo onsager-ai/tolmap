@@ -27,8 +27,8 @@ pub(crate) use target::{
     resolve_graph_target,
 };
 pub use target::{
-    LensTargetArchitecture, TargetCoverageGaps, TargetDelta, TargetDistance, TargetEdgeKind,
-    TargetForbid, TargetReport, TargetViolation, UnmatchedOwnerMember,
+    LensTargetArchitecture, OutOfScopeOwnerMember, TargetCoverageGaps, TargetDelta, TargetDistance,
+    TargetEdgeKind, TargetForbid, TargetReport, TargetViolation, UnmatchedOwnerMember,
 };
 
 pub const LENS_VERSION: u32 = 1;

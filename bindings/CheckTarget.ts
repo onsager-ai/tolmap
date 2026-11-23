@@ -5,4 +5,4 @@ import type { TargetDistance } from "./TargetDistance";
 import type { TargetViolation } from "./TargetViolation";
 import type { Unresolved } from "./Unresolved";
 
-export type CheckTarget = { base: TargetDistance, head: TargetDistance, delta: TargetDelta, standing: number, coverage_gaps: TargetCoverageGaps, violations_added: Array<TargetViolation>, violations_removed: Array<TargetViolation>, unresolved_base: Array<Unresolved>, unresolved_head: Array<Unresolved>, };
+export type CheckTarget = { base: TargetDistance, head: TargetDistance, delta: TargetDelta, standing: number, coverage_gaps: TargetCoverageGaps, violations_added: Array<TargetViolation>, violations_removed: Array<TargetViolation>, violations_standing: Array<TargetViolation>, unresolved_base: Array<Unresolved>, unresolved_head: Array<Unresolved>, };

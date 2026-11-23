@@ -399,6 +399,7 @@ reason = "Use the shared API."
                 {"location": "target.owners.Warehouse[0]", "spec": "warehouse.py"},
             ],
             "unanalyzed": [],
+            "out_of_scope_owner_members": [],
         })
     );
 

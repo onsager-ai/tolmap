@@ -54,15 +54,18 @@ the share of all cross-area mass. Saved maps carry no blended weights, so only
 The optional JSON `target` field contains the `base` and `head` distances with
 both shares, `pending_files`, `pending_owners` and `lower_bound: true`. `delta`
 subtracts each base score from its head score. A delta is `null` when either
-score is unavailable. `violations_added`, `violations_removed` and `standing`
-use the same violation identity, including across detected file renames.
-`standing` counts violations present on both sides. Removed findings print base
-paths and added findings print head paths.
+score is unavailable. `violations_added`, `violations_removed` and
+`violations_standing` use the same violation identity, including across detected
+file renames. `standing` is the length of `violations_standing`, which lists
+violations present on both sides. Removed findings use base paths. Added and
+standing findings use head paths. Text reports prefix standing findings with `=`.
 
 `coverage_gaps.unmatched_owner_members` lists owner members unresolved at head.
-`coverage_gaps.unanalyzed` lists sorted, distinct lowercase extensions, without a
-leading dot, for head changes already reported as `unsupported_language` in
-`outside_graph`. Both fields use evidence already gathered by check. Existing
+`coverage_gaps.out_of_scope_owner_members` gives `{location, spec, paths}` for
+unmatched members whose only matching head changes in `outside_graph` have reason
+`not_in_scope`. Each entry lists the sorted matching paths. `coverage_gaps.unanalyzed`
+lists sorted, distinct lowercase extensions, without a leading dot, for head
+changes reported as `unsupported_language` in `outside_graph`.
 `unresolved_base` and `unresolved_head` provide detailed diagnostics for each
 side. Target findings are advisory and the existing thresholds still determine
 the verdict and exit code.
