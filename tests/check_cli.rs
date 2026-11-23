@@ -1057,11 +1057,22 @@ fn target_reports_a_forbidden_import_added_and_removed() {
 #[test]
 fn target_reports_pending_files_coverage_gaps_and_standing_violations() {
     let (dir, repo, _) = fixture();
-    let lens = include_str!("fixtures/target_lens/forbidden.toml").replace(
-        "People = [\"town/people/**\"]",
-        "People = [\"town/people/**\", \"missing/**\"]\nWarehouse = [\"town/warehouse/**\"]",
+    write(
+        dir.path(),
+        "target.toml",
+        r#"version = 1
+
+[target.owners]
+Billing = ["town/billing/invoice.py"]
+People = ["town/people/**", "missing/**"]
+Warehouse = ["town/billing/warehouse.py"]
+
+[[target.forbid]]
+from = "Billing"
+to = "People"
+reason = "Billing should work without account implementation details."
+"#,
     );
-    write(dir.path(), "target.toml", &lens);
     let lens_path = dir.path().join("target.toml");
     let file = "town/billing/invoice.py";
     let original = std::fs::read_to_string(repo.join(file)).unwrap();
@@ -1072,15 +1083,48 @@ fn target_reports_pending_files_coverage_gaps_and_standing_violations() {
     );
     git(&repo, &["commit", "-qam", "add standing forbidden import"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
+    let out = dir.path().join("maps");
+    let mut build = Command::new(TOLMAP);
+    build
+        .arg("build")
+        .arg(&repo)
+        .args(["--name", &base, "--out"])
+        .arg(&out);
+    for key in DEFAULTS_ONLY {
+        build.env_remove(key);
+    }
+    let built = build.output().unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let base_map = out.join(format!("{base}.json"));
+    let mut map: tolmap::schema::MapDocument =
+        serde_json::from_slice(&std::fs::read(&base_map).unwrap()).unwrap();
+    // The test controls target owner names independently of the district namer.
+    let district = |path: &str| {
+        let file = map.files.iter().position(|file| file == path).unwrap();
+        map.nodes[file].district().to_string()
+    };
+    let billing = district(file);
+    let people = district("town/people/account.py");
+    assert_ne!(billing, people);
+    map.names.insert(billing, "Billing".to_owned());
+    map.names.insert(people, "People".to_owned());
+    std::fs::write(&base_map, serde_json::to_vec(&map).unwrap()).unwrap();
+
     write(
         &repo,
-        "town/warehouse/bin.py",
-        "from ..billing.invoice import Invoice\n\nstock = Invoice()\n",
+        "town/billing/warehouse.py",
+        "from .invoice import Invoice\n\nstock = Invoice()\n",
     );
     write(&repo, "notes.txt", "Notes\n");
     let args = [
         "--base",
         &base,
+        "--base-map",
+        base_map.to_str().unwrap(),
         "--target",
         lens_path.to_str().unwrap(),
         "--report-only",
@@ -1088,6 +1132,10 @@ fn target_reports_pending_files_coverage_gaps_and_standing_violations() {
     let run = check(&repo, &[args.as_slice(), &["--format", "json"]].concat());
     expect_code(&run, 0);
     let report = run.json();
+    assert_eq!(
+        file_entry(&report, "town/billing/warehouse.py")["placed"],
+        true
+    );
     let target = &report["target"];
     assert_eq!(target["base"]["pending_files"], 0);
     assert_eq!(target["head"]["pending_files"], 1);
