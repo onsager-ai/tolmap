@@ -169,8 +169,36 @@ async function checkDelayedJobPollingStopsAfterDone(){
  assert.equal(requests, 2, 'job polling continued after the done response');
  await page.close();
 }
+async function checkPersonalAddEscapeWhilePending(){
+ const page=await browser.newPage();
+ let releaseIndexResponse;
+ const indexResponse=new Promise(resolve=>{releaseIndexResponse=resolve;});
+ await page.route('**/api/personal/index',async route=>{
+  await indexResponse;
+  await route.fulfill({json:{batch_id:'escape-pending-batch',jobs:[{repository_id:'escape-pending-repository',job_id:'escape-pending-job'}]}});
+ });
+ await page.goto(`${browserOrigin}/`);
+ await page.getByRole('button',{name:'Add repository',exact:true}).click();
+ await page.locator('[data-personal-add]').getByRole('textbox').fill('owner/repository');
+ const response=page.waitForResponse(response=>response.request().method()==='POST'&&response.url().endsWith('/api/personal/index'));
+ await page.getByRole('button',{name:'Add and map'}).click();
+ await page.getByRole('button',{name:'Starting…'}).waitFor();
+ await page.keyboard.press('Escape');
+ assert.equal(await page.locator('[data-personal-add]').evaluate(dialog=>dialog.open),true,'Escape closed the personal add dialog while the index request was pending');
+ releaseIndexResponse();
+ await response;
+ await page.waitForURL(url=>url.pathname==='/new'&&url.searchParams.get('job')==='escape-pending-job');
+ assert.equal(await page.locator('[data-personal-add]').count(),0,'completed add should close the dialog before navigating');
+ await page.goto(`${browserOrigin}/`);
+ await page.getByRole('button',{name:'Add repository',exact:true}).click();
+ await page.locator('[data-personal-add]').waitFor();
+ await page.keyboard.press('Escape');
+ await page.locator('[data-personal-add]').waitFor({state:'detached'});
+ await page.close();
+}
 try{
 await checkDelayedJobPollingStopsAfterDone();
+await checkPersonalAddEscapeWhilePending();
 for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]])for(const colorScheme of ['light','dark']){
  // UX §9: tablets use the desktop map shell even when the reader is full width.
  const phoneShell=width<=600||(height<=500&&width>height),touch=width<=1100||phoneShell;
