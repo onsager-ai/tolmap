@@ -153,6 +153,10 @@ async fn stdio_tools_return_the_cli_report_bytes() {
     assert!(tools[7]["inputSchema"]["properties"]
         .get("max-dq")
         .is_none());
+    assert_eq!(
+        tools[7]["inputSchema"]["properties"]["target"]["type"],
+        "string"
+    );
     assert!(tools
         .iter()
         .all(|tool| tool["annotations"]["readOnlyHint"] == true));
@@ -309,6 +313,60 @@ async fn stdio_tools_return_the_cli_report_bytes() {
         "tools/call",
         json!({"name": "check", "arguments": {
             "checkout": checkout, "base": base, "head": head, "pkg": ["."], "lang": ["py"],
+        }}),
+    )
+    .await;
+    assert_eq!(response["isError"], false, "{response}");
+    assert_eq!(response["content"][0]["type"], "text");
+    assert_eq!(
+        response["content"][0]["text"].as_str().unwrap().as_bytes(),
+        expected.stdout
+    );
+
+    let target = cwd.join("target.toml");
+    fs::write(
+        &target,
+        "version = 1\n\n[target.owners]\nCart = [\"shop/cart.py\"]\nCatalog = [\"shop/catalog.py\"]\n\n[[target.forbid]]\nfrom = \"Cart\"\nto = \"Catalog\"\nreason = \"Cart should not depend on catalog internals.\"\n",
+    )
+    .unwrap();
+    let target = target.to_str().unwrap();
+    let expected = cli(
+        &cwd,
+        &data,
+        "check",
+        &[
+            checkout,
+            "--base",
+            &base,
+            "--head",
+            &head,
+            "--report-only",
+            "--target",
+            target,
+        ],
+    );
+    assert!(
+        expected.status.success(),
+        "check: {}",
+        String::from_utf8_lossy(&expected.stderr)
+    );
+    let report: Value = serde_json::from_slice(&expected.stdout).unwrap();
+    assert_eq!(report["thresholds"]["source"], "report_only");
+    assert_eq!(
+        report["target"]["violations_standing"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let response = request(
+        &mut stdin,
+        &mut stdout,
+        13,
+        "tools/call",
+        json!({"name": "check", "arguments": {
+            "checkout": checkout, "base": base, "head": head, "target": target,
         }}),
     )
     .await;
