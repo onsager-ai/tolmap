@@ -37,11 +37,26 @@ struct SnapshotIndex {
     checkout: PathBuf,
     data: PathBuf,
     repository: String,
+    owner: String,
+    name: String,
+    slug: String,
     prepared: Mutex<Option<Prepared>>,
     job: Mutex<Option<Job>>,
     attempt: Mutex<Option<crate::schema::SnapshotFreshness>>,
 }
 type PersonalEvent = dyn Fn(&WorkerEvent) + Send + Sync;
+
+fn safe_file_stem(name: &str) -> String {
+    let mut stem = String::new();
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' {
+            stem.push(byte as char);
+        } else {
+            stem.push_str(&format!("_{byte:02x}"));
+        }
+    }
+    stem
+}
 pub(crate) struct PersonalControl {
     probe: Arc<Probe>,
     pub event: Arc<PersonalEvent>,
@@ -325,10 +340,11 @@ fn run_configured(
             path: dir.join("map.json"),
         });
     }
+    let file_stem = safe_file_stem(&s.name);
     let spec = JobSpec {
-        slug: "local/repository".into(),
-        owner: "local".into(),
-        repo: "repository".into(),
+        slug: s.slug.clone(),
+        owner: s.owner.clone(),
+        repo: file_stem.clone(),
         source: source.to_string_lossy().into(),
         local: true,
         commit: commit.clone(),
@@ -403,7 +419,7 @@ fn run_configured(
         let adopted = worker_result::adopt(
             &result.output_dir,
             &staging,
-            "repository",
+            &file_stem,
             &worker_result::Reported {
                 map_path: &o.map_path,
                 symbols_path: &o.symbols_path,
@@ -585,7 +601,7 @@ fn refresh_revision(
 pub(crate) fn personal_refresh(
     checkout: PathBuf,
     data: PathBuf,
-    repository: &str,
+    repository: &crate::service::store::Repository,
     args: &RefreshArgs,
     revision: &str,
     config: &crate::service::config::ServeConfig,
@@ -600,7 +616,36 @@ pub(crate) fn personal_refresh(
     let s = Arc::new(SnapshotIndex {
         checkout,
         data,
-        repository: repository.into(),
+        repository: repository.id.clone(),
+        owner: if repository.kind == "github" {
+            repository
+                .location
+                .strip_prefix("github.com/")
+                .and_then(|v| v.split_once('/'))
+                .map(|(owner, _)| owner.to_owned())
+                .unwrap_or_else(|| "local".into())
+        } else {
+            "local".into()
+        },
+        name: if repository.kind == "github" {
+            repository
+                .location
+                .rsplit('/')
+                .next()
+                .unwrap_or(&repository.name)
+                .to_owned()
+        } else {
+            repository.name.clone()
+        },
+        slug: if repository.kind == "github" {
+            repository
+                .location
+                .strip_prefix("github.com/")
+                .unwrap_or(&repository.name)
+                .to_owned()
+        } else {
+            format!("local/{}", repository.name)
+        },
         prepared: Mutex::new(None),
         job: Mutex::new(None),
         attempt: Mutex::new(None),
@@ -611,7 +656,7 @@ pub(crate) fn personal_refresh(
         .context("indexing produced no complete snapshot")?;
     Ok(crate::service::store::PersonalSnapshot {
         id: snapshot.id.to_string(),
-        repository: repository.into(),
+        repository: repository.id.clone(),
         commit: snapshot.commit,
         map_path: s
             .data
@@ -675,6 +720,9 @@ mod tests {
             checkout,
             data: dir.path().join("data"),
             repository: "repo".into(),
+            owner: "local".into(),
+            name: "repo".into(),
+            slug: "local/repo".into(),
             prepared: Mutex::new(None),
             job: Mutex::new(None),
             attempt: Mutex::new(None),
@@ -684,5 +732,12 @@ mod tests {
             s.prepared.lock().unwrap().as_ref().unwrap().commit,
             upstream
         );
+    }
+
+    #[test]
+    fn repository_names_have_safe_worker_file_stems() {
+        assert_eq!(safe_file_stem("acme/widgets"), "acme_2fwidgets");
+        assert_eq!(safe_file_stem("a.b"), "a_2eb");
+        assert_eq!(safe_file_stem("plain-name_1"), "plain-name_5f1");
     }
 }
