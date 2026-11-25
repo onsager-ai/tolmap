@@ -326,7 +326,7 @@ async fn stdio_tools_return_the_cli_report_bytes() {
     let target = cwd.join("target.toml");
     fs::write(
         &target,
-        "version = 1\n\n[target.owners]\nCart = [\"shop/cart.py\"]\nShop = [\"shop/**\"]\n\n[[target.forbid]]\nfrom = \"Cart\"\nto = \"Shop\"\nreason = \"Cart should not depend on shop internals.\"\n",
+        "version = 1\n\n[target.owners]\nCart = [\"shop/cart.py\"]\nCatalog = [\"shop/catalog.py\"]\n\n[[target.forbid]]\nfrom = \"Cart\"\nto = \"Catalog\"\nreason = \"Cart should not depend on catalog internals.\"\n",
     )
     .unwrap();
     let target = target.to_str().unwrap();
@@ -334,7 +334,16 @@ async fn stdio_tools_return_the_cli_report_bytes() {
         &cwd,
         &data,
         "check",
-        &[".", "--report-only", "--target", target],
+        &[
+            checkout,
+            "--base",
+            &base,
+            "--head",
+            &head,
+            "--report-only",
+            "--target",
+            target,
+        ],
     );
     assert!(
         expected.status.success(),
@@ -344,7 +353,7 @@ async fn stdio_tools_return_the_cli_report_bytes() {
     let report: Value = serde_json::from_slice(&expected.stdout).unwrap();
     assert_eq!(report["thresholds"]["source"], "report_only");
     assert_eq!(
-        report["target"]["violations_added"]
+        report["target"]["violations_standing"]
             .as_array()
             .unwrap()
             .len(),
@@ -356,7 +365,9 @@ async fn stdio_tools_return_the_cli_report_bytes() {
         &mut stdout,
         13,
         "tools/call",
-        json!({"name": "check", "arguments": {"checkout": ".", "target": target}}),
+        json!({"name": "check", "arguments": {
+            "checkout": checkout, "base": base, "head": head, "target": target,
+        }}),
     )
     .await;
     assert_eq!(response["isError"], false, "{response}");
