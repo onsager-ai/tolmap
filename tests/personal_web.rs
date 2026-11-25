@@ -131,6 +131,19 @@ async fn malformed_personal_map_query_returns_json_api_error() {
 }
 
 #[tokio::test]
+async fn malformed_personal_index_bodies_return_json_api_errors() {
+    let (_dir, app, _state) = setup();
+
+    for body in ["{", r#"{"provider_ids":"x"}"#] {
+        let (status, body) = request(&app, "POST", "/api/personal/index", body).await;
+        assert!(status.is_client_error(), "{status}: {body}");
+        let error: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(error["error"], "invalid_request");
+        assert!(!error["message"].as_str().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
 async fn catalogue_and_history_reread_cli_publications_and_repeated_commits() {
     let (dir, app, state) = setup();
     let cli = Store::open(&state.library.config.service.db_path).unwrap();

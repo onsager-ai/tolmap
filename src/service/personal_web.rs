@@ -1,6 +1,6 @@
 //! Personal browser adapter over the CLI library and the service router.
 use super::{
-    error::{ApiError, ApiQuery},
+    error::{ApiError, ApiJson, ApiQuery},
     jobs::{JobSnapshot, JobStatus},
     store::{JobRow, PersonalSnapshot, Repository},
 };
@@ -542,7 +542,7 @@ fn start(state: Arc<WebState>, repo: Repository, batch: &str) -> Result<String, 
 }
 async fn add(
     State(state): State<Arc<WebState>>,
-    Json(request): Json<BatchIndexRequest>,
+    ApiJson(request): ApiJson<BatchIndexRequest>,
 ) -> Result<(StatusCode, Json<BatchIndexResponse>), ApiError> {
     if request.provider_ids.is_empty() {
         return Err(ApiError::invalid_request("select at least one source"));
