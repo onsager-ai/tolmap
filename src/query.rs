@@ -529,7 +529,11 @@ pub fn write_with_data(
         let status = library.status(&repository)?;
         eprintln!(
             "{}: snapshot {} at {}; freshness={} dirty={}",
-            repository.name, selected.id, selected.commit, status["freshness"], status["dirty"]
+            repository.name,
+            selected.id,
+            selected.commit,
+            crate::personal::selected_freshness(&status, &selected.commit),
+            status["dirty"]
         );
         let mut loaded = Snapshot::load(&selected.map_path)?;
         loaded.identity.commit = Some(selected.commit);

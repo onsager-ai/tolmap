@@ -53,6 +53,20 @@ pub struct Library {
     pub store: Store,
 }
 
+pub(crate) fn selected_freshness(
+    status: &serde_json::Value,
+    selected_commit: &str,
+) -> &'static str {
+    if status["freshness"].as_str() == Some("missing") {
+        return "missing";
+    }
+    if status["checkout_commit"].as_str() == Some(selected_commit) {
+        "fresh"
+    } else {
+        "stale"
+    }
+}
+
 pub(crate) fn private(path: &Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
@@ -584,7 +598,11 @@ pub fn resolve_map(
     let status = library.status(&repo)?;
     eprintln!(
         "{}: snapshot {} at {}; freshness={} dirty={}",
-        repo.name, selected.id, selected.commit, status["freshness"], status["dirty"]
+        repo.name,
+        selected.id,
+        selected.commit,
+        selected_freshness(&status, &selected.commit),
+        status["dirty"]
     );
     Ok(selected.map_path)
 }
@@ -650,6 +668,19 @@ pub fn run_add(args: AddArgs, data: Option<&Path>) -> Result<()> {
 mod tests {
     use super::*;
     use crate::service::{config::ServeConfig, store::PersonalSnapshot};
+
+    #[test]
+    fn freshness_uses_the_selected_snapshot_commit() {
+        let status = json!({"checkout_commit": "current", "freshness": "fresh"});
+        assert_eq!(selected_freshness(&status, "current"), "fresh");
+        assert_eq!(selected_freshness(&status, "older"), "stale");
+    }
+
+    #[test]
+    fn freshness_preserves_missing_checkout_label() {
+        let status = json!({"checkout_commit": null, "freshness": "missing"});
+        assert_eq!(selected_freshness(&status, "older"), "missing");
+    }
 
     fn library_with_history() -> (tempfile::TempDir, Library, Repository) {
         let dir = tempfile::tempdir().unwrap();
