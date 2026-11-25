@@ -47,15 +47,13 @@ struct SnapshotIndex {
 type PersonalEvent = dyn Fn(&WorkerEvent) + Send + Sync;
 
 fn safe_file_stem(name: &str) -> String {
-    let mut stem = String::new();
-    for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() || byte == b'-' {
-            stem.push(byte as char);
-        } else {
-            stem.push_str(&format!("_{byte:02x}"));
-        }
+    name.replace(['/', '\\'], "_")
+}
+
+impl SnapshotIndex {
+    fn worker_repo(&self) -> String {
+        safe_file_stem(&self.name)
     }
-    stem
 }
 pub(crate) struct PersonalControl {
     probe: Arc<Probe>,
@@ -340,7 +338,7 @@ fn run_configured(
             path: dir.join("map.json"),
         });
     }
-    let file_stem = safe_file_stem(&s.name);
+    let file_stem = s.worker_repo();
     let spec = JobSpec {
         slug: s.slug.clone(),
         owner: s.owner.clone(),
@@ -735,9 +733,22 @@ mod tests {
     }
 
     #[test]
-    fn repository_names_have_safe_worker_file_stems() {
-        assert_eq!(safe_file_stem("acme/widgets"), "acme_2fwidgets");
-        assert_eq!(safe_file_stem("a.b"), "a_2eb");
-        assert_eq!(safe_file_stem("plain-name_1"), "plain-name_5f1");
+    fn worker_repo_preserves_labels_and_sanitizes_path_separators() {
+        let mut index = SnapshotIndex {
+            checkout: PathBuf::new(),
+            data: PathBuf::new(),
+            repository: "id".into(),
+            owner: "owner".into(),
+            name: "my_repo.js".into(),
+            slug: "owner/my_repo.js".into(),
+            prepared: Mutex::new(None),
+            job: Mutex::new(None),
+            attempt: Mutex::new(None),
+        };
+        assert_eq!(index.worker_repo(), "my_repo.js");
+        index.name = "acme/widgets".into();
+        assert_eq!(index.worker_repo(), "acme_widgets");
+        index.name = "acme\\widgets".into();
+        assert_eq!(index.worker_repo(), "acme_widgets");
     }
 }
