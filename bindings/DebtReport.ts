@@ -72,6 +72,10 @@ build_entry_measurement: boolean, build_entry_files: number, hidden_coupling_mea
  */
 hidden_coupling_test_pairs_excluded: number, 
 /**
+ * Pairs with a Storybook or other non-production endpoint are excluded.
+ */
+hidden_coupling_non_production_pairs_excluded: number, 
+/**
  * Pairs suppressed because at least one endpoint is generated.
  */
 hidden_coupling_generated_pairs_suppressed: number, hidden_coupling: Array<HiddenCoupling>, entry_files: number, isolated_files: number, };
