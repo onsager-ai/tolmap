@@ -39,6 +39,8 @@ pub(super) fn static_files<S: Clone + Send + Sync + 'static>(
         let index_html = static_dir.join("index.html");
         let serve_dir = ServeDir::new(static_dir).fallback(ServeFile::new(index_html));
         router = router
+            .route("/api", any(api_not_found))
+            .route("/api/", any(api_not_found))
             .route("/api/{*rest}", any(api_not_found))
             .fallback_service(serve_dir);
     }

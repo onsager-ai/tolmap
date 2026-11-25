@@ -148,6 +148,23 @@ async fn static_dir_set_api_404_is_never_html() {
         "expected ApiError::not_found's JSON shape: {body}"
     );
 
+    for path in ["/api", "/api/"] {
+        let (status, body) = get(state.clone(), path).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{path} must return the API 404 instead of falling through to the SPA"
+        );
+        assert!(
+            !body.contains("<!doctype html>") && !body.contains("<title>"),
+            "expected the API's JSON 404 for {path}, got what looks like index.html: {body}"
+        );
+        assert!(
+            body.contains("\"error\":\"not_found\""),
+            "expected ApiError::not_found's JSON shape for {path}: {body}"
+        );
+    }
+
     // A real /api/* route still works normally alongside the catch-all.
     let (status, body) = get(state, "/api/healthz").await;
     assert_eq!(status, StatusCode::OK);
