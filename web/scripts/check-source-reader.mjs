@@ -15,10 +15,16 @@ const results=[];
 const browserOrigin='http://127.0.0.1:8988';
 const contrast=(a,b)=>{const lum=s=>{const rgb=s.match(/[\d.]+/g).slice(0,3).map(Number).map(x=>{x/=255;return x<=.04045?x/12.92:((x+.055)/1.055)**2.4});return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};const [x,y]=[lum(a),lum(b)].sort((x,y)=>y-x);return(x+.05)/(y+.05);};
 async function markPersonalPage(page){
- await page.addInitScript(()=>{
-  const marker=document.createElement('meta');
-  marker.name='tolmap-personal';
-  document.documentElement.append(marker);
+ await page.route('**/*',async route=>{
+  const request=route.request();
+  if(!request.isNavigationRequest()||request.resourceType()!=='document'||new URL(request.url()).origin!==browserOrigin){
+   await route.fallback();
+   return;
+  }
+  const response=await route.fetch();
+  const html=(await response.text()).replace(/<head[^>]*>/i,head=>`${head}\n<meta name="tolmap-personal">`);
+  assert(html.includes('<meta name="tolmap-personal">'),'personal journey page must contain a head element');
+  await route.fulfill({response,body:html});
  });
 }
 async function inspectReaderContrast(page){
