@@ -201,6 +201,7 @@ impl Library {
         commit: Option<&str>,
         snapshot_id: Option<&str>,
     ) -> Result<PersonalSnapshot> {
+        ensure!(commit != Some(""), "commit selector must not be empty");
         let history = self.store.personal_history(&repo.id)?;
         let matches: Vec<_> = history
             .into_iter()
@@ -215,6 +216,16 @@ impl Library {
             repo.name,
             repo.name
         );
+        if commit.is_some() {
+            let commits: std::collections::BTreeSet<_> =
+                matches.iter().map(|s| s.commit.as_str()).collect();
+            if commits.len() > 1 {
+                bail!(
+                    "ambiguous commit prefix: {}",
+                    commits.into_iter().collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
         if snapshot_id.is_some() && matches.len() > 1 {
             bail!(
                 "ambiguous snapshot: {}",
@@ -622,6 +633,78 @@ pub fn run_add(args: AddArgs, data: Option<&Path>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::{config::ServeConfig, store::PersonalSnapshot};
+
+    fn library_with_history() -> (tempfile::TempDir, Library, Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ServeConfig {
+            db_path: dir.path().join("db"),
+            cache_dir: dir.path().join("cache"),
+            static_dir: None,
+            bind: "127.0.0.1:8787".parse().unwrap(),
+            ..ServeConfig::from_env()
+        };
+        let library = Library {
+            store: Store::open(&config.db_path).unwrap(),
+            config: ApplicationConfig {
+                data: dir.path().into(),
+                service: config,
+                retain_commits_per_repo: None,
+            },
+        };
+        let repository = repo("repo", "/repo");
+        library.store.register(&repository).unwrap();
+        for (id, commit) in [
+            ("older", "b".repeat(40)),
+            ("newer", "b".repeat(40)),
+            ("other-one", format!("{}1", "a".repeat(39))),
+            ("other-two", format!("{}2", "a".repeat(39))),
+        ] {
+            library.store.personal_begin(&repository.id, id).unwrap();
+            library
+                .store
+                .personal_finish(
+                    id,
+                    Ok(&PersonalSnapshot {
+                        id: id.into(),
+                        repository: repository.id.clone(),
+                        commit,
+                        map_path: dir.path().join(id),
+                        source_path: dir.path().join("source"),
+                        indexed_at: String::new(),
+                    }),
+                )
+                .unwrap();
+        }
+        (dir, library, repository)
+    }
+
+    #[test]
+    fn snapshot_commit_selectors_reject_empty_and_ambiguous_prefixes() {
+        let (_dir, library, repository) = library_with_history();
+        let empty = library.snapshot(&repository, Some(""), None).unwrap_err();
+        assert!(format!("{empty:#}").contains("commit selector must not be empty"));
+
+        let ambiguous = library.snapshot(&repository, Some("a"), None).unwrap_err();
+        let message = format!("{ambiguous:#}");
+        assert!(message.contains("ambiguous commit prefix"));
+        assert!(message.contains(&format!("{}1", "a".repeat(39))));
+        assert!(message.contains(&format!("{}2", "a".repeat(39))));
+    }
+
+    #[test]
+    fn snapshot_commit_selectors_keep_newest_same_commit_and_snapshot_id() {
+        let (_dir, library, repository) = library_with_history();
+        let prefix = library.snapshot(&repository, Some("bbb"), None).unwrap();
+        assert_eq!(prefix.id, "newer");
+        let full = library
+            .snapshot(&repository, Some(&"b".repeat(40)), None)
+            .unwrap();
+        assert_eq!(full.id, "newer");
+        let by_id = library.snapshot(&repository, None, Some("older")).unwrap();
+        assert_eq!(by_id.id, "older");
+    }
+
     fn repo(name: &str, path: &str) -> Repository {
         Repository {
             id: name.into(),
