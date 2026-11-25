@@ -631,6 +631,7 @@ async fn refresh(
     ))
 }
 fn read_job(state: &WebState, id: &str) -> Result<JobSnapshot, ApiError> {
+    let controls = state.controls.lock().unwrap();
     let row = state
         .library
         .store
@@ -639,9 +640,7 @@ fn read_job(state: &WebState, id: &str) -> Result<JobSnapshot, ApiError> {
         .ok_or_else(|| ApiError::not_found("job unavailable"))?;
     let mut job: JobSnapshot =
         serde_json::from_str(&row.snapshot_json).map_err(|e| ApiError::internal(e.to_string()))?;
-    if !matches!(job.status, JobStatus::Done | JobStatus::Failed)
-        && !state.controls.lock().unwrap().contains_key(id)
-    {
+    if !matches!(job.status, JobStatus::Done | JobStatus::Failed) && !controls.contains_key(id) {
         job.status = JobStatus::Failed;
         job.error = Some("Web process stopped; retry from the repository page.".into());
         job.error_code = Some("server_stopping".into());

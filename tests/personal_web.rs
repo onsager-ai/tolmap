@@ -440,6 +440,66 @@ async fn interrupted_web_jobs_remain_readable_in_batch_and_cancel_is_safe() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+async fn completed_web_job_without_control_is_read_as_done() {
+    let (_dir, app, state) = setup();
+    let job_id = uuid::Uuid::new_v4();
+    let mut job = jobs::JobSnapshot {
+        job_id,
+        slug: "personal-web/batch".into(),
+        commit: None,
+        status: jobs::JobStatus::Indexing,
+        stage: "Parsing files".into(),
+        queue_position: None,
+        started_at: "2026-11-16T00:00:00Z".into(),
+        finished_at: None,
+        error: None,
+        error_code: None,
+        progress: None,
+        eta: None,
+        eta_start_s: None,
+        elapsed_s: 0.,
+        stages: vec![],
+        map_ready: false,
+    };
+    state
+        .library
+        .store
+        .insert_job(&tolmap::service::store::JobRow {
+            job_id: job_id.to_string(),
+            slug: "personal-web/batch".into(),
+            commit: String::new(),
+            spec_json: "{}".into(),
+            class: 0,
+            status: "running".into(),
+            attempt: 0,
+            epoch: 0,
+            lease_holder: None,
+            lease_deadline_ms: None,
+            queue_order: 0,
+            snapshot_json: serde_json::to_string(&job).unwrap(),
+        })
+        .unwrap();
+
+    job.status = jobs::JobStatus::Done;
+    job.finished_at = Some("2026-11-16T00:01:00Z".into());
+    state
+        .library
+        .store
+        .finish_job(
+            &job_id.to_string(),
+            "done",
+            &serde_json::to_string(&job).unwrap(),
+        )
+        .unwrap();
+
+    let (status, body) = request(&app, "GET", &format!("/api/jobs/{job_id}"), "").await;
+    assert_eq!(status, StatusCode::OK);
+    let job: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(job["status"], "done");
+    assert_eq!(job["error_code"], serde_json::Value::Null);
+}
 #[tokio::test]
 async fn scans_are_sorted_skip_symlinks_and_mark_registered_checkouts() {
     let (dir, app, state) = setup();
