@@ -15,9 +15,32 @@ use serde_json::{json, Value};
 
 use crate::{run_query, Cli, Command};
 
-const TOOLS: [&str; 8] = [
-    "status", "repos", "overview", "where", "deps", "route", "debt", "check",
+const TOOLS: [&str; 9] = [
+    "status",
+    "repos",
+    "overview",
+    "where",
+    "deps",
+    "route",
+    "debt",
+    "check",
+    "debt_series",
 ];
+
+fn command_path(tool: &str) -> Vec<&str> {
+    match tool {
+        "debt_series" => vec!["debt", "series"],
+        _ => vec![tool],
+    }
+}
+
+fn query_command<'a>(cli: &'a clap::Command, path: &[&str]) -> &'a clap::Command {
+    path.iter().fold(cli, |command, &name| {
+        command
+            .find_subcommand(name)
+            .expect("MCP tool has a CLI command")
+    })
+}
 
 struct Queries {
     data: Option<PathBuf>,
@@ -48,15 +71,18 @@ impl ServerHandler for Queries {
         let tools = TOOLS
             .iter()
             .map(|&name| {
-                let command = cli
-                    .find_subcommand(name)
-                    .expect("MCP tool has a CLI command");
+                let command = query_command(&cli, &command_path(name));
                 let description = match name {
                     "check" => {
                         "Report the structural impact of a change with no pass/fail thresholds."
                             .into()
                     }
                     "debt" => "Report structural debt in a stored map.".into(),
+                    "debt_series" => {
+                        "Measure structural debt across commits. Each point can require a cold map \
+                         build, so use short ranges."
+                            .into()
+                    }
                     _ => command
                         .get_about()
                         .expect("query has help text")
@@ -152,14 +178,11 @@ fn schema(command: &clap::Command) -> JsonObject {
 
 fn parse(tool: &str, mut arguments: JsonObject) -> Result<Command> {
     let cli = Cli::command();
-    let command = cli
-        .find_subcommand(tool)
-        .expect("MCP tool has a CLI command");
-    let mut argv = vec![
-        "tolmap".to_owned(),
-        tool.to_owned(),
-        "--format=json".to_owned(),
-    ];
+    let path = command_path(tool);
+    let command = query_command(&cli, &path);
+    let mut argv = vec!["tolmap".to_owned()];
+    argv.extend(path.into_iter().map(str::to_owned));
+    argv.push("--format=json".into());
     if tool == "check" {
         argv.push("--report-only".into());
     }

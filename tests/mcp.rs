@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tolmap::service::store::{PersonalSnapshot, Repository, Store};
 
 const TOLMAP: &str = env!("CARGO_BIN_EXE_tolmap");
@@ -41,12 +41,13 @@ async fn request(
     response["result"].clone()
 }
 
-fn cli(cwd: &Path, data: &Path, tool: &str, args: &[&str]) -> std::process::Output {
+fn cli(cwd: &Path, data: &Path, command: &[&str], args: &[&str]) -> std::process::Output {
     std::process::Command::new(TOLMAP)
         .current_dir(cwd)
         .arg("--data")
         .arg(data)
-        .args([tool, "--format=json"])
+        .args(command)
+        .arg("--format=json")
         .args(args)
         .output()
         .unwrap()
@@ -94,16 +95,11 @@ fn check_fixture(cwd: &Path) -> (PathBuf, String, String) {
     (repo, base, head)
 }
 
-#[tokio::test]
-async fn stdio_tools_return_the_cli_report_bytes() {
-    let temp = tempfile::tempdir().unwrap();
-    let cwd = temp.path().canonicalize().unwrap();
-    let data = cwd.join("data");
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/tolmap.json");
+async fn start_mcp(cwd: &Path, data: &Path) -> (Child, ChildStdin, BufReader<ChildStdout>) {
     let mut child = Command::new(TOLMAP)
-        .current_dir(&cwd)
+        .current_dir(cwd)
         .arg("--data")
-        .arg(&data)
+        .arg(data)
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -131,6 +127,16 @@ async fn stdio_tools_return_the_cli_report_bytes() {
         json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
     )
     .await;
+    (child, stdin, stdout)
+}
+
+#[tokio::test]
+async fn stdio_tools_return_the_cli_report_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().canonicalize().unwrap();
+    let data = cwd.join("data");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/tolmap.json");
+    let (mut child, mut stdin, mut stdout) = start_mcp(&cwd, &data).await;
 
     let listing = request(&mut stdin, &mut stdout, 2, "tools/list", json!({})).await;
     let tools = listing["tools"].as_array().unwrap();
@@ -139,7 +145,17 @@ async fn stdio_tools_return_the_cli_report_bytes() {
             .iter()
             .map(|tool| tool["name"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["status", "repos", "overview", "where", "deps", "route", "debt", "check"]
+        [
+            "status",
+            "repos",
+            "overview",
+            "where",
+            "deps",
+            "route",
+            "debt",
+            "check",
+            "debt_series"
+        ]
     );
     assert_eq!(tools[3]["inputSchema"]["required"], json!(["target"]));
     assert_eq!(
@@ -157,6 +173,12 @@ async fn stdio_tools_return_the_cli_report_bytes() {
         tools[7]["inputSchema"]["properties"]["target"]["type"],
         "string"
     );
+    let series = &tools[8]["inputSchema"];
+    assert_eq!(series["required"], json!(["checkout", "range"]));
+    assert_eq!(series["properties"]["checkout"]["type"], "string");
+    assert_eq!(series["properties"]["range"]["type"], "string");
+    assert_eq!(series["properties"]["first-parent"]["type"], "boolean");
+    assert!(series["properties"].get("format").is_none());
     assert!(tools
         .iter()
         .all(|tool| tool["annotations"]["readOnlyHint"] == true));
@@ -230,7 +252,7 @@ async fn stdio_tools_return_the_cli_report_bytes() {
         ),
     ];
     for (index, (tool, arguments, args)) in cases.into_iter().enumerate() {
-        let expected = cli(&cwd, &data, tool, args);
+        let expected = cli(&cwd, &data, &[tool], args);
         assert!(
             expected.status.success(),
             "{tool}: {}",
@@ -254,7 +276,7 @@ async fn stdio_tools_return_the_cli_report_bytes() {
         );
     }
 
-    let expected = cli(&cwd, &data, "check", &[".", "--report-only"]);
+    let expected = cli(&cwd, &data, &["check"], &[".", "--report-only"]);
     assert_eq!(expected.status.code(), Some(2));
     let response = request(
         &mut stdin,
@@ -277,7 +299,7 @@ async fn stdio_tools_return_the_cli_report_bytes() {
     let expected = cli(
         &cwd,
         &data,
-        "check",
+        &["check"],
         &[
             checkout,
             "--base",
@@ -333,7 +355,7 @@ async fn stdio_tools_return_the_cli_report_bytes() {
     let expected = cli(
         &cwd,
         &data,
-        "check",
+        &["check"],
         &[
             checkout,
             "--base",
@@ -383,4 +405,43 @@ async fn stdio_tools_return_the_cli_report_bytes() {
         .unwrap()
         .unwrap()
         .success());
+}
+
+#[tokio::test]
+async fn debt_series_returns_the_cli_report_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().canonicalize().unwrap();
+    let data = cwd.join("data");
+    let (repo, base, head) = check_fixture(&cwd);
+    let checkout = repo.to_str().unwrap();
+    let range = format!("{base}..{head}");
+    let expected = cli(
+        &cwd,
+        &data,
+        &["debt", "series"],
+        &[checkout, "--range", &range, "--first-parent"],
+    );
+    assert!(
+        expected.status.success(),
+        "debt series: {}",
+        String::from_utf8_lossy(&expected.stderr)
+    );
+
+    let (_child, mut stdin, mut stdout) = start_mcp(&cwd, &data).await;
+    let response = request(
+        &mut stdin,
+        &mut stdout,
+        2,
+        "tools/call",
+        json!({"name": "debt_series", "arguments": {
+            "checkout": checkout, "range": range, "first-parent": true,
+        }}),
+    )
+    .await;
+    assert_eq!(response["isError"], false, "{response}");
+    assert_eq!(response["content"][0]["type"], "text");
+    assert_eq!(
+        response["content"][0]["text"].as_str().unwrap().as_bytes(),
+        expected.stdout
+    );
 }

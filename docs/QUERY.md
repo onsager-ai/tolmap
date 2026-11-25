@@ -77,9 +77,16 @@ different library. Tool arguments use the CLI flag names without `--` (for
 example `base-map`), and repeatable flags take arrays.
 
 The server exposes `status`, `repos`, `overview`, `where`, `deps`, `route`,
-`debt` and advisory `check` (`--report-only`). Successful calls return the CLI's
-JSON output as MCP text, including the original row limits and truncation fields.
+`debt`, `debt_series` and advisory `check` (`--report-only`). Successful calls
+return the CLI's JSON output as MCP text, including the original row limits and
+truncation fields.
 Use the CLI to register repositories or refresh snapshots.
+
+`debt_series` measures structural debt across commits using the range start's
+district partition. Pass `checkout` (a path inside the Git repository) and
+`range` (`A..B`, including `A` as the baseline). Set `first-parent` to `true`
+to follow only first parents. Each point can require a cold map build, so use
+short ranges.
 
 ## Versioned JSON
 
