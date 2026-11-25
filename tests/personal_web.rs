@@ -18,9 +18,12 @@ use tolmap::{
 use tower::ServiceExt;
 
 fn setup() -> (tempfile::TempDir, Router, Arc<WebState>) {
-    setup_with_queue_limit(16)
+    setup_with_limits(None, 16)
 }
-fn setup_with_queue_limit(max_queued_jobs: usize) -> (tempfile::TempDir, Router, Arc<WebState>) {
+fn setup_with_limits(
+    max_concurrent_jobs: Option<usize>,
+    max_queued_jobs: usize,
+) -> (tempfile::TempDir, Router, Arc<WebState>) {
     let dir = tempfile::tempdir().unwrap();
     let mut config = ServeConfig {
         db_path: dir.path().join("db"),
@@ -29,6 +32,9 @@ fn setup_with_queue_limit(max_queued_jobs: usize) -> (tempfile::TempDir, Router,
         bind: "127.0.0.1:8787".parse().unwrap(),
         ..ServeConfig::from_env()
     };
+    if let Some(max_concurrent_jobs) = max_concurrent_jobs {
+        config.limits.max_concurrent_jobs = max_concurrent_jobs;
+    }
     config.limits.max_queued_jobs = max_queued_jobs;
     std::fs::create_dir(dir.path().join("assets")).unwrap();
     std::fs::write(dir.path().join("assets/index.html"), "<!doctype html><html><head><title>tolmap</title></head><body><div id=\"root\"></div></body></html>").unwrap();
@@ -565,7 +571,7 @@ async fn invalid_batch_source_registers_nothing() {
 
 #[tokio::test]
 async fn duplicate_checkout_inputs_use_one_queue_slot_and_register_once() {
-    let (dir, app, state) = setup_with_queue_limit(0);
+    let (dir, app, state) = setup_with_limits(Some(1), 0);
     let checkout = dir.path().join("duplicate");
     std::fs::create_dir(&checkout).unwrap();
     assert!(std::process::Command::new("git")
@@ -576,7 +582,8 @@ async fn duplicate_checkout_inputs_use_one_queue_slot_and_register_once() {
         .status
         .success());
     let source = checkout.to_str().unwrap();
-    let body = serde_json::json!({"provider_ids":[source, source]}).to_string();
+    let alternate_spelling = format!("{source}/.");
+    let body = serde_json::json!({"provider_ids":[source, source, alternate_spelling]}).to_string();
 
     let (status, body) = request(&app, "POST", "/api/personal/index", &body).await;
 
