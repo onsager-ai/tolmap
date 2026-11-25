@@ -559,6 +559,30 @@ async fn invalid_batch_source_registers_nothing() {
     assert!(state.library.store.repositories().unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn duplicate_checkout_inputs_use_one_queue_slot_and_register_once() {
+    let (dir, app, state) = setup();
+    state.library.config.service.limits.max_queued_jobs = 0;
+    let checkout = dir.path().join("duplicate");
+    std::fs::create_dir(&checkout).unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("init")
+        .arg(&checkout)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let source = checkout.to_str().unwrap();
+    let body = serde_json::json!({"provider_ids":[source, source]}).to_string();
+
+    let (status, body) = request(&app, "POST", "/api/personal/index", &body).await;
+
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let response: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(response["jobs"].as_array().unwrap().len(), 1);
+    assert_eq!(state.library.store.repositories().unwrap().len(), 1);
+}
+
 /// Run the actual web binary so its executor launches `tolmap worker`, rather
 /// than launching this integration-test executable as a worker.
 #[test]

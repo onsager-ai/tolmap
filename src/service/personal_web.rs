@@ -541,22 +541,23 @@ async fn add(
         return Err(ApiError::invalid_request("select at least one source"));
     }
     let limits = &state.library.config.service.limits;
-    if state.controls.lock().unwrap().len() + request.provider_ids.len()
-        > limits.max_concurrent_jobs + limits.max_queued_jobs
-    {
-        return Err(ApiError::busy("mapping queue is full"));
-    }
     let validation_state = state.clone();
     let inputs = request.provider_ids.clone();
-    tokio::task::spawn_blocking(move || {
+    let sources = tokio::task::spawn_blocking(move || {
+        let mut sources = std::collections::HashSet::new();
         for input in inputs {
-            validation_state.library.validate_source(&input)?;
+            sources.insert(validation_state.library.validate_source(&input)?);
         }
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>(sources)
     })
     .await
     .map_err(|e| ApiError::internal(e.to_string()))?
     .map_err(invalid)?;
+    if state.controls.lock().unwrap().len() + sources.len()
+        > limits.max_concurrent_jobs + limits.max_queued_jobs
+    {
+        return Err(ApiError::busy("mapping queue is full"));
+    }
     let batch_id = Uuid::new_v4().to_string();
     let mut jobs = Vec::new();
     let mut sources = std::collections::HashSet::new();
