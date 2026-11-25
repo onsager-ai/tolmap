@@ -526,6 +526,31 @@ async fn active_refresh_status_overrides_unreadable_saved_maps() {
     )
     .unwrap();
 
+    let lock_path = state
+        .library
+        .config
+        .service
+        .db_path
+        .with_extension("locks")
+        .join("repo-id.lock");
+    let ready = dir.path().join("writer-ready");
+    let mut writer = std::process::Command::new("flock")
+        .arg("-x")
+        .arg(lock_path)
+        .arg("sh")
+        .arg("-c")
+        .arg("touch \"$1\"; sleep 5")
+        .arg("sh")
+        .arg(&ready)
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if ready.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(ready.exists(), "repository writer did not acquire its lock");
     cli.personal_begin("repo-id", "refresh").unwrap();
     let (_, body) = request(&app, "GET", "/api/maps", "").await;
     let catalogue: serde_json::Value = serde_json::from_str(&body).unwrap();
@@ -550,6 +575,8 @@ async fn active_refresh_status_overrides_unreadable_saved_maps() {
         history["status"]["message"],
         "One or more saved maps are unreadable; other snapshots remain available."
     );
+    writer.kill().unwrap();
+    writer.wait().unwrap();
 }
 
 #[tokio::test]
