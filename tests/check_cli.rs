@@ -575,6 +575,90 @@ fn a_new_file_is_placed_by_its_imports_and_one_without_imports_is_unplaced() {
 }
 
 #[test]
+fn a_new_rust_file_with_only_standard_library_imports_is_unplaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    write(
+        &repo,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &repo,
+        "src/lib.rs",
+        "pub mod service;\npub mod util;\npub use service::run;\n",
+    );
+    write(
+        &repo,
+        "src/service.rs",
+        "pub fn run() -> u32 { crate::util::value() }\n",
+    );
+    write(&repo, "src/util.rs", "pub fn value() -> u32 { 1 }\n");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "base crate"]);
+    let base = git(&repo, &["rev-parse", "HEAD"]);
+
+    write(
+        &repo,
+        "src/lib.rs",
+        "pub mod service;\npub mod util;\npub mod clock;\npub use service::run;\n",
+    );
+    write(
+        &repo,
+        "src/clock.rs",
+        "use std::time::Instant;\nuse core::fmt;\n",
+    );
+
+    let run = check(
+        &repo,
+        &[
+            "--base",
+            &base,
+            "--report-only",
+            "--format",
+            "json",
+            "--pkg",
+            ".",
+            "--lang",
+            "rs",
+        ],
+    );
+    expect_code(&run, 0);
+    let report = run.json();
+    let clock = file_entry(&report, "src/clock.rs");
+    assert_eq!(clock["status"], "added", "{report:#}");
+    assert_eq!(clock["placed"], false, "{report:#}");
+    assert!(clock["district"].is_null(), "{report:#}");
+    assert_eq!(
+        report["unplaced_files"],
+        serde_json::json!(["src/clock.rs"]),
+        "{report:#}"
+    );
+
+    let run = check(
+        &repo,
+        &[
+            "--base",
+            &base,
+            "--report-only",
+            "--pkg",
+            ".",
+            "--lang",
+            "rs",
+        ],
+    );
+    expect_code(&run, 0);
+    assert!(run
+        .stdout
+        .lines()
+        .next()
+        .unwrap()
+        .ends_with("; 1 new file(s) unplaced"));
+}
+
+#[test]
 fn a_rename_is_followed_and_a_deletion_is_handled() {
     let (_dir, repo, base) = fixture();
     // catalog/supplier.py becomes vendor.py; its two importers follow.
