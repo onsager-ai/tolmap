@@ -180,10 +180,22 @@ fn pinned_report(
     ))
 }
 
+fn parse_range(range: &str) -> Result<(&str, &str), CheckError> {
+    let malformed = || CheckError::Input("--range must be two git refs in A..B form".to_owned());
+    let (base, head) = range.split_once("..").ok_or_else(malformed)?;
+    if base.is_empty()
+        || head.is_empty()
+        || range.contains("...")
+        || base.contains("..")
+        || head.contains("..")
+    {
+        return Err(malformed());
+    }
+    Ok((base, head))
+}
+
 fn build(repo: &Path, range: &str, first_parent: bool) -> Result<DebtSeries, CheckError> {
-    let (base, head) = range
-        .split_once("..")
-        .ok_or_else(|| CheckError::Input("--range must be two git refs in A..B form".to_owned()))?;
+    let (base, head) = parse_range(range)?;
     let repo = check::repository_root(repo, true)?;
     let base = check::resolve_commit(&repo, base, "--range start")?;
     let head = check::resolve_commit(&repo, head, "--range end")?;
@@ -281,6 +293,17 @@ mod tests {
     use std::process::Command;
 
     use super::*;
+
+    #[test]
+    fn range_parser_rejects_malformed_ranges_before_git_resolution() {
+        let error = "--range must be two git refs in A..B form";
+        for range in ["..HEAD", "HEAD..", "HEAD...main", "A..B..C"] {
+            assert!(
+                matches!(parse_range(range), Err(CheckError::Input(message)) if message == error)
+            );
+        }
+        assert_eq!(parse_range("A..B").unwrap(), ("A", "B"));
+    }
 
     fn git(repo: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
