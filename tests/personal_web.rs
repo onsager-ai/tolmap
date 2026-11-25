@@ -18,14 +18,24 @@ use tolmap::{
 use tower::ServiceExt;
 
 fn setup() -> (tempfile::TempDir, Router, Arc<WebState>) {
+    setup_with_limits(None, 16)
+}
+fn setup_with_limits(
+    max_concurrent_jobs: Option<usize>,
+    max_queued_jobs: usize,
+) -> (tempfile::TempDir, Router, Arc<WebState>) {
     let dir = tempfile::tempdir().unwrap();
-    let config = ServeConfig {
+    let mut config = ServeConfig {
         db_path: dir.path().join("db"),
         cache_dir: dir.path().join("cache"),
         static_dir: Some(dir.path().join("assets")),
         bind: "127.0.0.1:8787".parse().unwrap(),
         ..ServeConfig::from_env()
     };
+    if let Some(max_concurrent_jobs) = max_concurrent_jobs {
+        config.limits.max_concurrent_jobs = max_concurrent_jobs;
+    }
+    config.limits.max_queued_jobs = max_queued_jobs;
     std::fs::create_dir(dir.path().join("assets")).unwrap();
     std::fs::write(dir.path().join("assets/index.html"), "<!doctype html><html><head><title>tolmap</title></head><body><div id=\"root\"></div></body></html>").unwrap();
     std::fs::create_dir(dir.path().join("repositories")).unwrap();
@@ -557,6 +567,30 @@ async fn invalid_batch_source_registers_nothing() {
         StatusCode::BAD_REQUEST
     );
     assert!(state.library.store.repositories().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn duplicate_checkout_inputs_use_one_queue_slot_and_register_once() {
+    let (dir, app, state) = setup_with_limits(Some(1), 0);
+    let checkout = dir.path().join("duplicate");
+    std::fs::create_dir(&checkout).unwrap();
+    assert!(std::process::Command::new("git")
+        .arg("init")
+        .arg(&checkout)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let source = checkout.to_str().unwrap();
+    let alternate_spelling = format!("{source}/.");
+    let body = serde_json::json!({"provider_ids":[source, source, alternate_spelling]}).to_string();
+
+    let (status, body) = request(&app, "POST", "/api/personal/index", &body).await;
+
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let response: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(response["jobs"].as_array().unwrap().len(), 1);
+    assert_eq!(state.library.store.repositories().unwrap().len(), 1);
 }
 
 /// Run the actual web binary so its executor launches `tolmap worker`, rather
