@@ -193,7 +193,7 @@ async function checkPersonalRetryErrors(){
  await page.route(`**/api/jobs/${jobId}`,route=>route.fulfill({json:snapshot}));
  await page.route(`**/api/jobs/${jobId}/retry`,route=>route.fulfill({status:409,json:{error:'retry_rejected',message:'The server rejected this retry.'}}));
  await page.goto(`${browserOrigin}/new?job=${jobId}`);
- await page.locator('[data-job-state="failed"]').waitFor();
+ await page.locator('[data-job-failure][data-job-failure-code="clone_failed"]').waitFor();
  await page.getByRole('button',{name:'Try again'}).click();
  await page.locator('[data-retry-error]').getByText('The server rejected this retry.').waitFor();
  assert.equal(await page.getByText("Refresh couldn't be started. Open the repository page to retry.").count(),0,'personal retry should display the server error message');
