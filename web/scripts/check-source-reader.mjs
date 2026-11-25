@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import {createHash} from 'node:crypto';
 import {cameraBoxes,settleCamera} from './camera-settle.mjs';
 import assert from 'node:assert/strict';
+import {setTimeout as delay} from 'node:timers/promises';
 const fixture=JSON.parse(fs.readFileSync('../.local-reader/fixture.json'));
 const runEvent=process.env.GITHUB_EVENT_PATH?JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH,'utf8')):{};
 const sourceSha=runEvent.pull_request?.head?.sha??process.env.GITHUB_SHA??null;
@@ -124,7 +125,52 @@ async function copySelection(page, expected){
  await page.keyboard.press('Control+c');
  await page.waitForFunction(async value=>(await navigator.clipboard.readText())===value,expected);
 }
+async function checkDelayedJobPollingStopsAfterDone(){
+ const page = await browser.newPage();
+ const jobId = 'delayed-polling';
+ const snapshot = {
+  job_id: jobId,
+  // A slug without an owner keeps the progress view mounted after Done.
+  slug: 'reader',
+  status: 'queued',
+  stage: 'queued',
+  queue_position: 1,
+  started_at: new Date().toISOString(),
+  finished_at: null,
+  commit: null,
+  error: null,
+  error_code: null,
+  progress: null,
+  eta: null,
+  eta_start_s: null,
+  elapsed_s: 0,
+  stages: [],
+  map_ready: false,
+ };
+ let requests = 0;
+ let inFlight = 0;
+ let maxInFlight = 0;
+ await page.route(`**/api/jobs/${jobId}`, async route => {
+  const request = ++requests;
+  maxInFlight = Math.max(maxInFlight, ++inFlight);
+  try {
+   if (request === 1) await delay(2500);
+   await route.fulfill({json: request === 1 ? snapshot : {
+    ...snapshot, status: 'done', stage: 'done', queue_position: null, finished_at: new Date().toISOString(),
+   }});
+  } finally {
+   inFlight--;
+  }
+ });
+ await page.goto(`${browserOrigin}/new?job=${jobId}`);
+ await page.locator('[data-job-state="done"]').waitFor();
+ assert.equal(maxInFlight, 1, 'job polls overlapped while the first response was delayed');
+ await delay(2500);
+ assert.equal(requests, 2, 'job polling continued after the done response');
+ await page.close();
+}
 try{
+await checkDelayedJobPollingStopsAfterDone();
 for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]])for(const colorScheme of ['light','dark']){
  // UX §9: tablets use the desktop map shell even when the reader is full width.
  const phoneShell=width<=600||(height<=500&&width>height),touch=width<=1100||phoneShell;
