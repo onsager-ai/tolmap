@@ -111,6 +111,26 @@ fn publish(store: &Store, root: &Path, id: &str) {
         .unwrap();
 }
 #[tokio::test]
+async fn malformed_personal_map_query_returns_json_api_error() {
+    let (dir, app, state) = setup();
+    let cli = Store::open(&state.library.config.service.db_path).unwrap();
+    repo(&cli, &dir.path().join("missing-checkout"));
+    publish(&cli, dir.path(), "first");
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        "/api/maps/snapshot/first/symbols?district=abc",
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let error: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(error["error"], "invalid_request");
+    assert!(!error["message"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn catalogue_and_history_reread_cli_publications_and_repeated_commits() {
     let (dir, app, state) = setup();
     let cli = Store::open(&state.library.config.service.db_path).unwrap();

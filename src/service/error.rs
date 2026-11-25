@@ -2,10 +2,31 @@
 //! non-2xx HTTP response, and every failed job's `error` field, is
 //! `{"error": "<machine code>", "message": "<human text>"}`.
 
-use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Serialize;
+use axum::{
+    extract::{rejection::QueryRejection, FromRequestParts, Query},
+    http::{header, request::Parts, HeaderValue, StatusCode},
+};
+use serde::{de::DeserializeOwned, Serialize};
+
+/// Query parameters whose extraction failures use the service's JSON error shape.
+pub struct ApiQuery<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for ApiQuery<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        Query::<T>::from_request_parts(parts, state)
+            .await
+            .map(|Query(value)| Self(value))
+            .map_err(|rejection: QueryRejection| ApiError::invalid_request(rejection.body_text()))
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ErrorBody {
