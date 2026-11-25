@@ -230,6 +230,11 @@ async fn catalogue(
         let unreadable = read.as_ref().err().map(|e| RepositoryStatus::Failed {
             message: format!("Saved map is unreadable: {}", e.body.message),
         });
+        let status = repository_status(&state, &repo)?;
+        let status = match status {
+            Some(active @ RepositoryStatus::Indexing { .. }) => Some(active),
+            status => unreadable.or(status),
+        };
         let doc = read.ok().flatten();
         entries.push(CatalogueEntry {
             slug: format!("personal/{}", repo.id),
@@ -247,7 +252,7 @@ async fn catalogue(
             latest_snapshot_id: latest.map(|s| s.id.clone()),
             indexed_at: latest.map(|s| s.indexed_at.clone()),
             snapshot_count: Some(snapshots.len() as u64),
-            status: unreadable.or(repository_status(&state, &repo)?),
+            status,
         });
     }
     entries.sort_by(|a, b| {
@@ -285,17 +290,19 @@ async fn history(
             })
         })
         .collect::<Result<_, ApiError>>()?;
+    let status = repository_status(&state, &repo)?;
+    let status = match status {
+        Some(active @ RepositoryStatus::Indexing { .. }) => Some(active),
+        _status if unreadable => Some(RepositoryStatus::Failed {
+            message: "One or more saved maps are unreadable; other snapshots remain available."
+                .into(),
+        }),
+        status => status,
+    };
     Ok(Json(RepositoryHistory {
         repository_id: id.clone(),
         name: repo.name.clone(),
-        status: if unreadable {
-            Some(RepositoryStatus::Failed {
-                message: "One or more saved maps are unreadable; other snapshots remain available."
-                    .into(),
-            })
-        } else {
-            repository_status(&state, &repo)?
-        },
+        status,
         current_core_revision: None,
         actions: RepositoryActions {
             reopen,

@@ -512,6 +512,46 @@ async fn unreadable_maps_do_not_hide_catalogue_or_other_history() {
         assert_eq!(history["snapshots"][1]["reopen"]["path"], "/snapshot/good");
     }
 }
+
+#[tokio::test]
+async fn active_refresh_status_overrides_unreadable_saved_maps() {
+    let (dir, app, state) = setup();
+    let cli = Store::open(&state.library.config.service.db_path).unwrap();
+    repo(&cli, &dir.path().join("missing"));
+    publish(&cli, dir.path(), "broken");
+    std::fs::write(
+        dir.path()
+            .join("repositories/repo-id/snapshots/broken/map.json"),
+        "invalid JSON",
+    )
+    .unwrap();
+
+    cli.personal_begin("repo-id", "refresh").unwrap();
+    let (_, body) = request(&app, "GET", "/api/maps", "").await;
+    let catalogue: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(catalogue[0]["status"]["kind"], "indexing");
+    let (_, body) = request(&app, "GET", "/api/repositories/repo-id/history", "").await;
+    let history: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(history["status"]["kind"], "indexing");
+
+    cli.personal_finish("refresh", Err("indexing failed"))
+        .unwrap();
+    let (_, body) = request(&app, "GET", "/api/maps", "").await;
+    let catalogue: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(catalogue[0]["status"]["kind"], "failed");
+    assert!(catalogue[0]["status"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("Saved map is unreadable:"));
+    let (_, body) = request(&app, "GET", "/api/repositories/repo-id/history", "").await;
+    let history: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(history["status"]["kind"], "failed");
+    assert_eq!(
+        history["status"]["message"],
+        "One or more saved maps are unreadable; other snapshots remain available."
+    );
+}
+
 #[tokio::test]
 async fn browser_requests_reject_rebinding_hosts_and_simple_mutations() {
     let (_dir, app, _state) = setup();
