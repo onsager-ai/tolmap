@@ -129,6 +129,7 @@ pub struct DebtThresholds {
     pub misplaced_generated_files_excluded: usize,
     pub unreached_generated_files_excluded: usize,
     pub hidden_coupling_test_pairs_excluded: usize,
+    pub hidden_coupling_non_production_pairs_excluded: usize,
     pub hidden_coupling_generated_pairs_suppressed: usize,
     pub hidden_coupling_min_count: usize,
     pub hidden_coupling_min_weight: f64,
@@ -1222,6 +1223,7 @@ fn findings_with_unplaced(
             misplaced_generated_files_excluded,
             unreached_generated_files_excluded,
             hidden_coupling_test_pairs_excluded,
+            hidden_coupling_non_production_pairs_excluded,
             hidden_coupling_generated_pairs_suppressed,
             hidden_coupling_min_count: COCHANGE_MIN_COUNT,
             hidden_coupling_min_weight: SHARE_COCHANGE,
@@ -2854,6 +2856,12 @@ mod tests {
         assert!(!is_test_path("web/button.stories.tsx"));
         assert!(!is_entry_path("web/storybook/fixtures.ts"));
         assert_eq!(report.hidden_coupling_non_production_pairs_excluded, 1);
+        assert_eq!(
+            report
+                .thresholds
+                .hidden_coupling_non_production_pairs_excluded,
+            1
+        );
         assert_eq!(report.hidden_coupling.len(), 1);
         assert_eq!(report.hidden_coupling[0].left, "src/model.rs");
         assert_eq!(report.hidden_coupling[0].right, "src/query.rs");
