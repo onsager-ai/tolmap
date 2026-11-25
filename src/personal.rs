@@ -584,9 +584,15 @@ pub fn scan(folder: &Path) -> Result<Vec<PathBuf>> {
         if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
             return Ok(());
         }
-        if path.join(".git").exists() {
-            results.push(checkout(path)?);
-            return Ok(());
+        match std::fs::symlink_metadata(path.join(".git")) {
+            Ok(_) => {
+                if let Ok(root) = checkout(path) {
+                    results.push(root);
+                    return Ok(());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
         let mut entries = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
         entries.sort_by_key(|e| e.file_name());
@@ -815,6 +821,39 @@ mod tests {
             "other/app"
         );
     }
+
+    #[test]
+    fn scan_skips_unresolvable_git_files_and_keeps_sorted_valid_checkouts() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let valid = root.join("a-valid");
+        std::fs::create_dir(&valid).unwrap();
+        git(&valid, &["init", "--quiet"]).unwrap();
+
+        let empty_git = root.join("b-empty-git");
+        std::fs::create_dir(&empty_git).unwrap();
+        std::fs::write(empty_git.join(".git"), "").unwrap();
+        let nested_valid = empty_git.join("nested-valid");
+        std::fs::create_dir(&nested_valid).unwrap();
+        git(&nested_valid, &["init", "--quiet"]).unwrap();
+
+        let missing_gitdir = root.join("c-missing-gitdir");
+        std::fs::create_dir(&missing_gitdir).unwrap();
+        std::fs::write(
+            missing_gitdir.join(".git"),
+            "gitdir: /path/that/does/not/exist\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            scan(root).unwrap(),
+            vec![
+                valid.canonicalize().unwrap(),
+                nested_valid.canonicalize().unwrap()
+            ]
+        );
+    }
+
     #[test]
     fn process_locks_are_busy_and_release_on_drop() {
         let temp = tempfile::tempdir().unwrap();
