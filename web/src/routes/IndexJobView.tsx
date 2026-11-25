@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useJobProgress } from "@/api/useJobProgress";
-import { postIndexJob, cancelJob, ApiRequestError } from "@/api/client";
+import { postIndexJob, cancelJob, retryPersonalJob, ApiRequestError } from "@/api/client";
 import type { JobSnapshot } from "@/types";
 import type { ProgressValue } from "@bindings/ProgressValue";
 import type { StageId } from "@bindings/StageId";
@@ -533,9 +533,7 @@ function FailurePage({ job, slug, narrow }: { job: JobSnapshot; slug: string | u
     setRetryError(null);
     try {
       if (personalWeb) {
-        const response = await fetch(`/api/jobs/${encodeURIComponent(job.job_id)}/retry`, { method: "POST", headers: { "Content-Type": "application/json" } });
-        if (!response.ok) throw new Error("Refresh couldn't be started. Open the repository page to retry.");
-        const result = await response.json() as import("@bindings/BatchIndexResponse").BatchIndexResponse;
+        const result = await retryPersonalJob(job.job_id);
         await navigate({ to: "/new", search: { job: result.jobs[0].job_id }, replace: true });
         return;
       }

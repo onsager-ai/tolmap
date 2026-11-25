@@ -135,6 +135,16 @@ export function cancelJob(jobId: string): Promise<JobSnapshot> {
   return request<JobSnapshot>(`/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" } });
 }
 
+/** POST /api/jobs/{id}/retry in personal web mode. Use the shared request
+ * handling so callers receive the service message, error code and
+ * Retry-After value on failure. */
+export function retryPersonalJob(jobId: string): Promise<import("@bindings/BatchIndexResponse").BatchIndexResponse> {
+  return request<import("@bindings/BatchIndexResponse").BatchIndexResponse>(`/jobs/${encodeURIComponent(jobId)}/retry`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export function getServiceCatalogue(): Promise<ServiceCatalogueEntry[]> {
   return request<ServiceCatalogueEntry[]>("/maps");
 }
