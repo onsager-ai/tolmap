@@ -39,7 +39,7 @@ absent on older maps and graph-only builds, which means unknown, not zero.
 
 ## Personal shared store and application configuration
 
-The CLI and browser share `service::store::Store`: a repository registry, durable attempts and UUID snapshots. History is retained until removal or an explicit retention setting. Existing data is never discovered or imported; re-add repositories to start new history. Files outside the selected personal root are left alone.
+The CLI and browser share `service::store::Store`: a repository registry, durable attempts and UUID snapshots. Personal history has no automatic retention limit: it remains until removal. Retention settings are validated, but do not prune history. Existing data is never discovered or imported; re-add repositories to start new history. Files outside the selected personal root are left alone.
 
 The shared CLI/web loader reads a flat TOML table at
 `$XDG_CONFIG_HOME/tolmap/config.toml` or `$HOME/.config/tolmap/config.toml`:
@@ -64,7 +64,8 @@ Settings use the service vocabulary, with lowercase keys corresponding to
 and `retain_commits_per_repo`. Credentials do not belong in this file. Precedence
 is flag > environment > application file > default. A higher-priority root
 beats lower-priority `db_path`/`cache_dir`; at equal priority individual paths
-win. Personal history has no default retention limit.
+win. Personal history has no automatic retention limit. `retain_commits_per_repo`
+is validated when configured, but does not prune personal history.
 Settings are read at invocation/startup. Repository intent remains in
 `.tolmap/config.toml`; it cannot relocate the application database.
 
