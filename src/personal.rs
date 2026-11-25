@@ -655,9 +655,10 @@ mod tests {
         let repository = repo("repo", "/repo");
         library.store.register(&repository).unwrap();
         for (id, commit) in [
-            ("older", format!("{}{}", "a".repeat(39), "1")),
-            ("newer", format!("{}{}", "a".repeat(39), "1")),
-            ("other", format!("{}{}", "a".repeat(39), "2")),
+            ("older", "b".repeat(40)),
+            ("newer", "b".repeat(40)),
+            ("other-one", format!("{}1", "a".repeat(39))),
+            ("other-two", format!("{}2", "a".repeat(39))),
         ] {
             library.store.personal_begin(&repository.id, id).unwrap();
             library
@@ -694,12 +695,10 @@ mod tests {
     #[test]
     fn snapshot_commit_selectors_keep_newest_same_commit_and_snapshot_id() {
         let (_dir, library, repository) = library_with_history();
-        let prefix = library
-            .snapshot(&repository, Some("a".repeat(40).get(..39).unwrap()), None)
-            .unwrap();
+        let prefix = library.snapshot(&repository, Some("bbb"), None).unwrap();
         assert_eq!(prefix.id, "newer");
         let full = library
-            .snapshot(&repository, Some(&format!("{}1", "a".repeat(39))), None)
+            .snapshot(&repository, Some(&"b".repeat(40)), None)
             .unwrap();
         assert_eq!(full.id, "newer");
         let by_id = library.snapshot(&repository, None, Some("older")).unwrap();
