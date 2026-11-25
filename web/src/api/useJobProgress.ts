@@ -19,7 +19,8 @@ const SSE_RECONNECT_DELAYS_MS = [500, 1500, 4000];
 /** Drives the progress view: GET the current status once (so a job that's
  * already done/failed resolves immediately, e.g. after a page refresh),
  * then GET /api/jobs/{id}/events over SSE for live updates, falling back to
- * polling GET /api/jobs/{id} every 2s once SSE reconnection is exhausted
+ * polling GET /api/jobs/{id} with 2s between a response and the next request
+ * once SSE reconnection is exhausted
  * (milestone brief, "A progress view"; docs/API.md's SSE section).
  *
  * Reconnect, per docs/API.md: "A client that reconnects after a drop should
@@ -42,7 +43,8 @@ export function useJobProgress(jobId: string | undefined) {
     if (!jobId) return;
     const id = jobId; // narrowed once, closed over below instead of `jobId`
     let cancelled = false;
-    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    let polling = false;
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let es: EventSource | undefined;
     let sseAttempts = 0;
@@ -64,28 +66,29 @@ export function useJobProgress(jobId: string | undefined) {
     }
 
     function stopPolling() {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = undefined;
-      }
+      polling = false;
+      clearTimeout(pollTimer);
+      pollTimer = undefined;
     }
 
     function startPolling() {
       stopReconnecting();
-      if (pollTimer) return;
+      if (polling) return;
+      polling = true;
       setConnection("poll");
       const tick = async () => {
+        pollTimer = undefined;
         try {
           const s = await getJob(id);
-          if (cancelled) return;
+          if (!polling) return;
           applySnapshot(s);
           if (isTerminal(s)) stopPolling();
         } catch (err) {
-          if (!cancelled) setFatalError(err instanceof Error ? err.message : String(err));
+          if (polling) setFatalError(err instanceof Error ? err.message : String(err));
         }
+        if (polling) pollTimer = setTimeout(tick, 2000);
       };
       void tick();
-      pollTimer = setInterval(tick, 2000);
     }
 
     function stopReconnecting() {
