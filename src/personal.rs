@@ -68,7 +68,17 @@ pub(crate) fn private(path: &Path) -> Result<()> {
 
 /// Nonblocking locks live outside removable repo directories: deleting a locked
 /// inode would let another process lock a different inode for the same repo.
-fn lock(path: &Path) -> Result<std::fs::File> {
+struct LockGuard(std::fs::File);
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // SAFETY: the guard owns this open file description, and LOCK_UN only
+        // releases its flock; the descriptor remains valid until this drop ends.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn lock(path: &Path) -> Result<LockGuard> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -81,7 +91,7 @@ fn lock(path: &Path) -> Result<std::fs::File> {
         try_lock(&file),
         "repository or job capacity is busy; retry after the current operation"
     );
-    Ok(file)
+    Ok(LockGuard(file))
 }
 fn try_lock(file: &std::fs::File) -> bool {
     use std::os::fd::AsRawFd;
@@ -178,7 +188,7 @@ impl Library {
     fn repo_lock_path(&self, repo: &Repository) -> PathBuf {
         self.locks().join(format!("{}.lock", repo.id))
     }
-    fn repo_lock(&self, repo: &Repository) -> Result<std::fs::File> {
+    fn repo_lock(&self, repo: &Repository) -> Result<LockGuard> {
         lock(&self.repo_lock_path(repo))
     }
     fn writer_interrupted(&self, repo: &Repository) -> bool {
@@ -187,7 +197,7 @@ impl Library {
             Err(error) => error.kind() == std::io::ErrorKind::NotFound,
         }
     }
-    fn slot(&self) -> Result<std::fs::File> {
+    fn slot(&self) -> Result<LockGuard> {
         for slot in 0..self.config.service.limits.max_concurrent_jobs {
             if let Ok(guard) = lock(&self.locks().join(format!("slot-{slot}.lock"))) {
                 return Ok(guard);
@@ -863,6 +873,19 @@ mod tests {
         drop(guard);
         assert!(lock(&path).is_ok());
     }
+
+    #[test]
+    fn process_lock_releases_while_a_duplicate_descriptor_is_open() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("lock");
+        let guard = lock(&path).unwrap();
+        let duplicate = guard.0.try_clone().unwrap();
+
+        drop(guard);
+
+        assert!(lock(&path).is_ok());
+        drop(duplicate);
+    }
 }
 
 /// Resolve a check's base through the same registry as read-only queries.
@@ -954,7 +977,7 @@ mod check_resolution_tests {
 pub struct SourceView {
     pub path: PathBuf,
     source: PathBuf,
-    _guard: std::fs::File,
+    _guard: LockGuard,
 }
 impl SourceView {
     pub fn resolve(
