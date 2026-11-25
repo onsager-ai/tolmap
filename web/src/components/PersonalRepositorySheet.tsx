@@ -39,7 +39,7 @@ export function PersonalRepositorySheet({ onClose }: { onClose: () => void }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Repositories could not be added."); }
     finally { setPending(false); }
   }
-  return <dialog ref={dialog} data-personal-add className="add-repository-dialog" aria-labelledby="personal-add-title" onCancel={onClose}>
+  return <dialog ref={dialog} data-personal-add className="add-repository-dialog" aria-labelledby="personal-add-title" onCancel={event => { if (pending) event.preventDefault(); else onClose(); }}>
     <div className="flex items-center justify-between gap-3"><h2 id="personal-add-title" className="text-section-title">Add repository</h2><button type="button" aria-label="Close add repository" className="repo-control repo-control-icon" disabled={pending} onClick={onClose}>×</button></div>
     <label className="text-small">Local checkout, parent folder, or GitHub repository<input autoFocus className="offered-search mt-2 w-full" value={source} disabled={pending} placeholder="/path/to/checkout or owner/repository" onChange={event => { setSource(event.target.value); setRoots(undefined); }} /></label>
     <p className="text-meta text-[var(--dim)]">Only committed source is indexed. Original checkouts stay on disk when removed from tolmap. GitHub is tried anonymously first, then with your existing git credential helper or gh login. Configure private access outside tolmap.</p>
