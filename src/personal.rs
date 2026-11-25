@@ -439,7 +439,7 @@ impl Library {
             let snapshot = crate::personal_index::personal_refresh(
                 checkout,
                 self.repo_dir(repo),
-                &repo.id,
+                repo,
                 &args,
                 &selected,
                 &self.config.service,
