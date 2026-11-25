@@ -5,13 +5,34 @@
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum::{
-    extract::{rejection::QueryRejection, FromRequestParts, Query},
+    extract::{
+        rejection::{JsonRejection, QueryRejection},
+        FromRequest, FromRequestParts, Query,
+    },
     http::{header, request::Parts, HeaderValue, StatusCode},
 };
 use serde::{de::DeserializeOwned, Serialize};
 
 /// Query parameters whose extraction failures use the service's JSON error shape.
 pub struct ApiQuery<T>(pub T);
+
+/// JSON bodies whose extraction failures use the service's JSON error shape.
+pub struct ApiJson<T>(pub T);
+
+impl<T, S> FromRequest<S> for ApiJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, Self::Rejection> {
+        Json::<T>::from_request(req, state)
+            .await
+            .map(|Json(value)| Self(value))
+            .map_err(|rejection: JsonRejection| ApiError::invalid_request(rejection.body_text()))
+    }
+}
 
 impl<T, S> FromRequestParts<S> for ApiQuery<T>
 where
