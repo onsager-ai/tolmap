@@ -267,11 +267,13 @@ text, JSON and lens TOML;
 all outputs identify the selections (lens TOML uses a leading comment, which is
 valid TOML and ignored by `tolmap lens check`). Filtered JSON keeps the normal
 DebtReport version and lower-bound evidence, with additive `unfiltered_counts`,
-`filtered_counts` and `filters` fields. DebtReport is now v10 (v8 added the
+`filtered_counts` and `filters` fields. DebtReport is now v11 (v8 added the
 optional `pinned` object below; v9 added `pinned.cutoffs_from_base`,
 `god_files[].raw_fanin` and `descendant_fanin_measured`; v10 excludes every
 hidden-coupling pair with a generated file at either endpoint, including pairs
-from legacy maps without a static generator link): `cycle_evidence` is
+from legacy maps without a static generator link; v11 excludes hidden-coupling
+pairs with a Storybook (non-production) endpoint and adds
+`hidden_coupling_non_production_pairs_excluded`): `cycle_evidence` is
 `compact` by default for CLI text/JSON. Compact cycles retain member districts,
 `cross_edges`, one `route` and its `closing_edges`, package names and measurement
 flags. Their `package_edges`, `mutual_pairs` and `cut` arrays are empty;
