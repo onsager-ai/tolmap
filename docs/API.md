@@ -241,7 +241,19 @@ to suggest is not written, and a message on stderr says why (a map with no
 Exit 0, or 2 when the map cannot be read or a file cannot be written.
 `data/lenses/flask-suggest/` holds the suggestions for the pinned flask fixture.
 
-### `tolmap debt --map <map.json> [--format text|json|lens] [--kind <kind>...] [--path <prefix-or-glob>] [--district <name>] [--top <n>] [--cycle-evidence compact|full] [--partition-from <base-map.json>]`
+### `tolmap debt (--map <map.json> | [--repo <name>] [--commit <ref>] [--snapshot <id>]) [--format text|json|lens] [--kind <kind>...] [--path <prefix-or-glob>] [--district <name>] [--top <n>] [--cycle-evidence compact|full] [--partition-from <base-map.json>]`
+
+Supply either `--map` with a map JSON file, or the stored-snapshot selectors.
+`--map` conflicts with each of `--repo`, `--commit` and `--snapshot`; the three
+stored-snapshot selectors can be combined. With no `--map` or `--repo`, Tolmap
+selects the registered local repository containing the current directory (the
+most deeply nested match). Otherwise `--repo` selects an exact registered name,
+or a unique repository ID or final name component. Without `--commit` or
+`--snapshot`, the newest complete snapshot is used. `--commit` matches a commit
+prefix; `--snapshot` matches an exact snapshot ID. When combined, both selectors
+must match the same snapshot. Missing matches and ambiguous commit prefixes or
+snapshot IDs are errors. Stored selection also prints the snapshot, freshness
+and dirty state to stderr.
 
 `--kind` is repeatable and accepts `cycle`, `misplaced`, `god`, `hotspot`,
 `unreached`, `undeclared-rust` or `hidden-coupling` (the CLI spellings of the
@@ -254,7 +266,11 @@ text, JSON and lens TOML;
 all outputs identify the selections (lens TOML uses a leading comment, which is
 valid TOML and ignored by `tolmap lens check`). Filtered JSON keeps the normal
 DebtReport version and lower-bound evidence, with additive `unfiltered_counts`,
-`filtered_counts` and `filters` fields. DebtReport is now v9 (v8 added the optional `pinned` object below; v9 adds `pinned.cutoffs_from_base`, `god_files[].raw_fanin` and `descendant_fanin_measured`): `cycle_evidence` is
+`filtered_counts` and `filters` fields. DebtReport is now v10 (v8 added the
+optional `pinned` object below; v9 added `pinned.cutoffs_from_base`,
+`god_files[].raw_fanin` and `descendant_fanin_measured`; v10 excludes every
+hidden-coupling pair with a generated file at either endpoint, including pairs
+from legacy maps without a static generator link): `cycle_evidence` is
 `compact` by default for CLI text/JSON. Compact cycles retain member districts,
 `cross_edges`, one `route` and its `closing_edges`, package names and measurement
 flags. Their `package_edges`, `mutual_pairs` and `cut` arrays are empty;
