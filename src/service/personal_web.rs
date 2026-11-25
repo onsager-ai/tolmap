@@ -1,6 +1,6 @@
 //! Personal browser adapter over the CLI library and the service router.
 use super::{
-    error::ApiError,
+    error::{ApiError, ApiQuery},
     jobs::{JobSnapshot, JobStatus},
     store::{JobRow, PersonalSnapshot, Repository},
 };
@@ -11,7 +11,7 @@ use crate::{
 };
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{header, StatusCode},
     middleware,
     response::{IntoResponse, Response},
@@ -340,7 +340,7 @@ struct ScanQuery {
 }
 async fn scan(
     State(state): State<Arc<WebState>>,
-    Query(query): Query<ScanQuery>,
+    ApiQuery(query): ApiQuery<ScanQuery>,
 ) -> Result<Json<Vec<OfferedRepository>>, ApiError> {
     tokio::task::spawn_blocking(move || {
         let repos = state.library.store.repositories()?;
@@ -783,7 +783,7 @@ fn latest_source(state: &WebState, repository: &str) -> Result<PathBuf, ApiError
 async fn compare(
     State(state): State<Arc<WebState>>,
     Path((owner, id)): Path<(String, String)>,
-    Query(query): Query<crate::comparison::CompareQuery>,
+    ApiQuery(query): ApiQuery<crate::comparison::CompareQuery>,
 ) -> Result<Response, ApiError> {
     let base = snapshot_at(&state, &owner, &id, &query.base)?;
     let source = latest_source(&state, &base.repository)?;
@@ -807,7 +807,7 @@ async fn compare(
 async fn compare_lenses(
     State(state): State<Arc<WebState>>,
     Path((owner, id)): Path<(String, String)>,
-    Query(query): Query<super::lens::LensCompareQuery>,
+    ApiQuery(query): ApiQuery<super::lens::LensCompareQuery>,
 ) -> Result<Response, ApiError> {
     let base = snapshot_at(&state, &owner, &id, &query.base)?;
     let head = snapshot_at(&state, &owner, &id, &query.head)?;
@@ -828,7 +828,7 @@ struct DebtCompareQuery {
 async fn compare_debt(
     State(state): State<Arc<WebState>>,
     Path((owner, id)): Path<(String, String)>,
-    Query(query): Query<DebtCompareQuery>,
+    ApiQuery(query): ApiQuery<DebtCompareQuery>,
 ) -> Result<Response, ApiError> {
     let base = snapshot_at(&state, &owner, &id, &query.base)?;
     let head = snapshot_at(&state, &owner, &id, &query.head)?;
@@ -851,7 +851,7 @@ async fn compare_debt(
 async fn map(
     State(state): State<Arc<WebState>>,
     Path((owner, id)): Path<(String, String)>,
-    Query(query): Query<MapQuery>,
+    ApiQuery(query): ApiQuery<MapQuery>,
 ) -> Result<Response, ApiError> {
     let snapshot = resolve_snapshot(&state, &owner, &id, query.commit.as_deref())?;
     artifact(snapshot.map_path, Some(&snapshot.commit)).await
@@ -890,7 +890,7 @@ async fn artifact(path: PathBuf, commit: Option<&str>) -> Result<Response, ApiEr
 async fn map_detail(
     State(state): State<Arc<WebState>>,
     Path((owner, id, rest)): Path<(String, String, String)>,
-    Query(query): Query<MapQuery>,
+    ApiQuery(query): ApiQuery<MapQuery>,
 ) -> Result<Response, ApiError> {
     let snapshot = resolve_snapshot(&state, &owner, &id, query.commit.as_deref())?;
     let repository = format!("{owner}/{id}");
