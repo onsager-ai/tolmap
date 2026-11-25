@@ -478,5 +478,33 @@ tolmap check --repo engine --commit <retained-base-sha> --head <available-head-s
 Without `--head`, local registrations compare the working tree including dirty
 files. Remote registrations require explicit retained source and `--head`.
 Explicit path and `--base-map` inputs remain available. Thresholds and exit
-meanings are unchanged. Comparison HTTP endpoints are retired; protected
-embedders can still call the comparison library with their opt-in access policy.
+meanings are unchanged.
+
+## Personal browser comparison
+
+The personal web service exposes these comparison routes. `{owner}/{id}` is
+`snapshot/{snapshot_id}` or `personal/{repository_id}`.
+
+| Route | Query parameters | Result |
+|---|---|---|
+| `GET /api/compare/{owner}/{id}` | Required: `base`, `head`; optional: `max_districts`, `max_dq`, `report_only` | A `Comparison` for the base and head commits. |
+| `GET /api/compare/{owner}/{id}/lenses` | Required: `base`, `head`, `lens`; optional: `other` | A `LensComparison` between commits, or between `lens` and `other` at one commit. |
+| `GET /api/compare/{owner}/{id}/debt` | Required: `base`, `head` | A `LensComparison` for the built-in debt lens between commits. |
+
+`base` and `head` must be full commit IDs. The main comparison resolves `base`
+to an exact retained snapshot with `snapshot_at`, then resolves both commit IDs
+in the clone returned by `latest_source` (the newest retained snapshot's clone).
+It uses the retained base map; the head must be present in that clone, but need
+not have its own retained map snapshot. Lens and debt comparison resolve both
+commits to exact retained snapshots with `snapshot_at` and use those snapshots'
+maps. No newer or nearest snapshot is substituted. Missing comparison data
+returns 404 `comparison_unavailable`.
+
+Errors returned by the handlers use the JSON shape
+`{"error":"<code>","message":"<human text>"}`. Invalid or malformed query
+parameters rejected during query parsing return 400 `invalid_request` in this
+shape (#413, #415). Invalid commit IDs return 400 `comparison_input`; other
+errors carry their handler's status and error code.
+
+These routes belong to the personal web service; the hosted service does not
+register them.
