@@ -127,20 +127,20 @@ impl ApplicationConfig {
             service.scip_install = v == "sandbox";
         }
         if let Some(v) = setting("clone_cache_bytes") {
-            service.limits.clone_cache_bytes = v.parse()?;
+            service.limits.clone_cache_bytes = v.parse().context("clone_cache_bytes")?;
         }
         if let Some(v) = setting("max_concurrent_jobs") {
-            service.limits.max_concurrent_jobs = v.parse()?;
+            service.limits.max_concurrent_jobs = v.parse().context("max_concurrent_jobs")?;
         }
         anyhow::ensure!(
             service.limits.max_concurrent_jobs > 0,
             "max_concurrent_jobs must be positive"
         );
         if let Some(v) = setting("max_queued_jobs") {
-            service.limits.max_queued_jobs = v.parse()?;
+            service.limits.max_queued_jobs = v.parse().context("max_queued_jobs")?;
         }
         let retain_commits_per_repo = setting("retain_commits_per_repo")
-            .map(|v| v.parse())
+            .map(|v| v.parse().context("retain_commits_per_repo"))
             .transpose()?;
         Ok(Self {
             data,
@@ -198,5 +198,38 @@ mod tests {
         assert_eq!(c.service.cache_dir, Path::new("/flag/cache"));
         let c = ApplicationConfig::from_settings(None, &file, |_| None, None, None).unwrap();
         assert_eq!(c.service.db_path, Path::new("/file-db"));
+    }
+
+    #[test]
+    fn malformed_numeric_settings_name_the_setting_in_file_and_environment() {
+        for (key, value) in [
+            ("clone_cache_bytes", "invalid"),
+            ("max_concurrent_jobs", "invalid"),
+            ("max_queued_jobs", "invalid"),
+            ("retain_commits_per_repo", "invalid"),
+        ] {
+            let file: toml::Table = format!("{key}='{value}'").parse().unwrap();
+            let error = ApplicationConfig::from_settings(
+                None,
+                &file,
+                |_| None,
+                Some(Path::new("/home/fixture")),
+                None,
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains(key));
+
+            let env_key = format!("TOLMAP_{}", key.to_ascii_uppercase());
+            let env = |candidate: &str| (candidate == env_key).then(|| value.to_string());
+            let error = ApplicationConfig::from_settings(
+                None,
+                &toml::Table::new(),
+                env,
+                Some(Path::new("/home/fixture")),
+                None,
+            )
+            .unwrap_err();
+            assert!(format!("{error:#}").contains(key));
+        }
     }
 }
