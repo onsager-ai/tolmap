@@ -585,13 +585,21 @@ fn a_new_rust_file_with_only_standard_library_imports_is_unplaced() {
         "Cargo.toml",
         "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
-    write(&repo, "src/lib.rs", "pub mod service;\n");
+    write(
+        &repo,
+        "src/lib.rs",
+        "pub mod service;\npub fn run() { service::run(); }\n",
+    );
     write(&repo, "src/service.rs", "pub fn run() {}\n");
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "base crate"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
 
-    write(&repo, "src/lib.rs", "pub mod service;\npub mod clock;\n");
+    write(
+        &repo,
+        "src/lib.rs",
+        "pub mod service;\npub mod clock;\npub fn run() { service::run(); }\n",
+    );
     write(
         &repo,
         "src/clock.rs",
