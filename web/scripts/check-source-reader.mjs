@@ -172,6 +172,14 @@ async function checkDelayedJobPollingStopsAfterDone(){
 async function checkPersonalRetryErrors(){
  const page=await browser.newPage();
  const jobId='personal-retry-error';
+ // FailurePage selects the personal retry endpoint from this marker. Set it
+ // before the application bundle reads host.ts so the routed retry responses
+ // below exercise the personal job flow.
+ await page.addInitScript(()=>{
+  const marker=document.createElement('meta');
+  marker.name='tolmap-personal';
+  document.documentElement.append(marker);
+ });
  const snapshot={job_id:jobId,slug:'owner/repository',status:'failed',stage:'clone',queue_position:null,started_at:new Date().toISOString(),finished_at:new Date().toISOString(),commit:null,error:'The repository could not be downloaded.',error_code:'clone_failed',progress:null,eta:null,eta_start_s:null,elapsed_s:1,stages:[],map_ready:false};
  await page.route(`**/api/jobs/${jobId}`,route=>route.fulfill({json:snapshot}));
  await page.route(`**/api/jobs/${jobId}/retry`,route=>route.fulfill({status:409,json:{error:'retry_rejected',message:'The server rejected this retry.'}}));
