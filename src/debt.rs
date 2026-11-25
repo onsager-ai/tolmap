@@ -3166,7 +3166,7 @@ mod tests {
         .unwrap();
         let report = findings(&map);
         assert_eq!(report.hidden_coupling_test_pairs_excluded, 1);
-        assert!(render_text(&report).contains("1 test pairs excluded"));
+        assert!(render_text(&report).contains("1 test pairs and 0 non-production pairs excluded"));
         assert_eq!(
             report
                 .hidden_coupling
