@@ -3,7 +3,7 @@
 `tolmap check` tells you what a change does to the map. It reports two numbers: how many districts the change crosses, and how much it changes modularity when the base partition is held fixed. It also lists the cross-district edges behind those numbers and compares the change spread with the base history. It is meant to run in CI, and in the tools that orchestrate and verify agent work (Ostrom, Duhem), so its contract is its exit code and its versioned JSON. This document is that contract. Issue #170 is the plan it implements; HANDOFF.md item 2 is why it exists.
 
 ```
-tolmap check [<checkout> | --repo <name> [--commit <ref> | --snapshot <id>]]
+tolmap check [<checkout> | --repo <name> [--commit <ref>] [--snapshot <id>]]
              [--base <ref>] [--head <ref>] [--base-map <map.json>]
              [--all-sources | --pkg PATH --lang LANG ...]
              [--target <lens.toml>] [--max-districts N] [--max-dq X | --report-only]
