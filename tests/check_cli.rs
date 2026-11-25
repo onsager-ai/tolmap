@@ -588,9 +588,14 @@ fn a_new_rust_file_with_only_standard_library_imports_is_unplaced() {
     write(
         &repo,
         "src/lib.rs",
-        "pub mod service;\npub fn run() { service::run(); }\n",
+        "pub mod service;\npub mod util;\npub use service::run;\n",
     );
-    write(&repo, "src/service.rs", "pub fn run() {}\n");
+    write(
+        &repo,
+        "src/service.rs",
+        "pub fn run() -> u32 { crate::util::value() }\n",
+    );
+    write(&repo, "src/util.rs", "pub fn value() -> u32 { 1 }\n");
     git(&repo, &["add", "."]);
     git(&repo, &["commit", "-qm", "base crate"]);
     let base = git(&repo, &["rev-parse", "HEAD"]);
@@ -598,7 +603,7 @@ fn a_new_rust_file_with_only_standard_library_imports_is_unplaced() {
     write(
         &repo,
         "src/lib.rs",
-        "pub mod service;\npub mod clock;\npub fn run() { service::run(); }\n",
+        "pub mod service;\npub mod util;\npub mod clock;\npub use service::run;\n",
     );
     write(
         &repo,
