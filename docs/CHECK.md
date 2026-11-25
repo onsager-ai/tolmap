@@ -3,26 +3,54 @@
 `tolmap check` tells you what a change does to the map. It reports two numbers: how many districts the change crosses, and how much it changes modularity when the base partition is held fixed. It also lists the cross-district edges behind those numbers and compares the change spread with the base history. It is meant to run in CI, and in the tools that orchestrate and verify agent work (Ostrom, Duhem), so its contract is its exit code and its versioned JSON. This document is that contract. Issue #170 is the plan it implements; HANDOFF.md item 2 is why it exists.
 
 ```
-tolmap check <repo> --base <ref> [--head <ref>] [--base-map <map.json>]
+tolmap check [<checkout> | --repo <name> [--commit <ref>] [--snapshot <id>]]
+             [--base <ref>] [--head <ref>] [--base-map <map.json>]
              [--all-sources | --pkg PATH --lang LANG ...]
              [--target <lens.toml>] [--max-districts N] [--max-dq X | --report-only]
              [--format text|json]
 ```
 
-For a registered GitHub repository, `--repo OWNER/NAME` selects its stored snapshot
-and retained source, not the clone/worktree in the current directory. Supply
-`--head <retained-commit>` for that workflow. To check local changes from a clone
-or worktree, use `tolmap check . --base <commit> --report-only` and omit `--repo`;
-the missing-head error includes the selected snapshot's exact base commit.
+Choose exactly one input form:
+
+- **Local checkout:** `tolmap check <path> --base <ref> [--head <ref>]` uses
+  the Git repository containing the path.
+  With no `--head`, the head is the working tree, including staged, unstaged and
+  untracked, non-ignored files. For example, `tolmap check . --base HEAD~1` checks
+  the current checkout's changes against its previous commit.
+- **Registered repository:** `tolmap check --repo <name> [--commit <ref> | --snapshot <id>]`
+  selects a repository from the personal library. `--commit` or `--snapshot`
+  selects its stored base snapshot; without either, the latest snapshot is used.
+  For example, `tolmap check --repo engine --commit <base-sha> --head <head-sha>`
+  checks retained source from that registration. `--base`, if also given, must
+  agree with the selected snapshot. `--head` is required for remote registrations;
+  a local registration may omit it to compare its working tree, including dirty
+  files.
+
+Without a positional checkout or `--base-map`, `check` resolves a registered
+local repository containing the current directory; pass `--repo` to select a
+registration explicitly. If none contains it, repository resolution fails. A
+`--base-map` can be used with a positional checkout or, without one, against the
+current directory; it requires `--base`. The CLI declares conflicts between
+`--repo` and a positional checkout (`src/main.rs`, `Check` args),
+`--commit`/`--snapshot` and `--base-map`, `--base-map` and `--repo`,
+`--all-sources` and `--pkg`/`--lang`, and `--report-only` and threshold flags.
+Resolution additionally rejects a checkout with `--repo`, `--commit` or
+`--snapshot`, and rejects `--base-map` with any of those selectors
+(`src/personal.rs`, `resolve_check`). These are usage errors (exit 2). A
+missing-head error for a remote registration reports the selected snapshot's
+exact base commit.
 
 ## Flags
 
 | flag | meaning |
 |---|---|
-| `<repo>` | any path inside the git repository; the check runs on its top level |
-| `--base <ref>` | the commit the change is measured against. Its map supplies the districts. Any git revision that names a commit |
-| `--head <ref>` | the changed commit. Omitted, head is the working tree: staged, unstaged and untracked (not ignored) files are all included |
-| `--base-map <map.json>` | a stored map of `--base`, used as the base partition instead of building one. See "The base map" below |
+| `[<checkout>]` | local form: any path inside the git repository; the check runs at its top level. Conflicts with `--repo`, `--commit` and `--snapshot` |
+| `--repo <name>` | registered form: select a repository in the personal library. Conflicts with a positional checkout |
+| `--commit <ref>` | registered form: select the stored snapshot by commit. Conflicts with `--base-map`; can be combined with `--snapshot`. If `--base` is also given, they must agree |
+| `--snapshot <id>` | registered form: select the stored snapshot by id. Conflicts with `--base-map`; can be combined with `--commit`. If `--base` is also given, they must agree |
+| `--base <ref>` | local form: the commit the change is measured against; its map supplies the districts. Any git revision that names a commit. For a registration, it must agree with the selected snapshot |
+| `--head <ref>` | the changed commit. For a local checkout, omission means working tree: staged, unstaged and untracked (not ignored) files are included. Remote registrations require it; local registrations default to their working tree |
+| `--base-map <map.json>` | a stored map of `--base`, used as the base partition instead of building one. Requires `--base`; conflicts with `--repo`, `--commit` or `--snapshot`. Without a positional checkout, it uses the current directory. See "The base map" below |
 | `--all-sources` | select sources using the same file-count/share floor as `build --all-sources`, on base; conflicts with `--pkg`/`--lang` |
 | `--pkg PATH`, `--lang LANG` | build-style source selection (`py`, `go`, `rs`, `ts`). Repeat both equally and pair positionally. With one flag, detect the omitted language or root on base |
 | `--target <lens.toml>` | compare architecture distance and violations using the same target lens on base and head |
@@ -30,6 +58,9 @@ the missing-head error includes the selected snapshot's exact base commit.
 | `--max-dq X` | fail (exit 1) when modularity drops by more than `X`, that is when `delta_q < -X`. `X` is a number ≥ 0 |
 | `--report-only` | apply no threshold: report, and exit 0 whatever the numbers. Cannot be combined with `--max-districts` or `--max-dq` (exit 2) |
 | `--format text\|json` | `text` (the default) or `json` on stdout. Progress and timings go to stderr |
+
+With neither a checkout nor `--base-map`, the current directory is matched to the
+most specific registered local checkout.
 
 ## Target architecture
 
