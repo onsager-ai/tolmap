@@ -18,14 +18,18 @@ use tolmap::{
 use tower::ServiceExt;
 
 fn setup() -> (tempfile::TempDir, Router, Arc<WebState>) {
+    setup_with_queue_limit(16)
+}
+fn setup_with_queue_limit(max_queued_jobs: usize) -> (tempfile::TempDir, Router, Arc<WebState>) {
     let dir = tempfile::tempdir().unwrap();
-    let config = ServeConfig {
+    let mut config = ServeConfig {
         db_path: dir.path().join("db"),
         cache_dir: dir.path().join("cache"),
         static_dir: Some(dir.path().join("assets")),
         bind: "127.0.0.1:8787".parse().unwrap(),
         ..ServeConfig::from_env()
     };
+    config.limits.max_queued_jobs = max_queued_jobs;
     std::fs::create_dir(dir.path().join("assets")).unwrap();
     std::fs::write(dir.path().join("assets/index.html"), "<!doctype html><html><head><title>tolmap</title></head><body><div id=\"root\"></div></body></html>").unwrap();
     std::fs::create_dir(dir.path().join("repositories")).unwrap();
@@ -561,8 +565,7 @@ async fn invalid_batch_source_registers_nothing() {
 
 #[tokio::test]
 async fn duplicate_checkout_inputs_use_one_queue_slot_and_register_once() {
-    let (dir, app, state) = setup();
-    state.library.config.service.limits.max_queued_jobs = 0;
+    let (dir, app, state) = setup_with_queue_limit(0);
     let checkout = dir.path().join("duplicate");
     std::fs::create_dir(&checkout).unwrap();
     assert!(std::process::Command::new("git")
