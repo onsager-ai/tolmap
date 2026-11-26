@@ -14,6 +14,19 @@ const browser=await chromium.launch({headless:true});
 const results=[];
 const browserOrigin='http://127.0.0.1:8988';
 const contrast=(a,b)=>{const lum=s=>{const rgb=s.match(/[\d.]+/g).slice(0,3).map(Number).map(x=>{x/=255;return x<=.04045?x/12.92:((x+.055)/1.055)**2.4});return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;};const [x,y]=[lum(a),lum(b)].sort((x,y)=>y-x);return(x+.05)/(y+.05);};
+async function markPersonalPage(page){
+ await page.route('**/*',async route=>{
+  const request=route.request();
+  if(!request.isNavigationRequest()||request.resourceType()!=='document'||new URL(request.url()).origin!==browserOrigin){
+   await route.fallback();
+   return;
+  }
+  const response=await route.fetch();
+  const html=(await response.text()).replace(/<head[^>]*>/i,head=>`${head}\n<meta name="tolmap-personal">`);
+  assert(html.includes('<meta name="tolmap-personal">'),'personal journey page must contain a head element');
+  await route.fulfill({response,body:html});
+ });
+}
 async function inspectReaderContrast(page){
  const result=await page.locator('.cm-content').evaluate(el=>{
   const editor=el.closest('.cm-editor'),selection=editor.querySelector('.cm-selectionBackground');
@@ -172,11 +185,15 @@ async function checkDelayedJobPollingStopsAfterDone(){
 async function checkPersonalRetryErrors(){
  const page=await browser.newPage();
  const jobId='personal-retry-error';
+ // FailurePage selects the personal retry endpoint from this marker. Set it
+ // before the application bundle reads host.ts so the routed retry responses
+ // below exercise the personal job flow.
+ await markPersonalPage(page);
  const snapshot={job_id:jobId,slug:'owner/repository',status:'failed',stage:'clone',queue_position:null,started_at:new Date().toISOString(),finished_at:new Date().toISOString(),commit:null,error:'The repository could not be downloaded.',error_code:'clone_failed',progress:null,eta:null,eta_start_s:null,elapsed_s:1,stages:[],map_ready:false};
  await page.route(`**/api/jobs/${jobId}`,route=>route.fulfill({json:snapshot}));
  await page.route(`**/api/jobs/${jobId}/retry`,route=>route.fulfill({status:409,json:{error:'retry_rejected',message:'The server rejected this retry.'}}));
  await page.goto(`${browserOrigin}/new?job=${jobId}`);
- await page.locator('[data-job-state="failed"]').waitFor();
+ await page.locator('[data-job-failure][data-job-failure-code="clone_failed"]').waitFor();
  await page.getByRole('button',{name:'Try again'}).click();
  await page.locator('[data-retry-error]').getByText('The server rejected this retry.').waitFor();
  assert.equal(await page.getByText("Refresh couldn't be started. Open the repository page to retry.").count(),0,'personal retry should display the server error message');
@@ -190,6 +207,7 @@ async function checkPersonalRetryErrors(){
 }
 async function checkPersonalAddEscapeWhilePending(){
  const page=await browser.newPage();
+ await markPersonalPage(page);
  let releaseIndexResponse;
  const indexResponse=new Promise(resolve=>{releaseIndexResponse=resolve;});
  await page.route('**/api/personal/index',async route=>{
@@ -197,7 +215,7 @@ async function checkPersonalAddEscapeWhilePending(){
   await route.fulfill({json:{batch_id:'escape-pending-batch',jobs:[{repository_id:'escape-pending-repository',job_id:'escape-pending-job'}]}});
  });
  await page.goto(`${browserOrigin}/`);
- await page.getByRole('button',{name:'Add repository',exact:true}).click();
+ await page.locator('[data-app-shell]').getByRole('button',{name:'Add repository',exact:true}).click();
  await page.locator('[data-personal-add]').getByRole('textbox').fill('owner/repository');
  const response=page.waitForResponse(response=>response.request().method()==='POST'&&response.url().endsWith('/api/personal/index'));
  await page.getByRole('button',{name:'Add and map'}).click();
@@ -209,7 +227,7 @@ async function checkPersonalAddEscapeWhilePending(){
  await page.waitForURL(url=>url.pathname==='/new'&&url.searchParams.get('job')==='escape-pending-job');
  assert.equal(await page.locator('[data-personal-add]').count(),0,'completed add should close the dialog before navigating');
  await page.goto(`${browserOrigin}/`);
- await page.getByRole('button',{name:'Add repository',exact:true}).click();
+ await page.locator('[data-app-shell]').getByRole('button',{name:'Add repository',exact:true}).click();
  await page.locator('[data-personal-add]').waitFor();
  await page.keyboard.press('Escape');
  await page.locator('[data-personal-add]').waitFor({state:'detached'});
