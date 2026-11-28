@@ -35,7 +35,7 @@ const meetsGlibcFloor = libcVersion &&
 if (platform !== 'linux' || arch !== 'x64' || !meetsGlibcFloor) {
   const detected = libc ? `glibc ${libc}` : 'musl or an unidentified C library';
   process.stderr.write(
-    `tolmap 0.2.1 supports linux-x64 with glibc >= 2.35; detected ${platform}-${arch} (${detected}).\n` +
+    `tolmap 0.2.2 supports linux-x64 with glibc >= 2.35; detected ${platform}-${arch} (${detected}).\n` +
     'Install tolmap on a supported Linux x64 system or build from source.\n',
   );
   process.exit(1);
