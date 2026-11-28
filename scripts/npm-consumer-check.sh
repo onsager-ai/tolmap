@@ -90,13 +90,24 @@ passed cli
   printf 'def total(values):\n    return sum(values)\n' > numbers_lib.py
   git add .
   git -c user.name=Example -c user.email=example@example.invalid commit -qm initial
-  "$cli" add "$PWD"
+  "$cli" add "$PWD" 2>/tmp/flat-add.log
+  if grep -F 'Detected languages omitted' /tmp/flat-add.log; then exit 1; fi
   "$cli" overview --repo example | python3 -c '
 import json, sys
 answer = json.load(sys.stdin)
 print(answer["query"], answer["results"])
 assert (answer["query"]["files"], answer["query"]["imports"], answer["query"]["districts"]) == (3, 2, 1)
 '
+  mkdir backend
+  printf 'module example.com/backend\n\ngo 1.22\n' > backend/go.mod
+  printf 'package main\nfunc main() {}\n' > backend/main.go
+  git add backend
+  git -c user.name=Example -c user.email=example@example.invalid commit -qm backend
+  "$cli" add "$PWD" 2>/tmp/mixed-add.log | python3 -c 'import json, sys; assert json.load(sys.stdin)["name"] == "example"'
+  grep -F 'Detected languages omitted from this map: go (1 file)' /tmp/mixed-add.log
+  grep -F 'rerun tolmap add with --pkg . --lang py --pkg . --lang go' /tmp/mixed-add.log
+  "$cli" add "$PWD" --pkg . --lang py --pkg . --lang go
+  "$cli" where backend/main.go --repo example | python3 -c 'import json, sys; assert json.load(sys.stdin)["total"] == 1'
 )
 for override in TOLMAP_TEST_PLATFORM=darwin TOLMAP_TEST_ARCH=arm64 TOLMAP_TEST_GLIBC_VERSION=2.34 TOLMAP_TEST_GLIBC_VERSION=musl; do
   if env "$override" "$cli" --help >/tmp/unsupported.log 2>&1; then exit 1; fi
