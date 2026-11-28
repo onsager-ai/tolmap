@@ -261,6 +261,8 @@ for(const [width,height] of [[320,568],[390,844],[844,390],[768,1024],[1280,900]
     if (['done','failed'].includes(job.status)) { terminal = job; break; }
   }
   assert.equal(terminal?.status,'done','personal refresh must complete before opening latest map');
+  await page.waitForURL(url=>url.pathname===`/${terminal.slug}`&&url.searchParams.get('commit')===terminal.commit);
+  await page.locator('.map-svg').waitFor();
   await page.goto(`${browserOrigin}/`);await page.getByRole('link',{name:'View repository reader'}).click();
   await page.getByRole('heading',{name:'reader',exact:true}).waitFor();
   await page.getByRole('link',{name:'Open latest map',exact:true}).click();

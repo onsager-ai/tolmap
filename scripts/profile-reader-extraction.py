@@ -49,12 +49,16 @@ for name, source in sources.items():
                         break
                     except subprocess.TimeoutExpired:
                         pass
+                    # Bound gdb itself, so a slow attach returns a sample
+                    # status and leaves the extraction deadline in force.
                     sample = subprocess.run(
-                        ["sudo", "gdb", "-q", "-batch", "-p", str(process.pid),
+                        ["sudo", "timeout", "-k", "1s", "4s", "gdb", "-q", "-batch", "-p", str(process.pid),
                          "-ex", "set pagination off", "-ex", "thread apply all bt 20", "-ex", "detach"],
-                        capture_output=True, text=True, timeout=4)
+                        capture_output=True, text=True)
                     (out / f"sample-{index}.txt").write_text((sample.stdout + sample.stderr)[-24000:])
                     samples.append({"index": index, "status": sample.returncode})
+                    if sample.returncode != 0:
+                        break
             timed_out = False
             try:
                 process.wait(timeout=max(0.01, 30 - (time.monotonic() - start)))
