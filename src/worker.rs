@@ -404,10 +404,30 @@ fn run(spec: WorkerSpec, progress: &Progress) -> std::result::Result<WorkerEvent
     } else {
         let detection = detect::detect(&materialized.path)
             .map_err(|error| fail("detection_failed", error.to_string()))?;
-        let chosen = detection.chosen;
         let confirmed = std::env::var("TOLMAP_WORKER_CONFIRMED_SCOPE").ok();
-        admit_chosen(&chosen, confirmed.as_deref())?;
-        vec![chosen]
+        admit_chosen(&detection.chosen, confirmed.as_deref())?;
+        if detection.candidates.len() > 1 {
+            let omitted = detection.candidates[1..]
+                .iter()
+                .map(|c| {
+                    let unit = if c.file_count == 1 { "file" } else { "files" };
+                    format!("{} ({} {unit})", c.language.as_str(), c.file_count)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let flags = detection
+                .candidates
+                .iter()
+                .map(|c| format!("--pkg . --lang {}", c.language.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            progress.log(format!(
+                "Mapping {} by default. Detected languages omitted from this map: {omitted}. \
+                 To map all these languages from the repository root, rerun tolmap add with {flags}",
+                detection.chosen.language.as_str()
+            ));
+        }
+        vec![detection.chosen]
     };
     if sources.is_empty() {
         return Err(fail(
