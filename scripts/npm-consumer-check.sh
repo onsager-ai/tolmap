@@ -79,6 +79,25 @@ cli="$PWD/node_modules/.bin/tolmap"
 "$cli" web --help
 "$cli" add --help
 passed cli
+# A first-time user with a flat Python checkout knows only its path.
+(
+  export TOLMAP_DATA_DIR=/tmp/flat-python-library
+  mkdir /tmp/example
+  cd /tmp/example
+  git init -q
+  printf 'from report import summary\nprint(summary())\n' > main.py
+  printf 'from numbers_lib import total\ndef summary():\n    return total([1, 2])\n' > report.py
+  printf 'def total(values):\n    return sum(values)\n' > numbers_lib.py
+  git add .
+  git -c user.name=Example -c user.email=example@example.invalid commit -qm initial
+  "$cli" add "$PWD"
+  "$cli" overview --repo example | python3 -c '
+import json, sys
+answer = json.load(sys.stdin)
+print(answer["query"], answer["results"])
+assert (answer["query"]["files"], answer["query"]["imports"], answer["query"]["districts"]) == (3, 2, 1)
+'
+)
 for override in TOLMAP_TEST_PLATFORM=darwin TOLMAP_TEST_ARCH=arm64 TOLMAP_TEST_GLIBC_VERSION=2.34 TOLMAP_TEST_GLIBC_VERSION=musl; do
   if env "$override" "$cli" --help >/tmp/unsupported.log 2>&1; then exit 1; fi
   grep -F 'supports linux-x64 with glibc >= 2.35' /tmp/unsupported.log
