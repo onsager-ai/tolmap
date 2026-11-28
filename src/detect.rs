@@ -218,7 +218,8 @@ struct PyMeta {
 }
 
 fn detect_python(repo: &Path) -> Result<Option<SourceCandidate>> {
-    let total = extract::source_files(repo, ".", LanguageKind::Python)?.len();
+    let files = extract::source_files(repo, ".", LanguageKind::Python)?;
+    let total = files.len();
     if total == 0 {
         return Ok(None);
     }
@@ -288,6 +289,16 @@ fn detect_python(repo: &Path) -> Result<Option<SourceCandidate>> {
         return Ok(Some(candidate));
     }
 
+    if let Some((source, target)) = flat_python_sibling_import(repo, &files)? {
+        return Ok(Some(SourceCandidate {
+            language: LanguageKind::Python,
+            pkg: ".".to_owned(),
+            confidence: Confidence::Medium,
+            file_count: total,
+            evidence: format!("all Python files are at the root; {source} imports {target}.py"),
+        }));
+    }
+
     // Last resort: no package layout recognised at all. Map the repository
     // root directly rather than refusing -- silence is the failure mode
     // this module exists to avoid -- but say plainly that it's a guess.
@@ -298,6 +309,44 @@ fn detect_python(repo: &Path) -> Result<Option<SourceCandidate>> {
         file_count: total,
         evidence: "no pyproject.toml/setup.py package match and no directory with __init__.py; mapping the repository root directly".to_owned(),
     }))
+}
+
+/// Loose scripts alone do not identify a project. An absolute import of a
+/// sibling module is evidence that the root is their shared import directory.
+fn flat_python_sibling_import(repo: &Path, files: &[String]) -> Result<Option<(String, String)>> {
+    if files.len() < 2 || files.iter().any(|file| file.contains('/')) {
+        return Ok(None);
+    }
+    let modules: std::collections::BTreeSet<_> =
+        files.iter().filter_map(|f| f.strip_suffix(".py")).collect();
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&tree_sitter_python::LANGUAGE.into())?;
+    for module in &modules {
+        let file = format!("{module}.py");
+        let source = fs::read(repo.join(&file))?;
+        let Some(tree) = parser.parse(&source, None) else {
+            continue;
+        };
+        for import in extract::python_imports(tree.root_node(), &source) {
+            if import.level != 0 {
+                continue;
+            }
+            let sibling = |name: &str| name != *module && modules.contains(name);
+            let target = if import.from {
+                sibling(&import.module).then_some(import.module)
+            } else {
+                import
+                    .names
+                    .into_iter()
+                    .map(|(name, _)| name)
+                    .find(|name| sibling(name))
+            };
+            if let Some(target) = target {
+                return Ok(Some((file, target)));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Name-matching variants tried against directories on disk. PyPI project
@@ -1396,6 +1445,30 @@ mod tests {
         let candidate = detect_python(dir.path()).unwrap().unwrap();
         assert_eq!(candidate.pkg, ".");
         assert_eq!(candidate.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn python_flat_modules_require_an_absolute_sibling_import() {
+        let repo = TempDir::new().unwrap();
+        write(repo.path(), "helpers.py", "def run(): pass\n");
+        for (statement, confidence) in [
+            ("from helpers import run", Confidence::Medium),
+            ("import sys, helpers as h", Confidence::Medium),
+            ("from .helpers import run", Confidence::Low),
+            ("import main", Confidence::Low),
+            ("# import helpers", Confidence::Low),
+        ] {
+            write(repo.path(), "main.py", statement);
+            let candidate = detect_python(repo.path()).unwrap().unwrap();
+            assert_eq!(candidate.pkg, ".");
+            assert_eq!(candidate.confidence, confidence, "{statement}");
+        }
+        write(repo.path(), "main.py", "import helpers");
+        write(repo.path(), "other/unrelated.py", "");
+        assert_eq!(
+            detect_python(repo.path()).unwrap().unwrap().confidence,
+            Confidence::Low
+        );
     }
 
     // -- nested Python projects (issue #162) ---------------------------
